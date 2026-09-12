@@ -1,13 +1,14 @@
 <p align="center">
-  <img src="docs/assets/logo.jpg" width="120" height="120" alt="everywhere">
+  <img src="docs/assets/logo.jpg" width="120" height="120" alt="farssh">
 </p>
 
-<h1 align="center">everywhere</h1>
+<h1 align="center">FarSSH</h1>
 
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">中文</a></p>
 
 <p align="center">
-  <strong>Your coding agents, on your machines, from anywhere.</strong>
+  <strong>Coding agents on machines far from you — native TUI, over SSH.</strong><br>
+  CLI: <code>farssh</code>
 </p>
 
 <p align="center">
@@ -26,13 +27,13 @@
 
 ---
 
-`everywhere` is a small terminal app. It reads the SSH hosts you already have, shows which coding agents are installed on that machine, lists their sessions, then **hands your tty to the real agent TUI** over SSH.
+**FarSSH** (`farssh`) attaches your terminal to Claude Code, Codex, Grok Build, and Pi **already installed on your own machines**. It is not another mux like Herdr/ccmux, and not a local-key tunnel: inference stays on the remote host.
 
-The model, the files, the MCP servers, and the API keys stay on the remote host. Closing the laptop does not kill the agent: it keeps running in tmux. Open `everywhere` later and attach the same pane.
+The model, the files, the MCP servers, and the API keys stay on the remote host. Closing the laptop does not kill the agent: it keeps running in tmux. Open `farssh` later and attach the same pane.
 
 ## Why
 
-| You already… | Without everywhere | With everywhere |
+| You already… | Without farssh | With farssh |
 | --- | --- | --- |
 | `ssh devbox` then remember `tmux attach` | Fragile, easy to start a second Codex/Claude on the same repo | Host → agent → session, **live attaches only** |
 | Pay for Claude / ChatGPT / Grok on the home machine | Copying keys to a café laptop is a bad idea | Keys never leave the remote |
@@ -44,16 +45,16 @@ It is not a new coding agent, not a cloud IDE, and not a gateway you install on 
 
 ```mermaid
 flowchart LR
-  You[Your laptop<br/>everywhere TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[Remote login shell]
+  You[Your laptop<br/>farssh TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[Remote login shell]
   Probe --> List[Detect claude / codex / grok / pi<br/>List disk sessions]
-  You -->|ssh -tt PTY| Tmux[tmux socket: everywhere]
+  You -->|ssh -tt PTY| Tmux[tmux socket: farssh]
   Tmux --> Agent[Native TUI<br/>permissions, slash, mouse]
 ```
 
 1. Pick a `Host` from `~/.ssh/config` (concrete names only; `*` wildcards are ignored).
 2. Probe the remote **login shell** so nvm / Homebrew / `~/.local/bin` still work.
 3. Pick an agent and a session, or start a new one in a remote directory.
-4. `everywhere` creates or reuses a tmux session on an isolated socket named `everywhere` (your personal tmux server is untouched).
+4. `farssh` creates or reuses a tmux session on an isolated socket named `farssh` (your personal tmux server is untouched).
 5. Your terminal becomes the remote agent. Detach with **`Ctrl-g d`**. Reattach later; do not `resume` a live process.
 
 ## Features
@@ -63,10 +64,10 @@ flowchart LR
 - **Session list** — idle transcripts from disk plus **live** tmux panes.
 - **Safe reconnect** — live sessions only attach, so you do not get two Codex agents rewriting the same tree ([openai/codex#30424](https://github.com/openai/codex/issues/30424)).
 - **Remote stays yours** — no package installs on the host, no API keys copied locally, protocol servers bind nowhere; traffic is SSH.
-- **Doctor** — `everywhere doctor --host devbox` prints PATH, tmux, and agent versions.
+- **Doctor** — `farssh doctor --host devbox` prints PATH, tmux, and agent versions.
 
 ```
-┌ everywhere · home-mac · Grok Build ──────────────────────────┐
+┌ FarSSH · home-mac · Grok Build ──────────────────────────┐
 │ sessions  [live]=tmux still running                          │
 │ ▸ [live]  SSH passthrough TUI   (/Users/you/code/app)        │
 │   [idle]  Fix flaky tests       (/Users/you/code/app)        │
@@ -84,8 +85,8 @@ flowchart LR
 **Remote:** `sshd`, `tmux`, `python3`, and at least one agent already logged in. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
 ```bash
-git clone https://github.com/mahingbun-dev/everywhere-to-agent.git
-cd everywhere-to-agent
+git clone https://github.com/mahingbun-dev/FarSSH.git
+cd FarSSH
 cargo install --path .
 ```
 
@@ -99,8 +100,8 @@ Host home-mac
 
 ```bash
 ssh home-mac true          # must work without a password
-everywhere doctor --host home-mac
-everywhere                 # TUI: host → agent → session
+farssh doctor --host home-mac
+farssh                 # TUI: host → agent → session
 ```
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
@@ -113,7 +114,7 @@ Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release b
 | --- | --- | --- |
 | Docs hub | [docs/](docs/README.md) | [docs/zh/](docs/zh/README.md) |
 | Product | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
-| Using everywhere | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| Using FarSSH | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
 | Architecture | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
 | Contributing | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
 | Security | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |

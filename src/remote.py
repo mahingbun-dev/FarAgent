@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remote helper for the everywhere CLI. Runs on the SSH target."""
+"""Remote helper for the farssh CLI. Runs on the SSH target."""
 from __future__ import annotations
 
 import argparse
@@ -14,15 +14,15 @@ from pathlib import Path
 from typing import Any
 
 HOME = Path.home()
-ETA_DIR = HOME / ".everywhere"
-TMUX_CONF = ETA_DIR / "tmux.conf"
-REGISTRY = ETA_DIR / "registry.json"
-TMUX_SOCKET = "everywhere"
+FARSSH_DIR = HOME / ".farssh"
+TMUX_CONF = FARSSH_DIR / "tmux.conf"
+REGISTRY = FARSSH_DIR / "registry.json"
+TMUX_SOCKET = "farssh"
 
 AGENTS = ("claude", "codex", "grok", "pi")
 
 TMUX_CONF_BODY = """\
-# Managed by everywhere. Applies only to sessions started with -f this file.
+# Managed by farssh. Applies only to sessions started with -f this file.
 set -g prefix C-g
 unbind C-b
 bind C-g send-prefix
@@ -33,7 +33,7 @@ set -g default-terminal "tmux-256color"
 set -as terminal-features ",*:RGB"
 set -g status-position top
 set -g status-left-length 64
-set -g status-left " #[bold]everywhere#[default]  prefix C-g · C-g d detach "
+set -g status-left " #[bold]farssh#[default]  prefix C-g · C-g d detach "
 set -g status-right " #{session_name} "
 set -g history-limit 50000
 set -g set-clipboard on
@@ -102,15 +102,15 @@ def short_id(session_id: str) -> str:
 
 
 def tmux_name(agent: str, session_id: str) -> str:
-    return f"eta-{agent}-{short_id(session_id)}"
+    return f"farssh-{agent}-{short_id(session_id)}"
 
 
 def ensure_runtime() -> dict[str, Any]:
-    ETA_DIR.mkdir(parents=True, exist_ok=True)
+    FARSSH_DIR.mkdir(parents=True, exist_ok=True)
     TMUX_CONF.write_text(TMUX_CONF_BODY)
     if not REGISTRY.exists():
         REGISTRY.write_text("[]\n")
-    return {"ok": True, "dir": str(ETA_DIR), "tmux_conf": str(TMUX_CONF)}
+    return {"ok": True, "dir": str(FARSSH_DIR), "tmux_conf": str(TMUX_CONF)}
 
 
 def load_registry() -> list[dict[str, Any]]:
@@ -124,7 +124,7 @@ def load_registry() -> list[dict[str, Any]]:
 
 
 def save_registry(rows: list[dict[str, Any]]) -> None:
-    ETA_DIR.mkdir(parents=True, exist_ok=True)
+    FARSSH_DIR.mkdir(parents=True, exist_ok=True)
     REGISTRY.write_text(json.dumps(rows, indent=2) + "\n")
 
 
@@ -403,7 +403,7 @@ def list_sessions(agent: str) -> dict[str, Any]:
         if name:
             seen_tmux.add(name)
     # Live tmux sessions that are not yet on disk (brand-new).
-    prefix = f"eta-{agent}-"
+    prefix = f"farssh-{agent}-"
     registry = {r.get("tmux"): r for r in load_registry() if r.get("agent") == agent}
     for name in sorted(live_tmux):
         if not name.startswith(prefix) or name in seen_tmux:
@@ -455,7 +455,7 @@ def start_session(agent: str, cwd: str, session_id: str | None, name: str) -> di
         return {
             "ok": False,
             "error": "tmux_missing",
-            "hint": "Install tmux on the remote host; everywhere will not install it.",
+            "hint": "Install tmux on the remote host; farssh will not install it.",
         }
     if not which(agent):
         return {
@@ -509,14 +509,14 @@ def doctor() -> dict[str, Any]:
         "probe": info,
         "runtime": ensure,
         "notes": [
-            "Coding is the native agent TUI inside tmux socket 'everywhere'.",
+            "Coding is the native agent TUI inside tmux socket 'farssh'.",
             "Detach with C-g d (prefix C-g). This does not kill the agent.",
             "Do not resume a live session; attach the existing tmux session.",
             "Grok clipboard over SSH: OSC 52, or grok wrap ssh if /doctor complains.",
         ],
         "tmux_conf": str(TMUX_CONF) if TMUX_CONF.exists() else None,
         "tmux_socket": TMUX_SOCKET,
-        "mouse": "on (set in everywhere tmux.conf)",
+        "mouse": "on (set in farssh tmux.conf)",
     }
 
 

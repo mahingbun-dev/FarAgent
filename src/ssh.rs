@@ -209,13 +209,13 @@ fn expand_tilde(token: &str) -> Result<String> {
     Ok(token.to_string())
 }
 
-pub fn everywhere_home() -> Result<PathBuf> {
+pub fn farssh_home() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot resolve home directory"))?;
-    Ok(home.join(".everywhere"))
+    Ok(home.join(".farssh"))
 }
 
 pub fn control_dir() -> Result<PathBuf> {
-    let dir = everywhere_home()?.join("cm");
+    let dir = farssh_home()?.join("cm");
     fs::create_dir_all(&dir).ok();
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     Ok(dir)

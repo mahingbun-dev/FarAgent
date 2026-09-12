@@ -12,7 +12,7 @@ v0.1 是 Linux / macOS / Windows **WSL** 上的 SSH 选择器 + 原生 TUI 透�
 | --- | --- |
 | 远程 | 直接对接 Win32 OpenSSH + ConPTY（`claude` / `codex` / `grok` / `pi` 的 Windows 原生程序） |
 | 保活 | 不依赖 Linux `tmux` 也能保住会话（Windows 原生会话托管或等价方案） |
-| 客户端 | `everywhere` 可在 Windows Terminal / PowerShell 上运行，不只是 macOS 和 Linux |
+| 客户端 | `farssh` 可在 Windows Terminal / PowerShell 上运行，不只是 macOS 和 Linux |
 | PATH / 探测 | 识别用户 PATH、`AppData`，以及 `%USERPROFILE%` 下的 `.claude` / `.codex` / `.grok` / `.pi` |
 
 WSL 仍然支持。原生 Windows 是增量能力。

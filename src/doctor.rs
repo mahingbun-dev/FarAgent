@@ -4,7 +4,7 @@ use crate::ssh::{self, Client};
 use anyhow::Result;
 
 pub fn run(host: Option<&str>) -> Result<()> {
-    println!("everywhere doctor");
+    println!("farssh doctor");
     println!(
         "local ssh: {}",
         which_local("ssh").unwrap_or_else(|| "(missing)".into())
@@ -53,7 +53,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
                         p.tmux.version.as_deref().unwrap_or("")
                     )
                 } else {
-                    "NOT INSTALLED (everywhere will not install it)".into()
+                    "NOT INSTALLED (farssh will not install it)".into()
                 }
             );
             for kind in crate::agents::AgentKind::ALL {

@@ -11,9 +11,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "everywhere",
+    name = "farssh",
     version,
-    about = "SSH into remote coding agents and attach their native TUIs"
+    about = "FarSSH: attach to coding agents on your own machines over SSH"
 )]
 struct Cli {
     #[command(subcommand)]

@@ -1,3 +1,6 @@
+# Local interview / execution plans (not published)
+/plans/
+
 # Rust
 /target/
 **/*.rs.bk

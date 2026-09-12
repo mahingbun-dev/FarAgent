@@ -2,7 +2,7 @@
 
 [English](../en/contributing.md) · **中文**
 
-感谢关注。`everywhere` 是一个小的 Rust TUI，外加在 SSH 对端运行的 Python 助手。
+感谢关注。`farssh` 是一个小的 Rust TUI，外加在 SSH 对端运行的 Python 助手。
 
 1. 先读 **[开发者文档](development.md)**（[Development](../en/development.md)）。
 2. 提交前跑 `cargo test` 和 `cargo fmt`。

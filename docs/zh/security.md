@@ -2,13 +2,13 @@
 
 [English](../en/security.md) · **中文**
 
-`everywhere` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
+`farssh` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
 
 ## 我们假定
 
 - 你已经信任以该用户执行 `ssh <host>`。
 - 认证只有 **密钥 / ssh-agent**（`BatchMode`）。工具不会弹出密码框。
-- 远程助手（`~/.everywhere/remote.py`、tmux socket `everywhere`）以 SSH 用户身份运行，不是 root。
+- 远程助手（`~/.farssh/remote.py`、tmux socket `farssh`）以 SSH 用户身份运行，不是 root。
 
 ## 我们不会做的事
 

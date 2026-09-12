@@ -1,13 +1,14 @@
 <p align="center">
-  <img src="docs/assets/logo.jpg" width="120" height="120" alt="everywhere">
+  <img src="docs/assets/logo.jpg" width="120" height="120" alt="farssh">
 </p>
 
-<h1 align="center">everywhere</h1>
+<h1 align="center">FarSSH</h1>
 
 <p align="center"><a href="README.md">English</a> · <strong>中文</strong></p>
 
 <p align="center">
-  <strong>在家里的 Mac / Linux / WSL 上，从任何地方继续用你的 coding agent。</strong>
+  <strong>远在你家机器上的 coding agent，用 SSH 接上原生 TUI。</strong><br>
+  命令：<code>farssh</code>
 </p>
 
 <p align="center">
@@ -26,13 +27,13 @@
 
 ---
 
-`everywhere` 是一个本机终端应用：读取你已有的 SSH Host，探测远程装了哪些 coding agent、有哪些会话，然后把终端 **透传** 给远程原生 TUI。
+**FarSSH**（命令 `farssh`）把你的终端接到 **已经装在自己机器上** 的 Claude Code、Codex、Grok Build、Pi。它不是 Herdr/ccmux 那种本地 mux，也不是把密钥隧道回本机：推理仍走远程配置。
 
-大模型、项目文件、MCP、API 密钥都留在远程。合上笔记本不会杀掉 agent——它在 tmux 里继续跑。之后再打开 `everywhere`，attach 同一个窗格即可。
+大模型、项目文件、MCP、API 密钥都留在远程。合上笔记本不会杀掉 agent——它在 tmux 里继续跑。之后再打开 `farssh`，attach 同一个窗格即可。
 
 ## 为什么需要它
 
-| 你现在已经在做的事 | 没有 everywhere | 有 everywhere |
+| 你现在已经在做的事 | 没有 farssh | 有 farssh |
 | --- | --- | --- |
 | `ssh devbox` 再自己记 `tmux attach` | 容易在同一仓库再拉起第二个 Codex/Claude | 主机 → agent → 会话，**live 只 attach** |
 | Claude / ChatGPT / Grok 订阅在家里那台机器上 | 把密钥拷到咖啡馆笔记本很危险 | 密钥不离开远程 |
@@ -44,16 +45,16 @@
 
 ```mermaid
 flowchart LR
-  You[你的笔记本<br/>everywhere TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[远程登录壳]
+  You[你的笔记本<br/>farssh TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[远程登录壳]
   Probe --> List[探测 claude / codex / grok / pi<br/>列出磁盘会话]
-  You -->|ssh -tt PTY| Tmux[tmux socket: everywhere]
+  You -->|ssh -tt PTY| Tmux[tmux socket: farssh]
   Tmux --> Agent[原生 TUI<br/>权限、slash、鼠标]
 ```
 
 1. 从 `~/.ssh/config` 选一个具体 `Host`（`*` 通配会被忽略）。
 2. 用远程 **登录壳** 探测，这样 nvm / Homebrew / `~/.local/bin` 仍然有效。
 3. 选择 agent 和会话，或在远程目录里新建。
-4. 在独立 tmux socket `everywhere` 上创建或复用会话（不碰你日常的 tmux）。
+4. 在独立 tmux socket `farssh` 上创建或复用会话（不碰你日常的 tmux）。
 5. 本机终端变成远程 agent。用 **`Ctrl-g d`** detach。以后再 attach；不要对 live 进程再 `resume`。
 
 ## 功能
@@ -63,10 +64,10 @@ flowchart LR
 - **会话列表** — 磁盘上的 idle 记录，加上 **live** 的 tmux 窗格。
 - **安全重连** — live 只 attach，避免两个 Codex 同时改同一仓库（[openai/codex#30424](https://github.com/openai/codex/issues/30424)）。
 - **远程仍是你的** — 不在主机上装软件，不把 API key 拷到本机，不对外监听端口；流量走 SSH。
-- **Doctor** — `everywhere doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
+- **Doctor** — `farssh doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
 
 ```
-┌ everywhere · home-mac · Grok Build ──────────────────────────┐
+┌ FarSSH · home-mac · Grok Build ──────────────────────────┐
 │ sessions  [live]=tmux still running                          │
 │ ▸ [live]  SSH passthrough TUI   (/Users/you/code/app)        │
 │   [idle]  Fix flaky tests       (/Users/you/code/app)        │
@@ -84,8 +85,8 @@ flowchart LR
 **远程：** `sshd`、`tmux`、`python3`，以及至少一个已登录的 agent。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
 
 ```bash
-git clone https://github.com/mahingbun-dev/everywhere-to-agent.git
-cd everywhere-to-agent
+git clone https://github.com/mahingbun-dev/FarSSH.git
+cd FarSSH
 cargo install --path .
 ```
 
@@ -99,8 +100,8 @@ Host home-mac
 
 ```bash
 ssh home-mac true          # 必须免密成功
-everywhere doctor --host home-mac
-everywhere                 # TUI：主机 → agent → 会话
+farssh doctor --host home-mac
+farssh                 # TUI：主机 → agent → 会话
 ```
 
 在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。

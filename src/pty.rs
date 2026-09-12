@@ -15,7 +15,7 @@ pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
     let client = Client::new(host)?;
     let name_q = ssh::shell_single_quote(tmux_name);
     let script =
-        format!("exec tmux -L everywhere -f \"$HOME/.everywhere/tmux.conf\" attach -t {name_q}");
+        format!("exec tmux -L farssh -f \"$HOME/.farssh/tmux.conf\" attach -t {name_q}");
     let mut cmd = Command::new("ssh");
     for arg in ssh::base_args(&ssh::control_path()?) {
         cmd.arg(arg);

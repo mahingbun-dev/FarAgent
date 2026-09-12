@@ -8,7 +8,7 @@ use std::path::Path;
 
 pub const REMOTE_PY: &str = include_str!("remote.py");
 
-const WRITE_HELPER: &str = r#"python3 -c "import pathlib,sys; d=pathlib.Path.home()/'.everywhere'; d.mkdir(parents=True, exist_ok=True); (d/'remote.py').write_bytes(sys.stdin.buffer.read())""#;
+const WRITE_HELPER: &str = r#"python3 -c "import pathlib,sys; d=pathlib.Path.home()/'.farssh'; d.mkdir(parents=True, exist_ok=True); (d/'remote.py').write_bytes(sys.stdin.buffer.read())""#;
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct SessionSummary {
@@ -48,7 +48,7 @@ pub fn helper_hash() -> String {
 fn hash_check_script() -> &'static str {
     r#"python3 - <<'PY'
 import pathlib, hashlib
-p = pathlib.Path.home() / ".everywhere" / "remote.py"
+p = pathlib.Path.home() / ".farssh" / "remote.py"
 print("missing" if not p.exists() else hashlib.sha256(p.read_bytes()).hexdigest())
 PY"#
 }
@@ -76,7 +76,7 @@ pub fn ensure_helper(client: &Client) -> Result<()> {
     let got = String::from_utf8_lossy(&verify.stdout).trim().to_string();
     if got != hash {
         return Err(anyhow!(
-            "failed to install ~/.everywhere/remote.py (got {got})"
+            "failed to install ~/.farssh/remote.py (got {got})"
         ));
     }
     let _ = remote_json(client, &["ensure"])?;
@@ -84,7 +84,7 @@ pub fn ensure_helper(client: &Client) -> Result<()> {
 }
 
 pub fn remote_json(client: &Client, args: &[&str]) -> Result<Value> {
-    let mut script = String::from("python3 \"$HOME/.everywhere/remote.py\"");
+    let mut script = String::from("python3 \"$HOME/.farssh/remote.py\"");
     for a in args {
         script.push(' ');
         script.push_str(&crate::ssh::shell_single_quote(a));
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn remote_py_is_embedded() {
-        assert!(REMOTE_PY.contains("TMUX_SOCKET = \"everywhere\""));
+        assert!(REMOTE_PY.contains("TMUX_SOCKET = \"farssh\""));
         assert!(REMOTE_PY.contains("def probe"));
         assert!(REMOTE_PY.contains("\"codex\", \"resume\""));
     }

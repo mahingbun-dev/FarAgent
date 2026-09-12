@@ -92,7 +92,7 @@ pub fn short_id(session_id: &str) -> String {
 }
 
 pub fn tmux_name(agent: AgentKind, session_id: &str) -> String {
-    format!("eta-{}-{}", agent.slug(), short_id(session_id))
+    format!("farssh-{}-{}", agent.slug(), short_id(session_id))
 }
 
 pub fn new_session_id() -> String {
@@ -128,8 +128,8 @@ mod tests {
     fn tmux_name_uses_last_12_alnum() {
         let id = "01a093cd-ec3c-74e3-9d43-cdb915ddb244";
         let name = tmux_name(AgentKind::Grok, id);
-        assert!(name.starts_with("eta-grok-"));
-        let suffix = name.strip_prefix("eta-grok-").unwrap();
+        assert!(name.starts_with("farssh-grok-"));
+        let suffix = name.strip_prefix("farssh-grok-").unwrap();
         assert!(suffix.chars().all(|c| c.is_ascii_alphanumeric()));
         assert_eq!(suffix.len(), 12);
         assert_eq!(short_id(id), suffix);

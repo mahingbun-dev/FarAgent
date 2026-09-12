@@ -1,14 +1,14 @@
 [package]
-name = "everywhere"
+name = "farssh"
 version = "0.1.0"
 edition = "2021"
-description = "SSH into remote coding agents and attach their native TUIs"
+description = "FarSSH: attach to coding agents on your own machines over SSH"
 license = "MIT"
-repository = "https://github.com/mahingbun-dev/everywhere-to-agent"
+repository = "https://github.com/mahingbun-dev/FarSSH"
 rust-version = "1.80"
 
 [[bin]]
-name = "everywhere"
+name = "farssh"
 path = "src/main.rs"
 
 [dependencies]
