@@ -56,7 +56,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
 git clone https://github.com/mahingbun-dev/FarSSH.git
-cd farssh
+cd FarSSH
 cargo build
 ```
 
@@ -106,7 +106,7 @@ RUST_BACKTRACE=1 cargo run -- doctor --host home-mac
 在仓库根目录：
 
 ```bash
-cd farssh
+cd FarSSH
 cargo build --release
 ./target/release/farssh --help
 ./target/release/farssh --version
@@ -167,7 +167,7 @@ cargo uninstall farssh
 ### 1. 在原电脑打好包
 
 ```bash
-cd farssh
+cd FarSSH
 cargo build --release
 uname -m          # arm64 或 x86_64，迁入机器必须同类
 file target/release/farssh

@@ -56,7 +56,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
 git clone https://github.com/mahingbun-dev/FarSSH.git
-cd farssh
+cd FarSSH
 cargo build
 ```
 
@@ -106,7 +106,7 @@ When you are not hacking, build **release**. Rust is only required on the machin
 From the repo root:
 
 ```bash
-cd farssh
+cd FarSSH
 cargo build --release
 ./target/release/farssh --help
 ./target/release/farssh --version
@@ -167,7 +167,7 @@ Do not relocate the remote box that already has claude/codex/grok/pi. The new la
 ### 1. Pack on the original machine
 
 ```bash
-cd farssh
+cd FarSSH
 cargo build --release
 uname -m          # arm64 or x86_64 — the destination must match
 file target/release/farssh

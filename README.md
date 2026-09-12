@@ -86,7 +86,7 @@ flowchart LR
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarSSH.git
-cd farssh
+cd FarSSH
 cargo install --path .
 ```
 
