@@ -1,4 +1,6 @@
-# 可执行计划书：everywhere-to-agent（本机 SSH 直连 + 原生 TUI 透传）
+# 可执行计划书：FarSSH（本机 SSH 直连 + 原生 TUI 透传）
+
+> 产品已更名为 **FarSSH**（命令/仓库 `farssh`）。下文历史名称已尽量替换。
 
 > 生成：2026-09-12 ｜ 修订：2026-09-12（交互形态改为 PTY 透传）｜ 状态：开发中（`dev/ssh-pty-passthrough`）
 
@@ -10,7 +12,7 @@
 
 ## 2. 背景
 
-仓库 `everywhere-to-agent` 目前几乎为空（MIT，README：work with your personal agent in everywhere）。触发点是人在别处，agent 和项目、订阅、MCP 配在家里的 PC / Mac / Linux 箱上，希望远程用起来接近本地。
+仓库 `farssh` 目前几乎为空（MIT，README：work with your personal agent in farssh）。触发点是人在别处，agent 和项目、订阅、MCP 配在家里的 PC / Mac / Linux 箱上，希望远程用起来接近本地。
 
 **架构修订：** 访谈中先选过「统一本地 TUI + ACP/app-server」。落地成本高（四套协议、权限流、热重连状态机）。后改为 **先透传原生 TUI**：本机只做主机/agent/会话管理，coding 交给远程已经存在的 `claude` / `codex` / `grok` / `pi`。统一 UI 留作后续，不进 v1。
 
@@ -51,13 +53,13 @@
 
 | 待定项 | 默认假设 | 再确认时机 / 负责人 |
 | --- | --- | --- |
-| 二进制名 | `everywhere` | 实现 CLI 骨架时 |
+| 二进制名 | `farssh` | 实现 CLI 骨架时 |
 | 管理 TUI 语言 | 英文界面 + 中文 README/计划书 | 第一次能跑选择器时 |
 | 本地客户端 OS | macOS + Linux；Windows 客户端延后 | 需要时再开任务 |
 | cwd 选择器 | 历史会话出现过的目录 + 手动输入，`test -d` 校验 | 做新建会话时 |
 | 远程未登录 | 探测标 `installed, unauthenticated`；attach 后让原生 TUI 自己走登录流（或提示先在远程 `grok login --device-auth` 等）。工具不代登录 | 联调未登录主机时 |
 | 非登录 shell PATH | 探测、tmux 启动命令都经登录壳，吃 nvm / Homebrew / `~/.local/bin` | 探测脚本里写死 |
-| tmux 命名 | 每个 **coding 会话** 一个 tmux session：`eta-<agent>-<shortid>`（例如 `eta-grok-a1b2`）。live = 该 tmux session 存在且 pane 里还是对应进程 | 实现 runtime 时 |
+| tmux 命名 | 每个 **coding 会话** 一个 tmux session：`farssh-<agent>-<shortid>`（例如 `farssh-grok-a1b2`）。live = 该 tmux session 存在且 pane 里还是对应进程 | 实现 runtime 时 |
 | 退出透传回管理界面 | `tmux detach`（默认前缀 `C-b d`）结束 `ssh -t`，管理 TUI 恢复。agent `/quit` 则 tmux session 结束，列表里该条变为 idle | 做 PTY 循环时；可在状态行提示 detach 键 |
 | tmux 前缀冲突 | 不改用户全局 `~/.tmux.conf`。本工具创建的 session 用 `-f` 指定一份最小配置（mouse on、truecolor、合理 prefix），只作用于这些 session | 实现 runtime 时若默认 prefix 难用再改 |
 | TERM 转发 | `ssh -t` 继承本机 `TERM`/`COLORTERM`；tmux 配 `terminal-features` RGB。Grok 剪贴板走 OSC 52；必要时 doctor 提示 `grok wrap ssh` | 手测花屏时 |
@@ -75,7 +77,7 @@
 - `ssh -t` 把本机 tty 交给该 tmux session（真 PTY：键盘、鼠标、alt-screen、resize/`SIGWINCH`）
 - live 则只 `tmux attach`；idle 的磁盘会话才 `resume` 进新 tmux
 - detach / SSH 断开后 agent 继续跑；再选同一条则 attach，不双开
-- 缺 tmux、缺二进制、SSH 失败、花屏相关的可读错误与 `everywhere doctor --host X`
+- 缺 tmux、缺二进制、SSH 失败、花屏相关的可读错误与 `farssh doctor --host X`
 
 **不做（v1）：**
 
@@ -94,15 +96,15 @@
 
 | # | 任务 | 依赖 | 产出 | 验收标准 |
 | --- | --- | --- | --- | --- |
-| 1 | Cargo 骨架：binary `everywhere`，模块 `ssh` / `probe` / `sessions` / `runtime` / `pty` / `tui` | — | 可 `cargo build`；README 写 build/run 与 SSH 前置 | `cargo test` 过；`--help` 能跑 |
+| 1 | Cargo 骨架：binary `farssh`，模块 `ssh` / `probe` / `sessions` / `runtime` / `pty` / `tui` | — | 可 `cargo build`；README 写 build/run 与 SSH 前置 | `cargo test` 过；`--help` 能跑 |
 | 2 | OpenSSH 控制面：解析 config、ControlMaster、远程 exec | 1 | `connect` / `exec` / `exec_login_shell` | 免密 Host 上 `uname -s` 成功；第二次 exec 复用 ControlMaster；BatchMode 下需密码的主机立刻失败并可读报错 |
 | 3 | 远程探测（登录壳）：四 agent + tmux | 2 | JSON：`{agent, found, version, path, tmux}` | 只装 grok 时只显示 grok 版本；nvm/Homebrew 路径能找到；无 tmux 明确标出 |
-| 4 | PTY 透传循环 | 2 | 管理进程让出 tty → `ssh -tt host -- tmux attach -t <name>` → 子进程退出后恢复 | 对远程 `tmux new -s eta-test` 跑 `top`：全屏、能操作、resize 窗格跟着变、detach 后回到调用方且 `tmux ls` 仍有该 session |
-| 5 | tmux runtime：每 coding 会话一个 named session | 3, 4 | 创建：`tmux new-session -d -s eta-<agent>-<id> -c <cwd> -- <login-shell -lc agent-cmd>`；live 检测：`tmux has-session` | 无 tmux → 拒绝 attach 并提示自行安装。新建 grok 会话后远程能 `tmux ls` 看到 `eta-grok-*`。同一 id 再进只 attach，`pgrep -c grok` 不增加 |
-| 6 | 会话列表适配器 | 3, 5 | 统一 `SessionSummary { id, title, cwd, mtime, live }`；live 优先看 tmux 名 | Grok：`grok sessions list` + 对得上的 `eta-grok-*`。Codex：扫 `~/.codex/sessions/**/*.jsonl`。Claude：`~/.claude/projects/**/*.jsonl`。Pi：`~/.pi/agent/sessions/`。live 行可一键 attach |
+| 4 | PTY 透传循环 | 2 | 管理进程让出 tty → `ssh -tt host -- tmux attach -t <name>` → 子进程退出后恢复 | 对远程 `tmux new -s farssh-test` 跑 `top`：全屏、能操作、resize 窗格跟着变、detach 后回到调用方且 `tmux ls` 仍有该 session |
+| 5 | tmux runtime：每 coding 会话一个 named session | 3, 4 | 创建：`tmux new-session -d -s farssh-<agent>-<id> -c <cwd> -- <login-shell -lc agent-cmd>`；live 检测：`tmux has-session` | 无 tmux → 拒绝 attach 并提示自行安装。新建 grok 会话后远程能 `tmux ls` 看到 `farssh-grok-*`。同一 id 再进只 attach，`pgrep -c grok` 不增加 |
+| 6 | 会话列表适配器 | 3, 5 | 统一 `SessionSummary { id, title, cwd, mtime, live }`；live 优先看 tmux 名 | Grok：`grok sessions list` + 对得上的 `farssh-grok-*`。Codex：扫 `~/.codex/sessions/**/*.jsonl`。Claude：`~/.claude/projects/**/*.jsonl`。Pi：`~/.pi/agent/sessions/`。live 行可一键 attach |
 | 7 | 四家启动命令 | 5, 6 | 一张命令表：new / resume / attach | 四家凡远程已安装即可：新建进入原生 TUI；resume 带上 id；live attach 画面还在。未安装的不出现在可启动列表 |
 | 8 | 管理 TUI | 3, 6, 7 | ratatui：Host → Agent（版本）→ Sessions → 回车进入透传 | 键盘走完主路径；透传结束（detach 或 agent 退出）回到会话列表并刷新 live 状态 |
-| 9 | 终端保真：TERM、truecolor、鼠标、doctor | 4, 8 | tmux 最小配置；`everywhere doctor --host X` | Grok 或 Claude 全屏不乱码、鼠标点选在至少一种本机终端（iTerm2/Ghostty/Windows Terminal 任选）可用。doctor 检查 SSH、tmux、agent、`tmux show -g terminal-features` / mouse |
+| 9 | 终端保真：TERM、truecolor、鼠标、doctor | 4, 8 | tmux 最小配置；`farssh doctor --host X` | Grok 或 Claude 全屏不乱码、鼠标点选在至少一种本机终端（iTerm2/Ghostty/Windows Terminal 任选）可用。doctor 检查 SSH、tmux、agent、`tmux show -g terminal-features` / mouse |
 | 10 | 端到端手测记录 | 8, 9 | README 或 `plans/` 里勾选清单 | 至少 1 台 Linux 或 macOS 远程：Grok 或 Claude 跑通新建、权限操作、detach、断 SSH 再 attach。第二家 agent 若已安装则同样跑通。Windows 仅 WSL 或标明未测 |
 
 建议顺序：1 → 2 → 3 → 4 → 5 → 7（先一家 agent）→ 8 → 6 补全四家列表 → 7 补全四家 → 9 → 10。
@@ -120,7 +122,7 @@
 | `ssh -t` 从 ratatui 手里抢 tty 失败 | 花屏、卡死 | 进入透传前 `disable_raw_mode` + 退 alt-screen；结束后再启用；用 `Command::status` 等子进程，不要在 raw mode 下 spawn |
 | 窗口 resize | agent TUI 布局错 | 本机 tty 的 SIGWINCH 由 OpenSSH 转给远程 PTY；测一次拉窗口 |
 | macOS 远程 TCC | Codex/Claude 读 Documents 失败 | doctor 提示给 sshd 完全磁盘访问 |
-| ControlMaster 僵死 | 后续 exec 挂 | socket 放 `~/.everywhere/cm/`；超时 `-O exit` 重建 |
+| ControlMaster 僵死 | 后续 exec 挂 | socket 放 `~/.farssh/cm/`；超时 `-O exit` 重建 |
 | 把透传理解成还要做统一聊天 UI | 范围膨胀 | README 写清：v1 是 session picker + ssh/tmux attach |
 
 ## 8. 验证方式
@@ -135,7 +137,7 @@
 **手工（必做）：**
 
 1. 本机 `ssh <host> true` 已通；远程有 tmux 和至少一家已登录 agent
-2. `everywhere` → 选 host → 看到版本
+2. `farssh` → 选 host → 看到版本
 3. 新建会话，原生 TUI 出现；做一个只读任务
 4. 触发一次写文件/bash 权限，在 **远程原生 UI** 里允许或拒绝，行为与本地一致
 5. `C-g d`（或文档写明的 prefix）detach，回到会话列表，该行是 live

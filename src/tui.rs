@@ -250,7 +250,7 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             }
             if !probe.tmux.found {
                 app.error = Some(
-                    "tmux is not installed on the remote. Install it yourself; everywhere will not."
+                    "tmux is not installed on the remote. Install it yourself; farssh will not."
                         .into(),
                 );
                 return Ok(());
@@ -386,17 +386,17 @@ fn draw(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     let title = match app.screen {
-        Screen::Hosts => "everywhere · hosts".to_string(),
+        Screen::Hosts => "FarSSH · hosts".to_string(),
         Screen::Agents => format!(
-            "everywhere · {} · agents",
+            "FarSSH · {} · agents",
             app.host().map(|h| h.alias.as_str()).unwrap_or("?")
         ),
         Screen::Sessions => format!(
-            "everywhere · {} · {}",
+            "FarSSH · {} · {}",
             app.host().map(|h| h.alias.as_str()).unwrap_or("?"),
             app.agent().title()
         ),
-        Screen::NewCwd => "everywhere · new session · remote cwd".into(),
+        Screen::NewCwd => "FarSSH · new session · remote cwd".into(),
     };
     let header = Paragraph::new(title).block(
         Block::default()

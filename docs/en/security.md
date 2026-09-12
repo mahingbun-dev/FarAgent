@@ -2,13 +2,13 @@
 
 **English** · [中文](../zh/security.md)
 
-`everywhere` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
+`farssh` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
 
 ## What we assume
 
 - You already trust `ssh <host>` as that user.
 - Authentication is **keys / ssh-agent only** (`BatchMode`). The tool will not prompt for a password.
-- The remote helper (`~/.everywhere/remote.py`, tmux socket `everywhere`) runs as the SSH user, not root.
+- The remote helper (`~/.farssh/remote.py`, tmux socket `farssh`) runs as the SSH user, not root.
 
 ## What we do not do
 

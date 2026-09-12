@@ -2,7 +2,7 @@
 
 **English** · [中文](../zh/contributing.md)
 
-Thanks for looking. `everywhere` is a small Rust TUI plus a Python helper that runs on the SSH target.
+Thanks for looking. `farssh` is a small Rust TUI plus a Python helper that runs on the SSH target.
 
 1. Read **[Development](development.md)** (or [开发者文档](../zh/development.md)).
 2. `cargo test` and `cargo fmt` before you send a change.

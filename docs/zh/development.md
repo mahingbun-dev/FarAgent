@@ -2,12 +2,12 @@
 
 [English](../en/development.md) · **中文**
 
-本文说明 everywhere 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
+本文说明 farssh 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
 
 ## 仓库结构
 
 ```
-everywhere-to-agent/
+farssh/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          clap：tui / doctor / probe / sessions
@@ -27,30 +27,30 @@ everywhere-to-agent/
 └── plans/               原始范围
 ```
 
-二进制名：`everywhere`。Rust 1.80+，edition 2021。
+二进制名：`farssh`。Rust 1.80+，edition 2021。
 
 ## 架构
 
 ```
 本机                            SSH                         远程用户
 ┌─────────────────────┐         ControlMaster         ┌──────────────────────────┐
-│ ratatui 选择器      │--------- exec bash -lc ------►│ python3 ~/.everywhere/   │
+│ ratatui 选择器      │--------- exec bash -lc ------►│ python3 ~/.farssh/   │
 │                     │                               │   remote.py probe|list   │
-│ 恢复 tty            │========= ssh -tt ===========►│ tmux -L everywhere      │
-│                     │         PTY + SIGWINCH        │   eta-<agent>-<shortid>  │
+│ 恢复 tty            │========= ssh -tt ===========►│ tmux -L farssh      │
+│                     │         PTY + SIGWINCH        │   farssh-<agent>-<shortid>  │
 └─────────────────────┘                               │   exec 原生 TUI          │
                                                       └──────────────────────────┘
 ```
 
-**不自己实现 SSH。** 固定带 `BatchMode=yes`、`ControlMaster=auto`、`ControlPath=~/.everywhere/cm/%r@%h:%p`。
+**不自己实现 SSH。** 固定带 `BatchMode=yes`、`ControlMaster=auto`、`ControlPath=~/.farssh/cm/%r@%h:%p`。
 
 **不自己实现 coding UI。** attach 之后就是厂商 TUI 的字节流。
 
-**tmux 隔离：** `-L everywhere`，不占用用户默认 server。配置在 `~/.everywhere/tmux.conf`（前缀 `C-g`、鼠标、truecolor）。该 socket 上已有 server 时 `-f` 会被忽略；第一次 `new-session` 会带上我们的配置文件。
+**tmux 隔离：** `-L farssh`，不占用用户默认 server。配置在 `~/.farssh/tmux.conf`（前缀 `C-g`、鼠标、truecolor）。该 socket 上已有 server 时 `-f` 会被忽略；第一次 `new-session` 会带上我们的配置文件。
 
 ## 远程助手
 
-`src/remote.py` 通过 `include_str!` 打进二进制。探测时对本机嵌入脚本做 SHA-256，和远程 `~/.everywhere/remote.py` 比较；不一致就用 python3 从 stdin 写过去，不用包管理器。
+`src/remote.py` 通过 `include_str!` 打进二进制。探测时对本机嵌入脚本做 SHA-256，和远程 `~/.farssh/remote.py` 比较；不一致就用 python3 从 stdin 写过去，不用包管理器。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -58,7 +58,7 @@ everywhere-to-agent/
 | `list --agent <id>` | 磁盘会话 + live tmux 名 |
 | `start --agent --cwd --tmux [--session-id]` | 已有 session 则 exists，否则 `new-session -d` |
 | `has --tmux` | 是否 live |
-| `ensure` | 创建 `~/.everywhere` 并写 tmux.conf |
+| `ensure` | 创建 `~/.farssh` 并写 tmux.conf |
 | `doctor` | 探测 + 说明 |
 
 全部经 `ssh … bash -lc`，PATH 和交互式 SSH 一致。
@@ -66,7 +66,7 @@ everywhere-to-agent/
 ### tmux 命名
 
 ```
-eta-<agent>-<shortid>
+farssh-<agent>-<shortid>
 ```
 
 `shortid` 是厂商 session id 去掉非字母数字后的最后 12 位（Rust `agents::short_id` 与 `remote.py` 同一规则）。新建会话用随机 12 位，启动命令 **不带** resume。
@@ -82,7 +82,7 @@ eta-<agent>-<shortid>
 | `runtime.rs` | helper hash；对 `remote.py` 做 `py_compile` |
 | `tui.rs` | live 只 attach；idle 才 `ensure_tmux_session(..., Some(id))` |
 
-PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc 'exec tmux -L everywhere attach …'`。detach 后选择器重新 `ratatui::init()`。
+PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc 'exec tmux -L farssh attach …'`。detach 后选择器重新 `ratatui::init()`。
 
 ## 本地开发
 
@@ -91,12 +91,12 @@ rustup toolchain install stable
 cargo test
 cargo fmt
 cargo build
-./target/debug/everywhere doctor
+./target/debug/farssh doctor
 ```
 
 CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。真机路径见用户手册里的验收清单。
 
-不要提交 `target/`、`__pycache__/`，也不要提交远程 `~/.everywhere` 的转储。
+不要提交 `target/`、`__pycache__/`，也不要提交远程 `~/.farssh` 的转储。
 
 ## 增加一家 agent
 
