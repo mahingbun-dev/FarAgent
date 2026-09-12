@@ -15,4 +15,4 @@
 
 文档中心：[docs/README.md](../README.md)
 
-范围记录：[plans/2026-09-12-farssh.md](../../plans/2026-09-12-farssh.md)
+

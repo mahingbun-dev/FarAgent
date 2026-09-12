@@ -24,7 +24,7 @@ farssh/
 │   ├── assets/          Images
 │   ├── en/              English guides
 │   └── zh/              中文文档
-└── plans/               Original scope (interview plan)
+└── plans/               Local notes (gitignored)
 ```
 
 Binary name: `farssh`. Edition 2021, Rust 1.80+.

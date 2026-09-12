@@ -33,4 +33,4 @@ docs/
 | Security | [Security](en/security.md) | [安全说明](zh/security.md) |
 | Roadmap | [Roadmap](en/roadmap.md) | [后续计划](zh/roadmap.md) |
 
-Scope history: [plans/2026-09-12-farssh.md](../plans/2026-09-12-farssh.md)
+

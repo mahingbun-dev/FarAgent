@@ -382,4 +382,4 @@ Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap
 
 - [Development](development.md) — architecture and contributing
 - [Roadmap](roadmap.md) — native Windows and app frontend
-- [计划书](../../plans/2026-09-12-farssh.md) — original scope
+

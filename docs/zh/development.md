@@ -24,7 +24,7 @@ farssh/
 │   ├── assets/          图片
 │   ├── en/              English
 │   └── zh/              中文
-└── plans/               原始范围
+└── plans/               本地笔记（已 gitignore）
 ```
 
 二进制名：`farssh`。Rust 1.80+，edition 2021。
