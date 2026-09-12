@@ -1,6 +1,6 @@
 # 开发者文档
 
-[English](../development.md) · **中文**
+[English](../en/development.md) · **中文**
 
 本文说明 everywhere 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
 
@@ -19,7 +19,11 @@ everywhere-to-agent/
 │   ├── agents.rs        agent id、tmux 名、resume 参数（文档和测试）
 │   ├── doctor.rs        给人看的诊断
 │   └── remote.py        在 SSH 对端用 python3 执行
-├── docs/                产品 / 用户 / 开发者文档
+├── docs/                全部产品文档
+│   ├── README.md        文档中心
+│   ├── assets/          图片
+│   ├── en/              English
+│   └── zh/              中文
 └── plans/               原始范围
 ```
 
@@ -117,4 +121,4 @@ v0.1 只提供源码（`cargo install --path .`）。以后可以用 `cargo dist
 
 ## 许可证
 
-MIT，见 [LICENSE](../../LICENSE)。
+MIT，见 [LICENSE](../../../LICENSE)。

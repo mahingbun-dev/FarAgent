@@ -1,6 +1,6 @@
 # 安全说明
 
-[English](SECURITY.md) · **中文**
+[English](../en/security.md) · **中文**
 
 `everywhere` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
 

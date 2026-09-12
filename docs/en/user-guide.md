@@ -1,6 +1,6 @@
 # User guide
 
-**English** · [中文](zh/user-guide.md)
+**English** · [中文](../zh/user-guide.md)
 
 `everywhere` is a local TUI. It SSHs into a machine you already use, finds Claude Code / Codex / Grok Build / Pi, and attaches their **native** terminal UI. Model calls use the **remote** login and config.
 
@@ -194,4 +194,4 @@ Password SSH, OTP, `ProxyJump`, installing tmux/agents for you, a custom chat UI
 ## See also
 
 - [Development](development.md) — architecture and contributing
-- [计划书](../plans/2026-09-12-everywhere-to-agent.md) — original scope
+- [计划书](../../plans/2026-09-12-everywhere-to-agent.md) — original scope

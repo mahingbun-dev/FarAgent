@@ -1,6 +1,6 @@
 # 用户手册
 
-[English](../user-guide.md) · **中文**
+[English](../en/user-guide.md) · **中文**
 
 `everywhere` 是一个跑在你笔记本上的终端应用。它 SSH 进你已经在用的那台机器，找出 Claude Code / Codex / Grok Build / Pi，然后把终端 **透传** 给它们的原生 TUI。大模型请求使用 **远程** 上的登录态和配置。
 
@@ -192,4 +192,4 @@ everywhere sessions --host home-mac --agent grok
 ## 另见
 
 - [开发者文档](development.md)
-- [计划书](../../plans/2026-09-12-everywhere-to-agent.md)
+- [计划书](../../../plans/2026-09-12-everywhere-to-agent.md)

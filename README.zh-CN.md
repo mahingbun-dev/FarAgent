@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
+  <a href="docs/zh/README.md">文档中心</a> ·
   <a href="docs/zh/user-guide.md">用户手册</a> ·
   <a href="docs/zh/development.md">开发者文档</a>
 </p>
@@ -110,11 +111,12 @@ everywhere                 # TUI：主机 → agent → 会话
 
 | 主题 | English | 中文 |
 | --- | --- | --- |
+| 文档中心 | [docs/](docs/README.md) | [docs/zh/](docs/zh/README.md) |
 | 产品介绍 | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
-| 使用说明 | [User guide](docs/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
-| 架构与开发 | [Development](docs/development.md) | [开发者文档](docs/zh/development.md) |
-| 参与贡献 | [CONTRIBUTING](CONTRIBUTING.md) | [参与贡献](CONTRIBUTING.zh-CN.md) |
-| 安全 | [SECURITY](SECURITY.md) | [安全说明](SECURITY.zh-CN.md) |
+| 使用说明 | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| 架构与开发 | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
+| 参与贡献 | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
+| 安全 | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |
 
 ## 现状
 

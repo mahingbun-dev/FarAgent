@@ -12,8 +12,9 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="docs/user-guide.md">User guide</a> ·
-  <a href="docs/development.md">Developers</a>
+  <a href="docs/README.md">Docs</a> ·
+  <a href="docs/en/user-guide.md">User guide</a> ·
+  <a href="docs/en/development.md">Developers</a>
 </p>
 
 <p align="center">
@@ -104,17 +105,18 @@ everywhere                 # TUI: host → agent → session
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
 
-Full walkthrough: [User guide](docs/user-guide.md)
+Full walkthrough: [User guide](docs/en/user-guide.md)
 
 ## Documentation
 
 | Topic | English | 中文 |
 | --- | --- | --- |
+| Docs hub | [docs/](docs/README.md) | [docs/zh/](docs/zh/README.md) |
 | Product | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
-| Using everywhere | [User guide](docs/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
-| Architecture | [Development](docs/development.md) | [开发者文档](docs/zh/development.md) |
-| Contributing | [CONTRIBUTING](CONTRIBUTING.md) | [参与贡献](CONTRIBUTING.zh-CN.md) |
-| Security | [SECURITY](SECURITY.md) | [安全说明](SECURITY.zh-CN.md) |
+| Using everywhere | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| Architecture | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
+| Contributing | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
+| Security | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |
 
 ## Status
 

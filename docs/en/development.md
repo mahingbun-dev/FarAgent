@@ -1,6 +1,6 @@
 # Development
 
-**English** · [中文](zh/development.md)
+**English** · [中文](../zh/development.md)
 
 How `everywhere` is put together, how to hack on it, and how to add another agent. For end users see the [user guide](user-guide.md).
 
@@ -19,7 +19,11 @@ everywhere-to-agent/
 │   ├── agents.rs        Agent ids, tmux names, resume argv (docs + tests)
 │   ├── doctor.rs        Human-readable diagnostics
 │   └── remote.py        Runs *on the SSH target* (python3)
-├── docs/                Product, user, and developer docs
+├── docs/                All product documentation
+│   ├── README.md        Docs hub
+│   ├── assets/          Images
+│   ├── en/              English guides
+│   └── zh/              中文文档
 └── plans/               Original scope (interview plan)
 ```
 
@@ -120,4 +124,4 @@ v0.1 is source-only (`cargo install --path .`). A later release can attach `carg
 
 ## License
 
-MIT. See [LICENSE](../LICENSE).
+MIT. See [LICENSE](../../LICENSE).
