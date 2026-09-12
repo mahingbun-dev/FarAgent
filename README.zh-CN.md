@@ -105,7 +105,7 @@ everywhere                 # TUI：主机 → agent → 会话
 
 在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。
 
-完整步骤见 [用户手册](docs/zh/user-guide.md)。
+完整步骤见 [用户手册](docs/zh/user-guide.md)（开发者模式、打包二进制、迁到另一台电脑）。
 
 ## 文档
 

@@ -105,7 +105,7 @@ everywhere                 # TUI: host → agent → session
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
 
-Full walkthrough: [User guide](docs/en/user-guide.md)
+Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release binary, copying the binary to another computer).
 
 ## Documentation
 

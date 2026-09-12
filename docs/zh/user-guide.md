@@ -4,6 +4,19 @@
 
 `everywhere` 是一个跑在你笔记本上的终端应用。它 SSH 进你已经在用的那台机器，找出 Claude Code / Codex / Grok Build / Pi，然后把终端 **透传** 给它们的原生 TUI。大模型请求使用 **远程** 上的登录态和配置。
 
+目录：
+
+- [需要什么](#需要什么)
+- [开发者模式](#开发者模式)
+- [打包二进制并在本机使用](#打包二进制并在本机使用)
+- [把成品迁到另一台电脑](#把成品迁到另一台电脑)
+- [配置 SSH](#配置-ssh)
+- [日常用法](#日常用法)
+- [不用 TUI 的命令](#不用-tui-的命令)
+- [四家 agent](#四家-agent)
+- [断开与重连](#断开与重连)
+- [排障](#排障)
+
 ## 需要什么
 
 ### 本机（你打开 everywhere 的那台）
@@ -27,26 +40,198 @@
 
 请用各家官方方式在远程安装并登录 agent（例如远程执行 `grok login --device-auth`）。
 
-## 安装 everywhere
+远程不会被安装任何系统软件。第一次探测时会在远程用户目录写下 `~/.everywhere/`（tmux 配置和 `remote.py` 助手）。
 
-只在本机需要 Rust 1.80+：
+下面三种用法对应三种身份：**改代码**、**本机当成品用**、**拷到另一台电脑用**。远程那台装 agent 的机器不需要 Rust，也不需要这份源码。
+
+## 开发者模式
+
+适合在仓库里改代码、跑测试、随时启动最新 TUI。本机需要 **Rust 1.80+** 和 Git。
+
+### 拉代码并编译
 
 ```bash
+# 若还没有 rustup
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
 git clone https://github.com/mahingbun-dev/everywhere-to-agent.git
 cd everywhere-to-agent
+cargo build
+```
+
+调试版二进制在 `target/debug/everywhere`。
+
+### 日常命令
+
+`cargo run` 会先编译再执行。子命令前面要加 `--`，否则会被 cargo 吃掉：
+
+```bash
+cargo test
+cargo fmt
+cargo run -- --help
+cargo run -- --version
+cargo run                          # 打开 TUI
+cargo run -- doctor
+cargo run -- doctor --host home-mac
+cargo run -- probe --host home-mac
+cargo run -- sessions --host home-mac --agent grok
+```
+
+也可以直接跑编好的文件：
+
+```bash
+./target/debug/everywhere
+./target/debug/everywhere doctor --host home-mac
+```
+
+排错时：
+
+```bash
+RUST_BACKTRACE=1 cargo run -- doctor --host home-mac
+```
+
+改 `src/` 或 `src/remote.py` 后重新 `cargo build` 或 `cargo run` 即可。`remote.py` 嵌在二进制里，下次探测远程时若 hash 变了会自动覆盖远程的 `~/.everywhere/remote.py`。
+
+开发版带调试符号，比发布版慢，日常当产品用请走下一节的 **release** 包。
+
+改架构、加 agent 的说明见 [开发者文档](development.md)。
+
+## 打包二进制并在本机使用
+
+不改代码、只想在这台电脑上稳定使用时，打 **release** 包。仍然只在本机需要 Rust；用完可以卸掉工具链，只留二进制。
+
+### 编译发布版
+
+在仓库根目录：
+
+```bash
+cd everywhere-to-agent
+cargo build --release
+./target/release/everywhere --help
+./target/release/everywhere --version
+```
+
+产物是单个可执行文件：
+
+| 系统 | 路径 |
+| --- | --- |
+| macOS / Linux | `target/release/everywhere` |
+
+确认本机已有 `ssh`（`command -v ssh`）。everywhere **不把 OpenSSH 打进包里**，目标电脑也必须自带 `ssh`。
+
+### 装进 PATH（推荐）
+
+```bash
 cargo install --path .
+```
+
+默认安装到 `~/.cargo/bin/everywhere`。若终端里找不到命令：
+
+```bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc   # 或 ~/.bashrc
+source ~/.zshrc
+which everywhere
 everywhere --help
 ```
 
-开发时：
+升级（在仓库里拉最新代码后再装）：
 
 ```bash
-cargo build
-./target/debug/everywhere
+git pull
+cargo install --path . --force
 ```
 
-远程不会被安装任何系统软件。第一次探测时会在远程用户目录写下 `~/.everywhere/`（tmux 配置和 `remote.py` 助手）。
+卸载：
+
+```bash
+cargo uninstall everywhere
+# 或：rm ~/.cargo/bin/everywhere
+```
+
+### 不装 PATH，只跑文件
+
+```bash
+./target/release/everywhere
+/绝对路径/everywhere doctor --host home-mac
+```
+
+本机使用前仍需 [配置 SSH](#配置-ssh)，并保证 `ssh <Host> true` 免密成功。
+
+## 把成品迁到另一台电脑
+
+发布版是 **一个二进制**。另一台电脑 **不必安装 Rust、不必拷源码**。要拷的是 `everywhere` 文件，以及那台电脑自己的 SSH 配置和密钥。
+
+远程开发机（装着 claude/codex/grok/pi 的那台）不用搬；新笔记本只要能 SSH 上去即可。
+
+### 1. 在原电脑打好包
+
+```bash
+cd everywhere-to-agent
+cargo build --release
+uname -m          # arm64 或 x86_64，迁入机器必须同类
+file target/release/everywhere
+```
+
+| 原电脑 | 迁入电脑必须 |
+| --- | --- |
+| Apple Silicon Mac（`arm64`） | 也是 Apple Silicon |
+| Intel Mac（`x86_64`） | 也是 Intel Mac |
+| Linux x86_64 | 也是 Linux x86_64（glibc 不宜过旧） |
+
+v0.1 **不能**把 macOS 二进制拿到 Linux 上跑，也还不能当 Windows 客户端（见 [后续计划](roadmap.md)）。
+
+### 2. 拷走什么、不要拷什么
+
+**拷：**
+
+- `target/release/everywhere`（可改名，执行权限保留）
+
+**不要拷进「成品包」里：**
+
+- 整个仓库、`target/debug/`、`Cargo.lock` 以外的构建缓存
+- `~/.ssh/` 私钥（用 U 盘或密码管理器单独、安全地迁移密钥，不要和二进制捆在一起发人）
+- 远程机器上的 `~/.everywhere/`、agent 会话、API key（那些必须留在远程）
+
+可用 U 盘、AirDrop、或 `scp`：
+
+```bash
+scp target/release/everywhere 另一台:~/bin/everywhere
+```
+
+### 3. 在新电脑上落地
+
+新电脑需要：macOS 或 Linux、系统 `ssh`、能免密登录远程的密钥、`~/.ssh/config` 里的具体 `Host`。
+
+```bash
+chmod +x everywhere
+./everywhere --help
+./everywhere --version
+```
+
+放到 PATH，例如：
+
+```bash
+mkdir -p ~/.local/bin
+mv everywhere ~/.local/bin/
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+everywhere doctor
+```
+
+然后在新电脑写好 `~/.ssh/config`（Host 别名可以和旧电脑一样，方便沿用习惯），确认：
+
+```bash
+ssh home-mac true
+everywhere doctor --host home-mac
+everywhere
+```
+
+第一次从新电脑探测某台远程时，仍会在 **远程** 写入 `~/.everywhere/`（若以前用过 everywhere，助手会按 hash 更新）。本机会创建 `~/.everywhere/cm/` 存放 SSH ControlMaster 套接字，这是空目录，不用从旧电脑拷。
+
+### 4. 迁完后怎么用
+
+和本机打包后的用法相同：`everywhere` 打开 TUI，或 `everywhere doctor --host …`。不需要 `cargo`。源码和 Rust 可以只留在你用来开发的那台机器上。
 
 ## 配置 SSH
 
