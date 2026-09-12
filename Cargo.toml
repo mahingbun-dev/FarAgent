@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "FarSSH: attach to coding agents on your own machines over SSH"
 license = "MIT"
-repository = "https://github.com/mahingbun-dev/farssh"
+repository = "https://github.com/mahingbun-dev/FarSSH"
 rust-version = "1.80"
 
 [[bin]]

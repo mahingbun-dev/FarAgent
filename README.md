@@ -85,7 +85,7 @@ flowchart LR
 **Remote:** `sshd`, `tmux`, `python3`, and at least one agent already logged in. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
 ```bash
-git clone https://github.com/mahingbun-dev/farssh.git
+git clone https://github.com/mahingbun-dev/FarSSH.git
 cd farssh
 cargo install --path .
 ```

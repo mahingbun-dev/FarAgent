@@ -55,7 +55,7 @@ Use this when you are editing code, running tests, and launching the latest TUI 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-git clone https://github.com/mahingbun-dev/farssh.git
+git clone https://github.com/mahingbun-dev/FarSSH.git
 cd farssh
 cargo build
 ```
