@@ -117,10 +117,13 @@ everywhere                 # TUI：主机 → agent → 会话
 | 架构与开发 | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
 | 参与贡献 | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
 | 安全 | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |
+| 后续计划 | [Roadmap](docs/en/roadmap.md) | [后续计划](docs/zh/roadmap.md) |
 
 ## 现状
 
-v0.1 适合已经习惯 SSH 的人。尚未支持：密码 SSH、ProxyJump、统一聊天 UI、手机/浏览器、原生 Windows OpenSSH、自动安装 tmux 或 agent。
+v0.1 适合已经习惯 SSH 的人。接下来要做：**Windows 原生（不使用 WSL）**，以及 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
+
+当前计划之外：密码 SSH、ProxyJump、代装 tmux 或 agent。
 
 ## 许可证
 

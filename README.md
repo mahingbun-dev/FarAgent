@@ -117,10 +117,13 @@ Full walkthrough: [User guide](docs/en/user-guide.md)
 | Architecture | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
 | Contributing | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
 | Security | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |
+| Roadmap | [Roadmap](docs/en/roadmap.md) | [后续计划](docs/zh/roadmap.md) |
 
 ## Status
 
-v0.1 is usable if you already live in SSH. Not yet: password SSH, ProxyJump, a unified chat UI, phone/web clients, native Windows OpenSSH, auto-installing tmux or agents.
+v0.1 is usable if you already live in SSH. Next: **native Windows (no WSL)** and a **styled app frontend**. Details: [Roadmap](docs/en/roadmap.md).
+
+Not in the current plan: password SSH, ProxyJump, auto-installing tmux or agents.
 
 ## License
 

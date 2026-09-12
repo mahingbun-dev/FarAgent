@@ -107,13 +107,20 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 
 需要能按 id resume、家目录里有会话文件、并且有交互式 TUI。没有原生 TUI 的不要接到 attach 路径上。
 
-## 没有新计划就不要做的事
+## 后续计划 vs 现在不要做
 
-- 统一 ACP / app-server 聊天 UI（已明确推迟）
+已列入后续（见 [roadmap.md](roadmap.md)）：
+
+1. Windows 原生远程和客户端（OpenSSH + ConPTY，不依赖 WSL）
+2. 围绕主机 / agent / 会话的 App 前端样式
+
+没有单独立项就不要做：
+
 - OpenClaw 式网关
 - 密码 / 键盘交互 SSH
 - 经 SSH 安装 tmux 或 agent
 - 把协议端口绑到 `0.0.0.0`
+- 把 API key 拷到笔记本
 
 ## 发布
 

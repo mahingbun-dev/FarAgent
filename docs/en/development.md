@@ -110,13 +110,20 @@ Do not commit `target/`, `__pycache__/`, or a remote `~/.everywhere` dump.
 
 Prefer a vendor CLI that can **resume by id** and stores transcripts under the home directory. If it has no interactive TUI, it does not belong in this product’s attach path.
 
-## What not to add without a new plan
+## Roadmap vs not now
 
-- A unified ACP/app-server chat UI (explicitly deferred)
+Planned next (see [roadmap.md](roadmap.md)):
+
+1. Native Windows remote and client (OpenSSH + ConPTY, no WSL required)
+2. A styled application frontend around host / agent / session management
+
+Do not add without a separate plan:
+
 - An OpenClaw-style gateway
 - Password / keyboard-interactive SSH
 - Installing tmux or agents over SSH
 - Binding agent protocol ports on `0.0.0.0`
+- Copying API keys to the laptop
 
 ## Release sketch
 

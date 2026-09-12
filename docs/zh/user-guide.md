@@ -23,7 +23,7 @@
 | 至少一个 agent | 登录壳 PATH 上能找到 `claude` / `codex` / `grok` / `pi` |
 | agent 已登录 | everywhere 不代做 OAuth |
 
-**Windows 远程：** SSH 进 **WSL2** 里的 sshd，不要走 Win32 OpenSSH + ConPTY。
+**Windows 远程（v0.1）：** SSH 进 **WSL2** 里的 sshd。原生 Win32 OpenSSH 见 [后续计划](roadmap.md)。
 
 请用各家官方方式在远程安装并登录 agent（例如远程执行 `grok login --device-auth`）。
 
@@ -187,9 +187,12 @@ everywhere sessions --host home-mac --agent grok
 
 ## v0.1 明确不做
 
-密码 SSH、OTP、ProxyJump、代装 tmux/agent、自研聊天 UI、删除/重命名/fork 会话、手机或浏览器、原生 Windows OpenSSH、把远程密钥拷到本机。
+密码 SSH、OTP、ProxyJump、代装 tmux/agent、删除/重命名/fork 会话、把远程密钥拷到本机。
+
+Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](roadmap.md)。
 
 ## 另见
 
 - [开发者文档](development.md)
+- [后续计划](roadmap.md) — Windows 原生与 App 前端样式
 - [计划书](../../../plans/2026-09-12-everywhere-to-agent.md)

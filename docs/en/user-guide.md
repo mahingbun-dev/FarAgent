@@ -23,7 +23,7 @@
 | At least one agent | `claude`, `codex`, `grok`, or `pi` on the **login-shell** PATH |
 | Agent already authenticated | everywhere does not complete OAuth for you |
 
-**Windows remotes:** SSH into **WSL2** (`sshd` inside the distro). Native Win32 OpenSSH + ConPTY is not a v0.1 target.
+**Windows remotes (v0.1):** SSH into **WSL2** (`sshd` inside the distro). Native Win32 OpenSSH is on the [roadmap](roadmap.md).
 
 Install the agents with their official installers on the remote, then log in once there (`claude`, `codex login`, `grok login --device-auth`, `pi` `/login`, etc.).
 
@@ -189,9 +189,12 @@ Treat SSH access as full access to that user’s agents and repos — because it
 
 ## What v0.1 does not do
 
-Password SSH, OTP, `ProxyJump`, installing tmux/agents for you, a custom chat UI, session delete/rename/fork, phone or browser clients, native Windows OpenSSH, copying remote credentials to the laptop.
+Password SSH, OTP, `ProxyJump`, installing tmux/agents for you, session delete/rename/fork, copying remote credentials to the laptop.
+
+Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap.md).
 
 ## See also
 
 - [Development](development.md) — architecture and contributing
+- [Roadmap](roadmap.md) — native Windows and app frontend
 - [计划书](../../plans/2026-09-12-everywhere-to-agent.md) — original scope

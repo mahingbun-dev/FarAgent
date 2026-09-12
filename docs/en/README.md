@@ -9,5 +9,6 @@
 | Development | [development.md](development.md) |
 | Contributing | [contributing.md](contributing.md) |
 | Security | [security.md](security.md) |
+| Roadmap | [roadmap.md](roadmap.md) |
 
 Hub: [docs/README.md](../README.md)
