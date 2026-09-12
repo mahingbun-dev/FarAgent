@@ -1,5 +1,7 @@
 # Security
 
+**English** · [中文](SECURITY.zh-CN.md)
+
 `everywhere` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
 
 ## What we assume

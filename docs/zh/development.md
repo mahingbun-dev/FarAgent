@@ -1,6 +1,8 @@
 # 开发者文档
 
-本文说明 everywhere 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。English: [Development](../development.md)
+[English](../development.md) · **中文**
+
+本文说明 everywhere 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
 
 ## 仓库结构
 

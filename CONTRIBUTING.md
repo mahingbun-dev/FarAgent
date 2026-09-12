@@ -1,5 +1,7 @@
 # Contributing
 
+**English** · [中文](CONTRIBUTING.zh-CN.md)
+
 Thanks for looking. `everywhere` is a small Rust TUI plus a Python helper that runs on the SSH target.
 
 1. Read **[Development](docs/development.md)** (or [开发者文档](docs/zh/development.md)).

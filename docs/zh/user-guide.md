@@ -1,8 +1,8 @@
 # 用户手册
 
-`everywhere` 是一个跑在你笔记本上的终端应用。它 SSH 进你已经在用的那台机器，找出 Claude Code / Codex / Grok Build / Pi，然后把终端 **透传** 给它们的原生 TUI。大模型请求使用 **远程** 上的登录态和配置。
+[English](../user-guide.md) · **中文**
 
-English: [User guide](../user-guide.md)
+`everywhere` 是一个跑在你笔记本上的终端应用。它 SSH 进你已经在用的那台机器，找出 Claude Code / Codex / Grok Build / Pi，然后把终端 **透传** 给它们的原生 TUI。大模型请求使用 **远程** 上的登录态和配置。
 
 ## 需要什么
 

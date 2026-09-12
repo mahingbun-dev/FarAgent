@@ -1,8 +1,8 @@
 # User guide
 
-`everywhere` is a local TUI. It SSHs into a machine you already use, finds Claude Code / Codex / Grok Build / Pi, and attaches their **native** terminal UI. Model calls use the **remote** login and config.
+**English** · [中文](zh/user-guide.md)
 
-Chinese version: [用户手册](zh/user-guide.md)
+`everywhere` is a local TUI. It SSHs into a machine you already use, finds Claude Code / Codex / Grok Build / Pi, and attaches their **native** terminal UI. Model calls use the **remote** login and config.
 
 ## Requirements
 

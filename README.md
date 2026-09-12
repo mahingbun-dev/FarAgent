@@ -4,17 +4,16 @@
 
 <h1 align="center">everywhere</h1>
 
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">中文</a></p>
+
 <p align="center">
-  <strong>Your coding agents, on your machines, from anywhere.</strong><br>
-  在家里的 Mac / Linux / WSL 上继续用 Claude Code、Codex、Grok Build、Pi。
+  <strong>Your coding agents, on your machines, from anywhere.</strong>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/user-guide.md">User guide</a> ·
-  <a href="docs/zh/user-guide.md">用户手册</a> ·
-  <a href="docs/development.md">Developers</a> ·
-  <a href="docs/zh/development.md">开发者文档</a>
+  <a href="docs/development.md">Developers</a>
 </p>
 
 <p align="center">
@@ -29,8 +28,6 @@
 `everywhere` is a small terminal app. It reads the SSH hosts you already have, shows which coding agents are installed on that machine, lists their sessions, then **hands your tty to the real agent TUI** over SSH.
 
 The model, the files, the MCP servers, and the API keys stay on the remote host. Closing the laptop does not kill the agent: it keeps running in tmux. Open `everywhere` later and attach the same pane.
-
-`everywhere` 是一个本机终端应用：读取你已有的 SSH Host，探测远程装了哪些 coding agent、有哪些会话，然后把终端 **透传** 给远程原生 TUI。大模型请求走远程配置。合上盖子不会杀掉 agent，重连只 attach。
 
 ## Why
 
@@ -107,15 +104,17 @@ everywhere                 # TUI: host → agent → session
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
 
-Full walkthrough: [User guide](docs/user-guide.md) · [用户手册](docs/zh/user-guide.md)
+Full walkthrough: [User guide](docs/user-guide.md)
 
 ## Documentation
 
-| | English | 中文 |
+| Topic | English | 中文 |
 | --- | --- | --- |
-| Product | this README | 本页 |
+| Product | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
 | Using everywhere | [User guide](docs/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
-| Architecture & contributing | [Development](docs/development.md) | [开发者文档](docs/zh/development.md) |
+| Architecture | [Development](docs/development.md) | [开发者文档](docs/zh/development.md) |
+| Contributing | [CONTRIBUTING](CONTRIBUTING.md) | [参与贡献](CONTRIBUTING.zh-CN.md) |
+| Security | [SECURITY](SECURITY.md) | [安全说明](SECURITY.zh-CN.md) |
 
 ## Status
 

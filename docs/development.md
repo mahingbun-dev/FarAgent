@@ -1,6 +1,8 @@
 # Development
 
-How `everywhere` is put together, how to hack on it, and how to add another agent. For end users see the [user guide](user-guide.md). 中文：[开发者文档](zh/development.md)
+**English** · [中文](zh/development.md)
+
+How `everywhere` is put together, how to hack on it, and how to add another agent. For end users see the [user guide](user-guide.md).
 
 ## Repo layout
 
