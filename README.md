@@ -1,96 +1,126 @@
-# everywhere
+<p align="center">
+  <img src="docs/assets/logo.jpg" width="120" height="120" alt="everywhere">
+</p>
 
-通过本机 SSH 直连远程 Linux / macOS（Windows 用 WSL），发现并使用已经装在那台机器上的 coding agent：
+<h1 align="center">everywhere</h1>
 
-- Claude Code (`claude`)
-- Codex (`codex`)
-- Grok Build (`grok`)
-- Pi (`pi`)
+<p align="center">
+  <strong>Your coding agents, on your machines, from anywhere.</strong><br>
+  在家里的 Mac / Linux / WSL 上继续用 Claude Code、Codex、Grok Build、Pi。
+</p>
 
-本机只做 **主机 / agent / 会话** 管理。真正 coding 时把 tty 交给远程 **原生 TUI**（tmux 保活）。模型请求、文件、MCP、密钥都留在远程。
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/user-guide.md">User guide</a> ·
+  <a href="docs/zh/user-guide.md">用户手册</a> ·
+  <a href="docs/development.md">Developers</a> ·
+  <a href="docs/zh/development.md">开发者文档</a>
+</p>
 
-v1 不做自有网关，也不做统一聊天 UI。
+<p align="center">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-0f766e">
+  <img alt="rust" src="https://img.shields.io/badge/rust-1.80%2B-b45309">
+  <img alt="ssh" src="https://img.shields.io/badge/transport-OpenSSH-334155">
+  <img alt="agents" src="https://img.shields.io/badge/agents-claude%20%7C%20codex%20%7C%20grok%20%7C%20pi-0891b2">
+</p>
 
-## 前置
+---
 
-**本机**
+`everywhere` is a small terminal app. It reads the SSH hosts you already have, shows which coding agents are installed on that machine, lists their sessions, then **hands your tty to the real agent TUI** over SSH.
 
-- macOS 或 Linux
-- OpenSSH 客户端
-- `~/.ssh/config` 里有具体 `Host`（通配 `*` / `?` 会被忽略）
-- 对该 Host **密钥或 ssh-agent 免密**（BatchMode，不弹密码）
+The model, the files, the MCP servers, and the API keys stay on the remote host. Closing the laptop does not kill the agent: it keeps running in tmux. Open `everywhere` later and attach the same pane.
 
-**远程**
+`everywhere` 是一个本机终端应用：读取你已有的 SSH Host，探测远程装了哪些 coding agent、有哪些会话，然后把终端 **透传** 给远程原生 TUI。大模型请求走远程配置。合上盖子不会杀掉 agent，重连只 attach。
 
-- OpenSSH 服务
-- `tmux`
-- `python3`（探测和列会话）
-- 至少一个 coding agent，且已在远程登录
-- Windows 只支持 SSH 进 **WSL2**，不支持原生 Win32 OpenSSH ConPTY
+## Why
 
-本工具 **不会** 在远程安装 tmux 或任何 agent。
+| You already… | Without everywhere | With everywhere |
+| --- | --- | --- |
+| `ssh devbox` then remember `tmux attach` | Fragile, easy to start a second Codex/Claude on the same repo | Host → agent → session, **live attaches only** |
+| Pay for Claude / ChatGPT / Grok on the home machine | Copying keys to a café laptop is a bad idea | Keys never leave the remote |
+| Want the native TUI (slash commands, mouse, permissions) | Official desktop remote apps are one-vendor | Claude Code, Codex, Grok Build, and Pi in one picker |
 
-## 安装
+It is not a new coding agent, not a cloud IDE, and not a gateway you install on every box.
+
+## How it works
+
+```mermaid
+flowchart LR
+  You[Your laptop<br/>everywhere TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[Remote login shell]
+  Probe --> List[Detect claude / codex / grok / pi<br/>List disk sessions]
+  You -->|ssh -tt PTY| Tmux[tmux socket: everywhere]
+  Tmux --> Agent[Native TUI<br/>permissions, slash, mouse]
+```
+
+1. Pick a `Host` from `~/.ssh/config` (concrete names only; `*` wildcards are ignored).
+2. Probe the remote **login shell** so nvm / Homebrew / `~/.local/bin` still work.
+3. Pick an agent and a session, or start a new one in a remote directory.
+4. `everywhere` creates or reuses a tmux session on an isolated socket named `everywhere` (your personal tmux server is untouched).
+5. Your terminal becomes the remote agent. Detach with **`Ctrl-g d`**. Reattach later; do not `resume` a live process.
+
+## Features
+
+- **Four agents, one picker** — Claude Code, Codex, Grok Build, Pi; missing ones show as `not installed` plus version when present.
+- **Native vibe coding** — not a reimplemented chat UI. Slash commands, diffs, and permission prompts are the agent’s own.
+- **Session list** — idle transcripts from disk plus **live** tmux panes.
+- **Safe reconnect** — live sessions only attach, so you do not get two Codex agents rewriting the same tree ([openai/codex#30424](https://github.com/openai/codex/issues/30424)).
+- **Remote stays yours** — no package installs on the host, no API keys copied locally, protocol servers bind nowhere; traffic is SSH.
+- **Doctor** — `everywhere doctor --host devbox` prints PATH, tmux, and agent versions.
+
+```
+┌ everywhere · home-mac · Grok Build ──────────────────────────┐
+│ sessions  [live]=tmux still running                          │
+│ ▸ [live]  SSH passthrough TUI   (/Users/you/code/app)        │
+│   [idle]  Fix flaky tests       (/Users/you/code/app)        │
+│   [idle]  (no sessions — press n to start one)               │
+├──────────────────────────────────────────────────────────────┤
+│ enter attach/resume · n new · r refresh · q back             │
+│ agent detach: C-g d                                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Quick start
+
+**Laptop:** macOS or Linux, OpenSSH, key-based login to the host (`BatchMode`, no password prompt).
+
+**Remote:** `sshd`, `tmux`, `python3`, and at least one agent already logged in. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
 ```bash
+git clone https://github.com/mahingbun-dev/everywhere-to-agent.git
+cd everywhere-to-agent
 cargo install --path .
-everywhere --help
 ```
 
-开发：
+```ssh-config
+# ~/.ssh/config  — wildcards like Host * are ignored by the picker
+Host home-mac
+    HostName 192.168.1.8
+    User you
+    IdentityFile ~/.ssh/id_ed25519
+```
 
 ```bash
-cargo build
-cargo test
-./target/debug/everywhere
+ssh home-mac true          # must work without a password
+everywhere doctor --host home-mac
+everywhere                 # TUI: host → agent → session
 ```
 
-## 用法
+Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
 
-```bash
-everywhere                  # 管理 TUI
-everywhere doctor           # 列出本机 SSH Host
-everywhere doctor --host devbox
-everywhere probe --host devbox
-everywhere sessions --host devbox --agent grok
-```
+Full walkthrough: [User guide](docs/user-guide.md) · [用户手册](docs/zh/user-guide.md)
 
-TUI 路径：选 Host → 看四家版本 → 选会话或 `n` 新建 → 进入远程原生 TUI。
+## Documentation
 
-| 键 | 作用 |
-| --- | --- |
-| `j` / `k` 或方向键 | 移动 |
-| Enter | 探测 / 打开 / attach |
-| `n` | 新建会话（输入远程 cwd） |
-| `r` | 刷新 |
-| `q` | 返回 / 退出 |
-| **在 agent 里 `C-g d`** | detach，agent 继续跑，回到列表 |
+| | English | 中文 |
+| --- | --- | --- |
+| Product | this README | 本页 |
+| Using everywhere | [User guide](docs/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| Architecture & contributing | [Development](docs/development.md) | [开发者文档](docs/zh/development.md) |
 
-独立 tmux socket 名：`everywhere`（不碰你日常的 tmux 会话）。prefix 是 `C-g`，避免和 agent 快捷键抢 `C-b`。
+## Status
 
-**live** 会话只 attach，不会再 `resume` 出一个第二进程（避免 Codex 断线双开）。
+v0.1 is usable if you already live in SSH. Not yet: password SSH, ProxyJump, a unified chat UI, phone/web clients, native Windows OpenSSH, auto-installing tmux or agents.
 
-## 手工验收
+## License
 
-在一台已免密、已装 tmux 和至少一家已登录 agent 的远程 Linux 或 macOS 上：
-
-1. [ ] `everywhere doctor --host <alias>` 能看到版本
-2. [ ] TUI 选 host → 看到已装 agent 的版本、未装显示 `not installed`
-3. [ ] 新建会话，原生 TUI 出现；做一个只读任务
-4. [ ] 在 **远程原生 UI** 里点一次写文件/bash 权限，行为与本地一致
-5. [ ] `C-g d` detach，列表该行为 `live`
-6. [ ] 杀掉本机 `everywhere`，再 attach 同一条：画面还在，不是新 resume
-7. [ ] 无 tmux 时不能进入透传，并提示自行安装
-
-Windows 仅测 WSL，或标明未测。
-
-## 不做（v1）
-
-- OpenClaw 式网关 / 目标机常驻本工具 daemon
-- ACP / app-server 统一 coding UI
-- SSH 密码、OTP、ProxyJump
-- 远程自动安装软件
-- 把远程 API key 拷到本机
-- 会话删除 / 重命名 / fork
-
-计划书：[plans/2026-09-12-everywhere-to-agent.md](plans/2026-09-12-everywhere-to-agent.md)
+[MIT](LICENSE)
