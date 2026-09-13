@@ -93,6 +93,7 @@ cargo install --path .
 
 ```ssh-config
 # ~/.ssh/config  — wildcards like Host * are ignored by the picker
+# HostName: LAN IP, public IP, domain, or Tailscale 100.x / MagicDNS
 Host home-mac
     HostName 192.168.1.8
     User you
@@ -107,7 +108,7 @@ faragent                 # TUI: host → agent → session
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
 
-Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release binary, copying the binary to another computer).
+Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release binary, copying the binary to another computer). Reaching a machine behind NAT: [SSH access](docs/en/ssh-access.md) (LAN, public IP, domain, Tailscale).
 
 ## Documentation
 
@@ -116,6 +117,7 @@ Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release b
 | Docs hub | [docs/](docs/README.md) | [docs/zh/](docs/zh/README.md) |
 | Product | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
 | Using FarAgent | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| SSH (LAN / public IP / domain / Tailscale) | [SSH access](docs/en/ssh-access.md) | [SSH 连接](docs/zh/ssh-access.md) |
 | Architecture | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
 | Contributing | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
 | Security | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |

@@ -11,6 +11,7 @@
 - [打包二进制并在本机使用](#打包二进制并在本机使用)
 - [把成品迁到另一台电脑](#把成品迁到另一台电脑)
 - [配置 SSH](#配置-ssh)
+- [SSH 怎么连（局域网 / 公网 / 域名 / Tailscale）](ssh-access.md)
 - [界面语言](#界面语言)
 - [日常用法](#日常用法)
 - [安装、升级、卸载](#安装升级卸载)
@@ -27,6 +28,7 @@
 - OpenSSH（`ssh`）
 - `~/.ssh/config` 里有具体的 `Host`（见下文）
 - **密钥或 ssh-agent 免密**。v0.1 不支持密码、OTP、跳板机
+- 本机能真正 SSH 到远程：同一局域网、公网 IP/域名，或 [Tailscale](ssh-access.md)（家宽 NAT / 出门连家用机器时推荐）
 
 ### 远程（agent 真正跑的那台）
 
@@ -239,6 +241,8 @@ faragent
 
 选择器只列出 **非通配** 的 `Host`。`Host *`、`Host *.github.com` 这类会被跳过。
 
+`HostName` 可以是局域网 IP、公网 IP、域名，或 Tailscale 的 `100.x` / MagicDNS 名。FarAgent 不自己做穿透：只要系统 OpenSSH 能 **密钥免密** 连上，TUI 就能用。逐步说明（含家里 NAT、CGNAT、以及 Tailscale 教程）见 **[SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)**。
+
 ```ssh-config
 Host home-mac
     HostName 192.168.1.8
@@ -410,6 +414,7 @@ faragent sessions --host home-mac --agent grok
 | --- | --- |
 | Host 列表是空的 | 在 `~/.ssh/config` 加非通配 `Host` |
 | `Permission denied` / 卡在密码 | 配好密钥；BatchMode 不会出密码框 |
+| 咖啡馆连不上家里的 `192.168.x` | 那是局域网地址，出不了你家。改用 [Tailscale](ssh-access.md#用-tailscale-做内网穿透推荐) 或公网 IP / 域名 |
 | 显示未安装但 SSH 里能跑 | 检查登录 PATH；看 `faragent doctor --host X` |
 | `tmux_missing` | 在助手列表回车代装 tmux，或从确认屏复制命令 |
 | `cwd_missing` | 目录必须已存在 |
@@ -428,6 +433,7 @@ Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](ro
 
 ## 另见
 
+- [SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)
 - [开发者文档](development.md)
 - [后续计划](roadmap.md) — Windows 原生与 App 前端样式
 
