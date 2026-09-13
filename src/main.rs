@@ -5,15 +5,14 @@ mod doctor;
 mod install;
 mod probe;
 mod pty;
-mod remote;
 mod runtime;
 mod ssh;
 mod tui;
-mod win;
 
-// Moved into faragent-core; aliased at the crate root so every existing
-// `crate::agents::…` / `crate::config::…` / `crate::text::…` path keeps working.
+// Moved into faragent-core / faragent-remote; aliased at the crate root so
+// every existing `crate::agents::…` / `crate::remote::…` path keeps working.
 pub use faragent_core::{agents, config, text};
+pub use faragent_remote::{remote, win};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};

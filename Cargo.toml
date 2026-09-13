@@ -39,8 +39,8 @@ path = "src/main.rs"
 
 [dependencies]
 faragent-core = { path = "crates/faragent-core" }
+faragent-remote = { path = "crates/faragent-remote" }
 anyhow.workspace = true
-base64.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dirs.workspace = true

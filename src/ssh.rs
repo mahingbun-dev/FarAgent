@@ -651,7 +651,7 @@ impl Client {
     /// nothing needs cmd quoting and command-line length limits do not apply.
     /// Dynamic values travel as base64 `$args`.
     pub fn exec_win(&self, script: &str, args_b64: &[&str]) -> Result<Output> {
-        let line = crate::win::ps_stdin_command(args_b64);
+        let line = ps_stdin_command(args_b64);
         self.exec_stdio(&line, script.as_bytes())
     }
 
@@ -787,6 +787,19 @@ pub fn bash_login_command(script: &str) -> String {
     format!("bash -lc {}", shell_single_quote(script))
 }
 
+/// How a PowerShell script travels to a Windows remote: the script itself on
+/// stdin (`-File -`), dynamic values as base64 `$args` on the command line.
+/// Lives here (not in the remote-script crate) because it is how this
+/// transport delivers a payload, not a remote-side script.
+fn ps_stdin_command(args_b64: &[&str]) -> String {
+    let mut s = String::from("powershell -NoProfile -ExecutionPolicy Bypass -File -");
+    for a in args_b64 {
+        s.push(' ');
+        s.push_str(a);
+    }
+    s
+}
+
 /// Why a child did not hand us output.
 enum WaitError {
     /// Still running after the deadline; we killed it.
@@ -915,6 +928,17 @@ Host ignored
         );
         assert!(cmd.contains("FARAGENT_PROBE_V1"));
         assert_ne!(cmd, r#"bash -lc printf 'FARAGENT_PROBE_V1\n'"#);
+    }
+
+    #[test]
+    fn ps_stdin_command_carries_args_verbatim() {
+        let cmd = ps_stdin_command(&["QUJD", "REVG"]);
+        assert!(cmd.starts_with("powershell -NoProfile -ExecutionPolicy Bypass -File - "));
+        assert!(cmd.ends_with("QUJD REVG"));
+        assert!(
+            cmd.is_ascii(),
+            "ps_stdin_command must stay ASCII on the ssh command line"
+        );
     }
 
     #[test]

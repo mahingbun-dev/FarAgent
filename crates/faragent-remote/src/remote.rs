@@ -1,10 +1,10 @@
 //! Remote side is POSIX `bash` + `tmux` only. All JSON / session logic runs here.
 
-use crate::agents::AgentKind;
-use crate::ssh;
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use faragent_core::agents::AgentKind;
+use faragent_core::shell::shell_single_quote;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -42,6 +42,18 @@ pub fn new_dir_command(dir: &str, os: HostOs) -> String {
         HostOs::Posix => format!("mkdir -p {dir}"),
         HostOs::Windows => format!("New-Item -ItemType Directory -Force -LiteralPath '{dir}'"),
     }
+}
+
+/// The tmux attach line for an existing session. Socket + conf follow the
+/// session name so pre-rename live panes still attach.
+pub fn attach_script(tmux_name: &str) -> String {
+    let name_q = shell_single_quote(tmux_name);
+    let (sock, conf) = if tmux_name.starts_with("farssh-") {
+        ("farssh", "$HOME/.farssh/tmux.conf")
+    } else {
+        ("faragent", "$HOME/.faragent/tmux.conf")
+    };
+    format!("exec tmux -L {sock} -f \"{conf}\" attach -t {name_q}")
 }
 
 pub const TMUX_CONF: &str = r#"# Managed by faragent. Applies only to sessions started with -f this file.
@@ -293,19 +305,19 @@ pub fn start_script(
     let inner = format!(
         "exec {}",
         argv.iter()
-            .map(|a| ssh::shell_single_quote(a))
+            .map(|a| shell_single_quote(a))
             .collect::<Vec<_>>()
             .join(" ")
     );
-    let agent_q = ssh::shell_single_quote(agent.slug());
-    let cwd_q = ssh::shell_single_quote(cwd);
-    let name_q = ssh::shell_single_quote(tmux_name);
+    let agent_q = shell_single_quote(agent.slug());
+    let cwd_q = shell_single_quote(cwd);
+    let name_q = shell_single_quote(tmux_name);
     let legacy_name = tmux_name
         .strip_prefix("faragent-")
         .map(|rest| format!("farssh-{rest}"))
         .unwrap_or_default();
-    let legacy_q = ssh::shell_single_quote(&legacy_name);
-    let inner_q = ssh::shell_single_quote(&inner);
+    let legacy_q = shell_single_quote(&legacy_name);
+    let inner_q = shell_single_quote(&inner);
     format!(
         r#"
 printf 'FARAGENT_START_V1\n'
@@ -911,5 +923,21 @@ proc\tclaude\t
         // POSIX output without proc lines still parses.
         let old = parse_list("FARAGENT_LIST_V1\nfile\tgrok\tx\t1.0\thint\t\n").unwrap();
         assert!(old.procs.is_empty());
+    }
+
+    #[test]
+    fn attach_script_uses_new_socket() {
+        let s = attach_script("faragent-grok-abc123abc123");
+        assert!(s.contains("tmux -L faragent"));
+        assert!(s.contains("$HOME/.faragent/tmux.conf"));
+        assert!(!s.contains("-L farssh"));
+    }
+
+    #[test]
+    fn attach_script_uses_legacy_socket() {
+        let s = attach_script("farssh-grok-abc123abc123");
+        assert!(s.contains("tmux -L farssh"));
+        assert!(s.contains("$HOME/.farssh/tmux.conf"));
+        assert!(!s.contains("-L faragent"));
     }
 }

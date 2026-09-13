@@ -8,9 +8,9 @@
 //! are shared with `remote.rs`; the parsers there never care which dialect
 //! produced the bytes.
 
-use crate::agents::AgentKind;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use faragent_core::agents::AgentKind;
 
 /// Every generated script starts with this so UTF-8 crosses the wire even on
 /// Chinese Windows consoles (whose default code page is GBK).
@@ -19,15 +19,6 @@ pub const UTF8_PREAMBLE: &str =
 
 /// `powershell -NoProfile -ExecutionPolicy Bypass -File - <b64 args…>` — the
 /// canonical non-interactive delivery. The script body goes on stdin.
-pub fn ps_stdin_command(args_b64: &[&str]) -> String {
-    let mut s = String::from("powershell -NoProfile -ExecutionPolicy Bypass -File -");
-    for a in args_b64 {
-        s.push(' ');
-        s.push_str(a);
-    }
-    s
-}
-
 /// `powershell … -EncodedCommand <utf16le-b64>` — for short launchers where
 /// stdin must stay attached to the terminal.
 pub fn encoded_command(script: &str) -> String {
@@ -360,14 +351,6 @@ mod tests {
         // PowerShell's documented sample: `echo hi` → aABpAA==
         assert_eq!(utf16le_b64("hi"), "aABpAA==");
         assert_eq!(utf16le_b64(""), "");
-    }
-
-    #[test]
-    fn ps_stdin_command_carries_args_verbatim() {
-        let cmd = ps_stdin_command(&["QUJD", "REVG"]);
-        assert!(cmd.starts_with("powershell -NoProfile -ExecutionPolicy Bypass -File - "));
-        assert!(cmd.ends_with("QUJD REVG"));
-        assert_ascii("ps_stdin_command", &cmd);
     }
 
     #[test]

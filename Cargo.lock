@@ -276,11 +276,11 @@ name = "faragent"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "base64",
  "clap",
  "crossterm",
  "dirs",
  "faragent-core",
+ "faragent-remote",
  "pretty_assertions",
  "ratatui",
  "serde",
@@ -301,6 +301,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "faragent-remote"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "faragent-core",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
