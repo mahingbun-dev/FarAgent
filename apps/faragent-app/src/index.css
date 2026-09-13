@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: the app toggles `.dark` on <html> (default: follow
+   the system, see src/lib/theme.ts). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * FarAgent design foundation — a warm, Claude-desktop-adjacent language:
+ * ivory paper in light mode, warm charcoal in dark mode, one terracotta
+ * accent, restrained borders, generous whitespace. Everything else is
+ * derived from these tokens; never hard-code a hex in a component.
+ */
+:root {
+  --background: #faf9f5;
+  --foreground: #2d2a26;
+  --card: #ffffff;
+  --card-foreground: #2d2a26;
+  --muted: #f0eee6;
+  --muted-foreground: #6b6560;
+  --border: #e5e1d8;
+  --input: #ded9cd;
+  --ring: #c96442;
+
+  --primary: #c96442;
+  --primary-foreground: #fffaf6;
+  --primary-hover: #b5573a;
+
+  --secondary: #f0eee6;
+  --secondary-foreground: #46413a;
+
+  --success: #4c7a5c;
+  --warning: #b08948;
+  --danger: #b4432f;
+
+  /* Session marks, mirroring the TUI's live/running/idle */
+  --mark-live: #4c7a5c;
+  --mark-running: #b08948;
+  --mark-idle: #a8a29a;
+
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: #262624;
+  --foreground: #f0eee6;
+  --card: #30302e;
+  --card-foreground: #f0eee6;
+  --muted: #37372f;
+  --muted-foreground: #a8a29a;
+  --border: #3e3d38;
+  --input: #47463f;
+  --ring: #d97757;
+
+  --primary: #d97757;
+  --primary-foreground: #2a1a12;
+  --primary-hover: #e08a6c;
+
+  --secondary: #37372f;
+  --secondary-foreground: #e6e2d8;
+
+  --success: #7ba588;
+  --warning: #d0b070;
+  --danger: #d97757;
+
+  --mark-live: #7ba588;
+  --mark-running: #d0b070;
+  --mark-idle: #6b6a63;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-mark-live: var(--mark-live);
+  --color-mark-running: var(--mark-running);
+  --color-mark-idle: var(--mark-idle);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  /* Titles and the wordmark only — the serif is what makes it read as a
+     considered product rather than a developer tool. */
+  --font-display: ui-serif, "New York", "Songti SC", "Noto Serif CJK SC",
+    Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas,
+    "Sarasa Mono SC", "Noto Sans Mono CJK SC", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-background text-foreground font-sans antialiased;
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* The thin, warm scrollbars the rest of the app implies. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}

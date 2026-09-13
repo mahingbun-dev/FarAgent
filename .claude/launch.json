@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "faragent-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/faragent-app", "run", "dev"],
+      "port": 1420
+    }
+  ]
+}

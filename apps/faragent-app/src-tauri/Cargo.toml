@@ -1,0 +1,31 @@
+[package]
+name = "faragent-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent desktop app: hosts, sessions and the remote agent in one window"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name (Windows).
+name = "faragent_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+faragent-core = { path = "../../../crates/faragent-core" }
+faragent-install = { path = "../../../crates/faragent-install" }
+faragent-remote = { path = "../../../crates/faragent-remote" }
+faragent-service = { path = "../../../crates/faragent-service" }
+faragent-transport = { path = "../../../crates/faragent-transport" }
+anyhow.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+portable-pty = "0.9"
