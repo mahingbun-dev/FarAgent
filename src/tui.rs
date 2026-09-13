@@ -1,6 +1,7 @@
 use crate::agents::AgentKind;
 use crate::config;
 use crate::i18n::Lang;
+use crate::install::{self, Plan};
 use crate::probe::{self, Probe};
 use crate::pty;
 use crate::runtime::{self, SessionSummary};
@@ -22,6 +23,7 @@ enum Screen {
     Agents,
     Sessions,
     NewCwd,
+    Confirm,
 }
 
 struct App {
@@ -35,6 +37,7 @@ struct App {
     probe: Option<Probe>,
     sessions: Vec<SessionSummary>,
     cwd_input: String,
+    plan: Option<Plan>,
     status: String,
     error: Option<String>,
     quit: bool,
@@ -65,6 +68,7 @@ impl App {
             probe: None,
             sessions: Vec::new(),
             cwd_input: String::new(),
+            plan: None,
             status,
             error: None,
             quit: false,
@@ -115,7 +119,7 @@ impl App {
                 let n = self.sessions.len() as i32;
                 self.session_idx = (self.session_idx as i32 + delta).rem_euclid(n) as usize;
             }
-            Screen::NewCwd => {}
+            Screen::NewCwd | Screen::Confirm => {}
         }
     }
 }
@@ -153,19 +157,23 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::NewCwd) {
         return handle_cwd_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::Confirm) {
+        return handle_confirm_key(app, key, terminal);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
             Screen::Language | Screen::Hosts => app.quit = true,
             Screen::Agents => {
                 app.screen = Screen::Hosts;
                 app.probe = None;
+                app.plan = None;
                 app.status = app.lang.status_ready().into();
             }
             Screen::Sessions => {
                 app.screen = Screen::Agents;
                 app.status = app.lang.select_agent().into();
             }
-            Screen::NewCwd => {}
+            Screen::NewCwd | Screen::Confirm => {}
         },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),
@@ -180,6 +188,12 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
             app.status = app.lang.status_help().into();
         }
         KeyCode::Char('n') if matches!(app.screen, Screen::Sessions) => begin_new(app),
+        KeyCode::Char('u') | KeyCode::Char('U') if matches!(app.screen, Screen::Agents) => {
+            begin_agent_action(app, terminal, install::Action::Upgrade)?;
+        }
+        KeyCode::Char('x') | KeyCode::Char('X') if matches!(app.screen, Screen::Agents) => {
+            begin_agent_action(app, terminal, install::Action::Uninstall)?;
+        }
         KeyCode::Enter => on_enter(app, terminal)?,
         _ => {}
     }
@@ -273,6 +287,7 @@ fn refresh(app: &mut App) -> Result<()> {
             app.status = app.lang.host_count(app.hosts.len());
         }
         Screen::Agents | Screen::Sessions | Screen::NewCwd => reload_probe_and_sessions(app)?,
+        Screen::Confirm => {}
     }
     app.clamp();
     Ok(())
@@ -303,15 +318,15 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             }
         }
         Screen::Agents => {
-            let Some(probe) = &app.probe else {
-                return Ok(());
-            };
-            if probe.agent(app.agent()).map(|a| a.found) != Some(true) {
-                app.error = Some(app.lang.agent_not_installed(&app.agent().to_string()));
-                return Ok(());
-            }
-            if !probe.tmux.found {
-                app.error = Some(app.lang.tmux_missing().into());
+            let found = app
+                .probe
+                .as_ref()
+                .and_then(|p| p.agent(app.agent()))
+                .map(|a| a.found)
+                == Some(true);
+            let tmux = app.probe.as_ref().map(|p| p.tmux.found) == Some(true);
+            if !found || !tmux {
+                open_confirm(app, terminal, install::Action::Install)?;
                 return Ok(());
             }
             reload_sessions(app)?;
@@ -319,6 +334,7 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             app.session_idx = 0;
             app.status = app.lang.sessions_status().into();
         }
+        Screen::Confirm => {}
         Screen::Sessions => {
             if app.sessions.is_empty() {
                 begin_new(app);
@@ -328,6 +344,107 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
         }
         Screen::NewCwd => {}
     }
+    Ok(())
+}
+
+fn handle_confirm_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::Agents;
+            app.plan = None;
+            app.error = None;
+            app.status = app.lang.select_agent().into();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('r') => {
+            if let Some(action) = app.plan.as_ref().map(|p| p.action) {
+                open_confirm(app, terminal, action)?;
+            }
+        }
+        KeyCode::Enter => execute_plan(app, terminal)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn begin_agent_action(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    action: install::Action,
+) -> Result<()> {
+    let found = app
+        .probe
+        .as_ref()
+        .and_then(|p| p.agent(app.agent()))
+        .map(|a| a.found)
+        == Some(true);
+    match action {
+        install::Action::Uninstall if !found => {
+            app.error = Some(app.lang.no_need_uninstall(&app.agent().to_string()));
+            return Ok(());
+        }
+        install::Action::Upgrade if !found => open_confirm(app, terminal, install::Action::Install),
+        other => open_confirm(app, terminal, other),
+    }
+}
+
+fn open_confirm(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    action: install::Action,
+) -> Result<()> {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    let agent = app.agent();
+    app.status = app.lang.planning().into();
+    app.error = None;
+    terminal.draw(|f| draw(f, app))?;
+    match install::preflight_host(&host, agent) {
+        Ok(pf) => {
+            let plan = install::plan_for(action, agent, &pf);
+            let can = plan.can_run();
+            app.plan = Some(plan);
+            app.screen = Screen::Confirm;
+            app.status = app.lang.confirm_keys_hint(can).into();
+        }
+        Err(e) => {
+            app.error = Some(app.lang.plan_failed(&e.to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(plan) = app.plan.clone() else {
+        return Ok(());
+    };
+    if !plan.can_run() {
+        app.error = Some(app.lang.plan_blocked_enter().into());
+        return Ok(());
+    }
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    app.status = app.lang.running_remote().into();
+    ratatui::restore();
+    let code = pty::run_remote_script(&host, &plan.script);
+    *terminal = ratatui::init();
+    app.screen = Screen::Agents;
+    app.plan = None;
+    match code {
+        Ok(0) => {
+            app.status = app.lang.remote_ok().into();
+            app.error = None;
+        }
+        Ok(c) => {
+            let msg = app.lang.remote_failed(c);
+            app.status = msg.clone();
+            app.error = Some(msg);
+        }
+        Err(e) => app.error = Some(e.to_string()),
+    }
+    let _ = reload_probe_and_sessions(app);
     Ok(())
 }
 
@@ -468,6 +585,23 @@ fn draw(frame: &mut Frame, app: &App) {
             app.agent().title(),
         ),
         Screen::NewCwd => app.lang.new_cwd_title().into(),
+        Screen::Confirm => {
+            let action = app
+                .plan
+                .as_ref()
+                .map(|p| p.action)
+                .unwrap_or(install::Action::Install);
+            let agent = app
+                .plan
+                .as_ref()
+                .map(|p| p.agent.title())
+                .unwrap_or_else(|| app.agent().title());
+            app.lang.confirm_title(
+                action,
+                app.host().map(|h| h.alias.as_str()).unwrap_or("?"),
+                agent,
+            )
+        }
     };
     let header = Paragraph::new(title).block(
         Block::default()
@@ -544,11 +678,16 @@ fn draw(frame: &mut Frame, app: &App) {
             );
             frame.render_widget(p, chunks[1]);
         }
+        Screen::Confirm => draw_confirm(frame, chunks[1], app),
     }
 
     let mut footer_lines = vec![Line::from(app.status.clone())];
     let hint = match app.screen {
         Screen::Language => app.lang.language_keys_hint(),
+        Screen::Agents => app.lang.agents_keys_hint(),
+        Screen::Confirm => app
+            .lang
+            .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
         _ => app.lang.keys_hint(),
     };
     footer_lines.push(Line::from(Span::styled(
@@ -565,6 +704,62 @@ fn draw(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
+}
+
+fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let mut lines: Vec<Line> = Vec::new();
+    match &app.plan {
+        None => lines.push(Line::from(app.lang.planning())),
+        Some(plan) => {
+            if let Some(b) = plan.blocked {
+                lines.push(Line::from(Span::styled(
+                    app.lang.blocked(b),
+                    Style::default().fg(Color::Red),
+                )));
+                lines.push(Line::from(""));
+            }
+            for w in &plan.warnings {
+                lines.push(Line::from(Span::styled(
+                    app.lang.warning(*w),
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            if !plan.warnings.is_empty() {
+                lines.push(Line::from(""));
+            }
+            for (i, step) in plan.steps.iter().enumerate() {
+                let sudo = if step.sudo {
+                    format!("  ({})", app.lang.step_sudo())
+                } else {
+                    String::new()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{}. {}{sudo}", i + 1, step.title),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("   {}", step.command),
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+            if !plan.suggested.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    app.lang.suggested_title(),
+                    Style::default().fg(Color::Yellow),
+                )));
+                for cmd in &plan.suggested {
+                    lines.push(Line::from(format!("  {cmd}")));
+                }
+            }
+        }
+    }
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(app.lang.confirm_list_title())
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(p, area);
 }
 
 fn draw_list(

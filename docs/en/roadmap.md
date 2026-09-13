@@ -12,7 +12,7 @@ Use Windows as both a **client** and a **remote host** without requiring WSL2.
 | --- | --- |
 | Remote | Talk to Win32 OpenSSH + ConPTY directly (`claude` / `codex` / `grok` / `pi` as native Windows binaries) |
 | Persistence | Keep sessions alive without relying on Linux `tmux` (Windows-native session host or equivalent) |
-| Client | `farssh` itself runs on Windows Terminal / PowerShell, not only macOS and Linux |
+| Client | `faragent` itself runs on Windows Terminal / PowerShell, not only macOS and Linux |
 | PATH / probe | Honor user-level PATH, `AppData`, and `%USERPROFILE%\.claude` / `.codex` / `.grok` / `.pi` |
 
 WSL remains supported. Native Windows is additive.
@@ -31,4 +31,4 @@ The manager UI can evolve; remote execution and credentials stay on the host.
 
 ## Still out of scope until separately planned
 
-Password / OTP SSH, ProxyJump, an OpenClaw-style gateway, auto-installing tmux or agents, copying API keys to the laptop.
+Password / OTP SSH, ProxyJump, an OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop.

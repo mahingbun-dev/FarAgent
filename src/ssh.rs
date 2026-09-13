@@ -214,13 +214,27 @@ fn expand_tilde(token: &str) -> Result<String> {
     Ok(token.to_string())
 }
 
-pub fn farssh_home() -> Result<PathBuf> {
+pub const APP_HOME_DIR: &str = ".faragent";
+pub const LEGACY_APP_HOME_DIR: &str = ".farssh";
+
+/// Local config / ControlMaster dir. Renames `~/.farssh` once if the new dir is absent.
+pub fn faragent_home() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot resolve home directory"))?;
-    Ok(home.join(".farssh"))
+    migrate_app_home(&home)
+}
+
+pub fn migrate_app_home(home: &Path) -> Result<PathBuf> {
+    let dest = home.join(APP_HOME_DIR);
+    let src = home.join(LEGACY_APP_HOME_DIR);
+    if !dest.exists() && src.exists() {
+        fs::rename(&src, &dest)
+            .with_context(|| format!("rename {} -> {}", src.display(), dest.display()))?;
+    }
+    Ok(dest)
 }
 
 pub fn control_dir() -> Result<PathBuf> {
-    let dir = farssh_home()?.join("cm");
+    let dir = faragent_home()?.join("cm");
     fs::create_dir_all(&dir).ok();
     let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     Ok(dir)
@@ -479,14 +493,43 @@ Host ignored
 
     #[test]
     fn bash_login_command_is_one_ssh_argv() {
-        let cmd = bash_login_command(r#"printf 'FARSSH_PROBE_V1\n'"#);
+        let cmd = bash_login_command(r#"printf 'FARAGENT_PROBE_V1\n'"#);
         assert!(cmd.starts_with("bash -lc "));
         assert!(
             cmd.contains("'printf"),
             "script must be single-quoted so OpenSSH cannot split it: {cmd}"
         );
-        assert!(cmd.contains("FARSSH_PROBE_V1"));
-        assert_ne!(cmd, r#"bash -lc printf 'FARSSH_PROBE_V1\n'"#);
+        assert!(cmd.contains("FARAGENT_PROBE_V1"));
+        assert_ne!(cmd, r#"bash -lc printf 'FARAGENT_PROBE_V1\n'"#);
+    }
+
+    #[test]
+    fn migrate_renames_legacy_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join(".farssh");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("config.json"), "{}\n").unwrap();
+        let dest = migrate_app_home(tmp.path()).unwrap();
+        assert_eq!(dest, tmp.path().join(".faragent"));
+        assert!(dest.join("config.json").is_file());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn migrate_leaves_existing_new_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join(".farssh");
+        let new = tmp.path().join(".faragent");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        std::fs::write(old.join("config.json"), "old").unwrap();
+        std::fs::write(new.join("config.json"), "new").unwrap();
+        migrate_app_home(tmp.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.json")).unwrap(),
+            "new"
+        );
+        assert!(old.exists());
     }
 
     #[test]

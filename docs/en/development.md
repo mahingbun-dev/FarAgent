@@ -2,19 +2,20 @@
 
 **English** · [中文](../zh/development.md)
 
-How `farssh` is put together, how to hack on it, and how to add another agent. For end users see the [user guide](user-guide.md).
+How `faragent` is put together, how to hack on it, and how to add another agent. For end users see the [user guide](user-guide.md).
 
 ## Repo layout
 
 ```
-farssh/
+faragent/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          CLI (clap): tui / doctor / probe / sessions
-│   ├── tui.rs           ratatui picker (hosts → agents → sessions)
+│   ├── tui.rs           ratatui picker (hosts → agents → confirm → sessions)
 │   ├── ssh.rs           Parse ~/.ssh/config; exec system `ssh`
 │   ├── probe.rs         Deserialize remote probe JSON
-│   ├── runtime.rs       Install helper, list/start tmux sessions
+│   ├── install.rs       Official install/upgrade/uninstall plans + preflight
+│   ├── runtime.rs       List/start tmux sessions
 │   ├── pty.rs           Drop the TUI, `ssh -tt`, restore
 │   ├── agents.rs        Agent ids, tmux names, resume argv (docs + tests)
 │   ├── doctor.rs        Human-readable diagnostics
@@ -27,7 +28,7 @@ farssh/
 └── plans/               Local notes (gitignored)
 ```
 
-Binary name: `farssh`. Edition 2021, Rust 1.80+.
+Binary name: `faragent`. Edition 2021, Rust 1.80+.
 
 ## Architecture
 
@@ -35,22 +36,22 @@ Binary name: `farssh`. Edition 2021, Rust 1.80+.
 laptop                          SSH                         remote account
 ┌─────────────────────┐         ControlMaster         ┌──────────────────────────┐
 │ ratatui picker      │--------- exec bash -lc ------►│ bash: which/find/tmux│
-│ (Rust parses JSONL) │                               │   + tmux -L farssh     │
-│ restore tty         │========= ssh -tt ===========►│ tmux -L farssh      │
-│                     │         PTY + SIGWINCH        │   farssh-<agent>-<shortid>  │
+│ (Rust parses JSONL) │                               │   + tmux -L faragent     │
+│ restore tty         │========= ssh -tt ===========►│ tmux -L faragent      │
+│                     │         PTY + SIGWINCH        │   faragent-<agent>-<shortid>  │
 └─────────────────────┘                               │   exec claude|codex|…    │
                                                       └──────────────────────────┘
 ```
 
-**SSH is never reimplemented.** Flags always include `BatchMode=yes`, `ControlMaster=auto`, `ControlPath=~/.farssh/cm/%r@%h:%p`, `ControlPersist=600`.
+**SSH is never reimplemented.** Flags always include `BatchMode=yes`, `ControlMaster=auto`, `ControlPath=~/.faragent/cm/%r@%h:%p`, `ControlPersist=600`.
 
 **Coding UI is never reimplemented.** After attach, bytes are a raw PTY to the vendor TUI.
 
-**tmux isolation:** `-L farssh` so we do not share the user’s default server. Config is `~/.farssh/tmux.conf` (prefix `C-g`, mouse, RGB). `-f` is ignored if that socket’s server already exists; creating the first session starts it with our file.
+**tmux isolation:** `-L faragent` so we do not share the user’s default server. Config is `~/.faragent/tmux.conf` (prefix `C-g`, mouse, RGB). `-f` is ignored if that socket’s server already exists; creating the first session starts it with our file. List/attach still query the pre-rename socket `-L farssh` so live `farssh-*` sessions survive an upgrade; new sessions are only created on `faragent`.
 
 ## Remote side (no python3)
 
-Logic lives in `src/remote.rs` on the **laptop**. The SSH target only runs `bash -lc` (which, find, tmux) and, on first start, receives `~/.farssh/tmux.conf` via stdin. We do **not** upload a farssh binary: a macOS build cannot run on Linux.
+Logic lives in `src/remote.rs` on the **laptop**. The SSH target only runs `bash -lc` (which, find, tmux) and, on first start, receives `~/.faragent/tmux.conf` via stdin. We do **not** upload a faragent binary: a macOS build cannot run on Linux.
 
 | Local parser | Remote bash |
 | --- | --- |
@@ -58,13 +59,14 @@ Logic lives in `src/remote.rs` on the **laptop**. The SSH target only runs `bash
 | `list` | `find` session files + `tmux list-sessions`; JSON/JSONL parsed here |
 | `start` | `tmux has-session` / `new-session -d` |
 | `ensure` | write `tmux.conf` |
+| `preflight` / `install` | detect curl/node/tmux/pkg manager; run confirmed official installers over `ssh -tt` |
 
 Login shell: every remote invocation is `ssh … bash -lc '…'` so nvm/Homebrew PATH matches an interactive SSH.
 
 ### Tmux naming
 
 ```
-farssh-<agent>-<shortid>
+faragent-<agent>-<shortid>
 ```
 
 `shortid` is the last 12 alphanumeric characters of the vendor session id (`agents::short_id`). New sessions get a fresh 12-char id and start the binary **without** resume.
@@ -78,9 +80,10 @@ farssh-<agent>-<shortid>
 | `ssh.rs` | Wildcard Hosts skipped; `Match` stops parsing; BatchMode in `base_args` |
 | `agents.rs` | Resume argv table must stay aligned with `remote.rs` start_script |
 | `remote.rs` | Probe/list/start text protocol; JSONL meta; no `python` in scripts |
+| `install.rs` | Official URL constants; plan_for fixtures; `bash_login_command` keeps `|` quoted |
 | `tui.rs` | Live row → attach only; idle → `ensure_tmux_session(..., Some(id))` |
 
-PTY attach: `ratatui::restore()`, then `ssh -tt bash -lc 'exec tmux -L farssh attach -t …'`. Detach ends ssh; the picker calls `ratatui::init()` again.
+PTY: `ratatui::restore()`, then `ssh -tt bash -lc '…'` (tmux attach or a confirmed install script). When ssh exits the picker calls `ratatui::init()` again.
 
 ## Develop
 
@@ -89,12 +92,12 @@ rustup toolchain install stable
 cargo test
 cargo fmt
 cargo build
-./target/debug/farssh doctor
+./target/debug/faragent doctor
 ```
 
 There is no remote mock in CI yet. Unit tests cover config parsing, argv, helper syntax. Manual path: [user guide checklist](user-guide.md) against a real Host.
 
-Do not commit `target/` or a remote `~/.farssh` dump.
+Do not commit `target/` or a remote `~/.faragent` dump.
 
 ## Adding an agent
 

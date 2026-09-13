@@ -8,9 +8,11 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
 
-pub const TMUX_SOCKET: &str = "farssh";
+pub const TMUX_SOCKET: &str = "faragent";
+/// Pre-rename isolated tmux server; list/attach still query it.
+pub const LEGACY_TMUX_SOCKET: &str = "farssh";
 
-pub const TMUX_CONF: &str = r#"# Managed by farssh. Applies only to sessions started with -f this file.
+pub const TMUX_CONF: &str = r#"# Managed by faragent. Applies only to sessions started with -f this file.
 set -g prefix C-g
 unbind C-b
 bind C-g send-prefix
@@ -21,7 +23,7 @@ set -g default-terminal "tmux-256color"
 set -as terminal-features ",*:RGB"
 set -g status-position top
 set -g status-left-length 64
-set -g status-left " #[bold]farssh#[default]  prefix C-g · C-g d detach "
+set -g status-left " #[bold]faragent#[default]  prefix C-g · C-g d detach "
 set -g status-right " #{session_name} "
 set -g history-limit 50000
 set -g set-clipboard on
@@ -90,12 +92,12 @@ pub enum StartOutcome {
 }
 
 pub fn write_tmux_conf_script() -> &'static str {
-    r#"mkdir -p "$HOME/.farssh" && cat > "$HOME/.farssh/tmux.conf""#
+    r#"mkdir -p "$HOME/.faragent" && cat > "$HOME/.faragent/tmux.conf""#
 }
 
 pub fn probe_script() -> &'static str {
     r#"
-printf 'FARSSH_PROBE_V1\n'
+printf 'FARAGENT_PROBE_V1\n'
 printf 'home\t%s\n' "$HOME"
 printf 'user\t%s\n' "${USER:-${LOGNAME:-}}"
 printf 'shell\t%s\n' "${SHELL:-}"
@@ -154,7 +156,7 @@ done
 pub fn list_script(agent: AgentKind) -> String {
     let mut s = format!(
         r#"
-printf 'FARSSH_LIST_V1\n'
+printf 'FARAGENT_LIST_V1\n'
 mtime_of() {{
   stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }}
@@ -173,10 +175,12 @@ emit_file() {{
   printf 'file\t%s\t%s\t%s\t%s\t%s\n' "$_agent" "$_id" "$_mt" "$_cwd" "$_b64"
 }}
 if command -v tmux >/dev/null 2>&1; then
-  tmux -L {sock} -f "$HOME/.farssh/tmux.conf" list-sessions -F 'tmux	#{{session_name}}	#{{pane_current_path}}' 2>/dev/null || true
+  tmux -L {sock} -f "$HOME/.faragent/tmux.conf" list-sessions -F 'tmux	#{{session_name}}	#{{pane_current_path}}' 2>/dev/null || true
+  tmux -L {legacy} list-sessions -F 'tmux	#{{session_name}}	#{{pane_current_path}}' 2>/dev/null || true
 fi
 "#,
-        sock = TMUX_SOCKET
+        sock = TMUX_SOCKET,
+        legacy = LEGACY_TMUX_SOCKET
     );
     match agent {
         AgentKind::Grok => s.push_str(
@@ -257,12 +261,17 @@ pub fn start_script(
     let agent_q = ssh::shell_single_quote(agent.slug());
     let cwd_q = ssh::shell_single_quote(cwd);
     let name_q = ssh::shell_single_quote(tmux_name);
+    let legacy_name = tmux_name
+        .strip_prefix("faragent-")
+        .map(|rest| format!("farssh-{rest}"))
+        .unwrap_or_default();
+    let legacy_q = ssh::shell_single_quote(&legacy_name);
     let inner_q = ssh::shell_single_quote(&inner);
     format!(
         r#"
-printf 'FARSSH_START_V1\n'
+printf 'FARAGENT_START_V1\n'
 if ! command -v tmux >/dev/null 2>&1; then
-  printf 'err\ttmux_missing\tInstall tmux on the remote host; farssh will not install it.\n'
+  printf 'err\ttmux_missing\ttmux is not on PATH; install it from the FarAgent agent list.\n'
   exit 0
 fi
 if ! command -v {agent_q} >/dev/null 2>&1; then
@@ -273,11 +282,15 @@ if [ ! -d {cwd_q} ]; then
   printf 'err\tcwd_missing\tNot a directory.\n'
   exit 0
 fi
-if tmux -L {sock} -f "$HOME/.farssh/tmux.conf" has-session -t {name_q} 2>/dev/null; then
+if tmux -L {sock} -f "$HOME/.faragent/tmux.conf" has-session -t {name_q} 2>/dev/null; then
   printf 'ok\texists\t%s\n' {name_q}
   exit 0
 fi
-_err=$(tmux -L {sock} -f "$HOME/.farssh/tmux.conf" new-session -d -s {name_q} -c {cwd_q} -- bash -lc {inner_q} 2>&1)
+if [ -n {legacy_q} ] && tmux -L {legacy_sock} has-session -t {legacy_q} 2>/dev/null; then
+  printf 'ok\texists\t%s\n' {legacy_q}
+  exit 0
+fi
+_err=$(tmux -L {sock} -f "$HOME/.faragent/tmux.conf" new-session -d -s {name_q} -c {cwd_q} -- bash -lc {inner_q} 2>&1)
 _st=$?
 if [ "$_st" -ne 0 ]; then
   _err=$(printf '%s' "$_err" | tr '\t\n\r' '   ' | cut -c1-400)
@@ -289,13 +302,15 @@ printf 'ok\tcreated\t%s\n' {name_q}
         agent_q = agent_q,
         cwd_q = cwd_q,
         name_q = name_q,
+        legacy_q = legacy_q,
         inner_q = inner_q,
         sock = TMUX_SOCKET,
+        legacy_sock = LEGACY_TMUX_SOCKET,
     )
 }
 
 pub fn parse_probe(text: &str) -> Result<Probe> {
-    let body = after_magic(text, "FARSSH_PROBE_V1")?;
+    let body = after_magic(text, "FARAGENT_PROBE_V1")?;
     let mut home = String::new();
     let mut shell = String::new();
     let mut path = String::new();
@@ -304,7 +319,7 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
     let mut agents = Vec::new();
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
-        if line.is_empty() || line == "FARSSH_PROBE_V1" {
+        if line.is_empty() || line == "FARAGENT_PROBE_V1" {
             continue;
         }
         let cols: Vec<&str> = line.split('\t').collect();
@@ -348,12 +363,12 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
 }
 
 pub fn parse_list(text: &str) -> Result<ListDump> {
-    let body = after_magic(text, "FARSSH_LIST_V1")?;
+    let body = after_magic(text, "FARAGENT_LIST_V1")?;
     let mut tmux = Vec::new();
     let mut files = Vec::new();
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
-        if line.is_empty() || line == "FARSSH_LIST_V1" {
+        if line.is_empty() || line == "FARAGENT_LIST_V1" {
             continue;
         }
         let kind = line.split('\t').next().unwrap_or("");
@@ -387,7 +402,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
 }
 
 pub fn parse_start(text: &str) -> Result<StartOutcome> {
-    let body = after_magic(text, "FARSSH_START_V1")?;
+    let body = after_magic(text, "FARAGENT_START_V1")?;
     let mut last: Option<StartOutcome> = None;
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
@@ -600,17 +615,24 @@ mod tests {
     fn scripts_have_no_python() {
         assert!(!probe_script().contains("python"));
         assert!(!list_script(AgentKind::Grok).contains("python"));
-        assert!(!start_script(AgentKind::Grok, "/tmp", None, "farssh-grok-abc").contains("python"));
-        assert!(probe_script().contains("FARSSH_PROBE_V1"));
+        assert!(
+            !start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc").contains("python")
+        );
+        assert!(probe_script().contains("FARAGENT_PROBE_V1"));
         assert!(TMUX_CONF.contains("prefix C-g"));
-        assert_eq!(TMUX_SOCKET, "farssh");
+        assert_eq!(TMUX_SOCKET, "faragent");
+        assert!(list_script(AgentKind::Grok).contains("tmux -L faragent"));
+        assert!(list_script(AgentKind::Grok).contains("tmux -L farssh"));
+        let start = start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc");
+        assert!(start.contains("$HOME/.faragent/tmux.conf"));
+        assert!(start.contains("tmux -L farssh"));
     }
 
     #[test]
     fn parse_probe_sample() {
         let text = "\
 login banner
-FARSSH_PROBE_V1
+FARAGENT_PROBE_V1
 home	/home/me
 user	me
 shell	/bin/bash
@@ -669,12 +691,12 @@ agent	pi			missing
 
     #[test]
     fn parse_start_ok_and_err() {
-        let ok = parse_start("FARSSH_START_V1\nok\tcreated\tfarssh-grok-abc\n").unwrap();
+        let ok = parse_start("FARAGENT_START_V1\nok\tcreated\tfaragent-grok-abc\n").unwrap();
         match ok {
-            StartOutcome::Ok { tmux } => assert_eq!(tmux, "farssh-grok-abc"),
+            StartOutcome::Ok { tmux } => assert_eq!(tmux, "faragent-grok-abc"),
             _ => panic!("expected ok"),
         }
-        let err = parse_start("FARSSH_START_V1\nerr\ttmux_missing\tInstall tmux\n").unwrap();
+        let err = parse_start("FARAGENT_START_V1\nerr\ttmux_missing\tInstall tmux\n").unwrap();
         match err {
             StartOutcome::Err { error, .. } => assert_eq!(error, "tmux_missing"),
             _ => panic!("expected err"),

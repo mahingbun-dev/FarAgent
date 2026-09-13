@@ -84,17 +84,16 @@ pub fn ensure_tmux_session(
 }
 
 fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
-    let prefix = format!("farssh-{}-", agent.slug());
     let live_tmux: HashSet<String> = dump
         .tmux
         .iter()
         .map(|(n, _)| n.clone())
-        .filter(|n| n.starts_with(&prefix))
+        .filter(|n| agents::tmux_id_from_name(agent, n).is_some())
         .collect();
     let tmux_cwd: std::collections::HashMap<String, String> = dump
         .tmux
         .into_iter()
-        .filter(|(n, _)| n.starts_with(&prefix))
+        .filter(|(n, _)| agents::tmux_id_from_name(agent, n).is_some())
         .collect();
 
     let mut rows: Vec<SessionSummary> = dump
@@ -106,9 +105,16 @@ fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
 
     let mut seen: HashSet<String> = HashSet::new();
     for row in &mut rows {
-        if let Some(name) = &row.tmux {
-            row.live = live_tmux.contains(name);
-            seen.insert(name.clone());
+        let new_name = agents::tmux_name(agent, &row.id);
+        let old_name = agents::legacy_tmux_name(agent, &row.id);
+        if live_tmux.contains(&new_name) {
+            row.live = true;
+            row.tmux = Some(new_name.clone());
+            seen.insert(new_name);
+        } else if live_tmux.contains(&old_name) {
+            row.live = true;
+            row.tmux = Some(old_name.clone());
+            seen.insert(old_name);
         }
     }
 
@@ -116,7 +122,9 @@ fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
         if seen.contains(name) {
             continue;
         }
-        let id = name[prefix.len()..].to_string();
+        let id = agents::tmux_id_from_name(agent, name)
+            .unwrap_or(name)
+            .to_string();
         rows.push(SessionSummary {
             id,
             agent: agent.slug().into(),
@@ -189,7 +197,7 @@ mod tests {
     fn merge_marks_live_tmux_and_disk() {
         let dump = ListDump {
             tmux: vec![
-                ("farssh-grok-abc123abc123".into(), "/tmp/p".into()),
+                ("faragent-grok-abc123abc123".into(), "/tmp/p".into()),
                 ("other".into(), "/x".into()),
             ],
             files: vec![DiskFile {
@@ -210,7 +218,7 @@ mod tests {
     #[test]
     fn live_only_tmux_becomes_row() {
         let dump = ListDump {
-            tmux: vec![("farssh-pi-newsession01".into(), "/work".into())],
+            tmux: vec![("faragent-pi-newsession01".into(), "/work".into())],
             files: vec![],
         };
         let rows = merge_sessions(AgentKind::Pi, dump);
@@ -218,5 +226,40 @@ mod tests {
         assert!(rows[0].live);
         assert_eq!(rows[0].cwd.as_deref(), Some("/work"));
         assert_eq!(rows[0].title.as_deref(), Some("(live)"));
+    }
+
+    #[test]
+    fn merge_marks_legacy_live_tmux() {
+        let dump = ListDump {
+            tmux: vec![("farssh-grok-abc123abc123".into(), "/tmp/p".into())],
+            files: vec![DiskFile {
+                agent: "grok".into(),
+                id: "abc123abc123".into(),
+                mtime: 10.0,
+                cwd_hint: "%2Ftmp%2Fp".into(),
+                body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+            }],
+        };
+        let rows = merge_sessions(AgentKind::Grok, dump);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].live);
+        assert_eq!(rows[0].tmux.as_deref(), Some("farssh-grok-abc123abc123"));
+    }
+
+    #[test]
+    fn merge_lists_both_prefixes() {
+        let dump = ListDump {
+            tmux: vec![
+                ("farssh-grok-abc123abc123".into(), "/tmp/old".into()),
+                ("faragent-grok-def456def456".into(), "/tmp/new".into()),
+            ],
+            files: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Grok, dump);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.live));
+        let names: HashSet<_> = rows.iter().filter_map(|r| r.tmux.as_deref()).collect();
+        assert!(names.contains("farssh-grok-abc123abc123"));
+        assert!(names.contains("faragent-grok-def456def456"));
     }
 }

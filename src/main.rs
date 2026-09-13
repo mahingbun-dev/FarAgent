@@ -2,6 +2,7 @@ mod agents;
 mod config;
 mod doctor;
 mod i18n;
+mod install;
 mod probe;
 mod pty;
 mod remote;
@@ -14,9 +15,9 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "farssh",
+    name = "faragent",
     version,
-    about = "FarSSH: attach to coding agents on your own machines over SSH"
+    about = "FarAgent: attach to coding agents already installed on your own machines"
 )]
 struct Cli {
     #[command(subcommand)]

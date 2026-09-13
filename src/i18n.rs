@@ -1,4 +1,4 @@
-//! UI language. Chosen once, stored in `~/.farssh/config.json`.
+//! UI language. Chosen once, stored in `~/.faragent/config.json`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -33,31 +33,31 @@ impl Lang {
 
     pub fn hosts_title(self) -> &'static str {
         match self {
-            Self::Zh => "FarSSH · 主机",
-            Self::En => "FarSSH · hosts",
+            Self::Zh => "FarAgent · 主机",
+            Self::En => "FarAgent · hosts",
         }
     }
 
     pub fn agents_title(self, host: &str) -> String {
         match self {
-            Self::Zh => format!("FarSSH · {host} · 编程助手"),
-            Self::En => format!("FarSSH · {host} · agents"),
+            Self::Zh => format!("FarAgent · {host} · 编程助手"),
+            Self::En => format!("FarAgent · {host} · agents"),
         }
     }
 
     pub fn sessions_title(self, host: &str, agent: &str) -> String {
-        format!("FarSSH · {host} · {agent}")
+        format!("FarAgent · {host} · {agent}")
     }
 
     pub fn new_cwd_title(self) -> &'static str {
         match self {
-            Self::Zh => "FarSSH · 新会话 · 远程目录",
-            Self::En => "FarSSH · new session · remote cwd",
+            Self::Zh => "FarAgent · 新会话 · 远程目录",
+            Self::En => "FarAgent · new session · remote cwd",
         }
     }
 
     pub fn language_title(self) -> &'static str {
-        "FarSSH · language / 语言"
+        "FarAgent · language / 语言"
     }
 
     pub fn hosts_list_title(self) -> &'static str {
@@ -98,6 +98,26 @@ impl Lang {
             Self::En => {
                 "enter open · n new · r refresh · L language · q back · agent detach: C-g d"
             }
+        }
+    }
+
+    pub fn agents_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => {
+                "回车 会话/安装 · U 升级 · X 卸载 · r 刷新 · q 返回 · 助手内断开: C-g d"
+            }
+            Self::En => {
+                "enter sessions/install · U upgrade · X uninstall · r refresh · q back · detach: C-g d"
+            }
+        }
+    }
+
+    pub fn confirm_keys_hint(self, can_run: bool) -> &'static str {
+        match (self, can_run) {
+            (Self::Zh, true) => "回车 执行（过程会直播） · Esc 取消",
+            (Self::En, true) => "enter run (live PTY) · esc cancel",
+            (Self::Zh, false) => "无法执行 · Esc 返回（下方有可复制命令）",
+            (Self::En, false) => "cannot run · esc back (copy-paste commands below)",
         }
     }
 
@@ -153,8 +173,8 @@ impl Lang {
 
     pub fn select_agent(self) -> &'static str {
         match self {
-            Self::Zh => "选择助手 · 回车进入会话 · q 返回",
-            Self::En => "select an agent · enter sessions · q back",
+            Self::Zh => "选择助手 · 回车进入会话或安装 · U 升级 · X 卸载",
+            Self::En => "select an agent · enter sessions or install · U upgrade · X uninstall",
         }
     }
 
@@ -215,12 +235,11 @@ impl Lang {
         }
     }
 
+    #[allow(dead_code)]
     pub fn tmux_missing(self) -> &'static str {
         match self {
-            Self::Zh => "远程未安装 tmux。请自行安装，farssh 不会代装。",
-            Self::En => {
-                "tmux is not installed on the remote. Install it yourself; farssh will not."
-            }
+            Self::Zh => "远程未安装 tmux。回车可按官方/系统包管理器安装。",
+            Self::En => "tmux is not installed on the remote. Enter to install it.",
         }
     }
 
@@ -238,6 +257,7 @@ impl Lang {
         }
     }
 
+    #[allow(dead_code)]
     pub fn agent_not_installed(self, name: &str) -> String {
         match self {
             Self::Zh => format!("{name} 未安装"),
@@ -245,10 +265,18 @@ impl Lang {
         }
     }
 
+    #[allow(dead_code)]
     pub fn not_installed(self) -> &'static str {
         match self {
             Self::Zh => "未安装",
             Self::En => "not installed",
+        }
+    }
+
+    pub fn not_installed_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "未安装 · 回车安装",
+            Self::En => "not installed · enter to install",
         }
     }
 
@@ -297,11 +325,11 @@ impl Lang {
     pub fn language_saved(self) -> String {
         match self {
             Self::Zh => format!(
-                "界面语言已保存到 ~/.farssh/config.json（{}）。之后不会再问。",
+                "界面语言已保存到 ~/.faragent/config.json（{}）。之后不会再问。",
                 self.native_name()
             ),
             Self::En => format!(
-                "Language saved to ~/.farssh/config.json ({}). Won't ask again.",
+                "Language saved to ~/.faragent/config.json ({}). Won't ask again.",
                 self.native_name()
             ),
         }
@@ -309,8 +337,141 @@ impl Lang {
 
     pub fn language_save_failed(self, err: &str) -> String {
         match self {
-            Self::Zh => format!("无法写入 ~/.farssh/config.json: {err}"),
-            Self::En => format!("could not write ~/.farssh/config.json: {err}"),
+            Self::Zh => format!("无法写入 ~/.faragent/config.json: {err}"),
+            Self::En => format!("could not write ~/.faragent/config.json: {err}"),
+        }
+    }
+
+    pub fn confirm_title(self, action: crate::install::Action, host: &str, agent: &str) -> String {
+        use crate::install::Action;
+        match (self, action) {
+            (Self::Zh, Action::Install) => format!("FarAgent · {host} · 安装 {agent}"),
+            (Self::En, Action::Install) => format!("FarAgent · {host} · install {agent}"),
+            (Self::Zh, Action::Upgrade) => format!("FarAgent · {host} · 升级 {agent}"),
+            (Self::En, Action::Upgrade) => format!("FarAgent · {host} · upgrade {agent}"),
+            (Self::Zh, Action::Uninstall) => format!("FarAgent · {host} · 卸载 {agent}"),
+            (Self::En, Action::Uninstall) => format!("FarAgent · {host} · uninstall {agent}"),
+        }
+    }
+
+    pub fn confirm_list_title(self) -> &'static str {
+        match self {
+            Self::Zh => "将在远程执行的命令（确认后直播输出）",
+            Self::En => "commands that will run on the remote (live after confirm)",
+        }
+    }
+
+    pub fn planning(self) -> &'static str {
+        match self {
+            Self::Zh => "正在生成安装计划…",
+            Self::En => "building install plan…",
+        }
+    }
+
+    pub fn plan_failed(self, err: &str) -> String {
+        match self {
+            Self::Zh => format!("无法生成安装计划: {err}"),
+            Self::En => format!("could not build install plan: {err}"),
+        }
+    }
+
+    pub fn no_need_uninstall(self, name: &str) -> String {
+        match self {
+            Self::Zh => format!("{name} 未安装，无需卸载"),
+            Self::En => format!("{name} is not installed; nothing to uninstall"),
+        }
+    }
+
+    pub fn step_sudo(self) -> &'static str {
+        match self {
+            Self::Zh => "需要 sudo",
+            Self::En => "needs sudo",
+        }
+    }
+
+    pub fn warning(self, w: crate::install::Warning) -> String {
+        use crate::install::Warning;
+        match (self, w) {
+            (Self::Zh, Warning::LiveTmux) => {
+                "警告：该助手还有 live tmux 会话。卸载可能打断正在跑的 TUI，仍可继续。".into()
+            }
+            (Self::En, Warning::LiveTmux) => {
+                "Warning: this agent still has a live tmux session. Uninstall may interrupt it."
+                    .into()
+            }
+            (Self::Zh, Warning::TmuxSkippedNoPkg) => {
+                "未找到 brew/apt/dnf/yum/pacman/apk，跳过代装 tmux。可复制下方命令自行安装。".into()
+            }
+            (Self::En, Warning::TmuxSkippedNoPkg) => {
+                "No brew/apt/dnf/yum/pacman/apk; skipping tmux. Copy a command below to install it yourself."
+                    .into()
+            }
+            (Self::Zh, Warning::NeedsSudo) => {
+                "有步骤需要 sudo。执行时若提示密码，在直播终端里输入（本机不保存）。".into()
+            }
+            (Self::En, Warning::NeedsSudo) => {
+                "A step needs sudo. Type the password in the live terminal if asked (not stored locally)."
+                    .into()
+            }
+        }
+    }
+
+    pub fn blocked(self, b: crate::install::Blocked) -> String {
+        use crate::install::Blocked;
+        match (self, b) {
+            (Self::Zh, Blocked::NoCurlNoPkg) => {
+                "远程没有 curl，也没有可识别的包管理器。请先自行安装 curl，命令见下方。".into()
+            }
+            (Self::En, Blocked::NoCurlNoPkg) => {
+                "Remote has no curl and no known package manager. Install curl yourself (commands below)."
+                    .into()
+            }
+            (Self::Zh, Blocked::TmuxOnlyNoPkg) => {
+                "远程没有 tmux，也没有 brew/apt/dnf/yum/pacman/apk。请自行安装 tmux。".into()
+            }
+            (Self::En, Blocked::TmuxOnlyNoPkg) => {
+                "Remote has no tmux and no brew/apt/dnf/yum/pacman/apk. Install tmux yourself."
+                    .into()
+            }
+            (Self::Zh, Blocked::NotInstalled) => "未安装，无需卸载。".into(),
+            (Self::En, Blocked::NotInstalled) => "Not installed; nothing to uninstall.".into(),
+            (Self::Zh, Blocked::NothingToDo) => "没有需要执行的步骤。".into(),
+            (Self::En, Blocked::NothingToDo) => "Nothing to do.".into(),
+        }
+    }
+
+    pub fn suggested_title(self) -> &'static str {
+        match self {
+            Self::Zh => "可复制命令（FarAgent 不会执行这些）：",
+            Self::En => "Copy-paste (FarAgent will not run these):",
+        }
+    }
+
+    pub fn running_remote(self) -> &'static str {
+        match self {
+            Self::Zh => "正在远程执行（直播输出，完成后按回车返回）…",
+            Self::En => "running on the remote (live output; Enter when done to return)…",
+        }
+    }
+
+    pub fn remote_ok(self) -> &'static str {
+        match self {
+            Self::Zh => "远程命令成功 · 已重新探测",
+            Self::En => "remote command succeeded · re-probed",
+        }
+    }
+
+    pub fn remote_failed(self, code: i32) -> String {
+        match self {
+            Self::Zh => format!("远程命令失败（退出码 {code}）。错误见刚才的直播输出。"),
+            Self::En => format!("remote command failed (exit {code}). See the live output."),
+        }
+    }
+
+    pub fn plan_blocked_enter(self) -> &'static str {
+        match self {
+            Self::Zh => "当前计划无法执行。Esc 返回。",
+            Self::En => "This plan cannot run. Esc to go back.",
         }
     }
 }

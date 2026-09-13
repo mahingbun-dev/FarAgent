@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="docs/assets/logo.jpg" width="120" height="120" alt="farssh">
+  <img src="docs/assets/logo.jpg" width="120" height="120" alt="faragent">
 </p>
 
-<h1 align="center">FarSSH</h1>
+<h1 align="center">FarAgent</h1>
 
 <p align="center"><a href="README.md">English</a> · <strong>中文</strong></p>
 
 <p align="center">
   <strong>远在你家机器上的 coding agent，用 SSH 接上原生 TUI。</strong><br>
-  命令：<code>farssh</code>
+  命令：<code>faragent</code>
 </p>
 
 <p align="center">
@@ -27,13 +27,13 @@
 
 ---
 
-**FarSSH**（命令 `farssh`）把你的终端接到 **已经装在自己机器上** 的 Claude Code、Codex、Grok Build、Pi。它不是 Herdr/ccmux 那种本地 mux，也不是把密钥隧道回本机：推理仍走远程配置。
+**FarAgent**（命令 `faragent`）把你的终端接到 **已经装在自己机器上** 的 Claude Code、Codex、Grok Build、Pi。它不是 Herdr/ccmux 那种本地 mux，也不是把密钥隧道回本机：推理仍走远程配置。（曾用名 FarSSH。）
 
-大模型、项目文件、MCP、API 密钥都留在远程。合上笔记本不会杀掉 agent——它在 tmux 里继续跑。之后再打开 `farssh`，attach 同一个窗格即可。
+大模型、项目文件、MCP、API 密钥都留在远程。合上笔记本不会杀掉 agent——它在 tmux 里继续跑。之后再打开 `faragent`，attach 同一个窗格即可。
 
 ## 为什么需要它
 
-| 你现在已经在做的事 | 没有 farssh | 有 farssh |
+| 你现在已经在做的事 | 没有 faragent | 有 faragent |
 | --- | --- | --- |
 | `ssh devbox` 再自己记 `tmux attach` | 容易在同一仓库再拉起第二个 Codex/Claude | 主机 → agent → 会话，**live 只 attach** |
 | Claude / ChatGPT / Grok 订阅在家里那台机器上 | 把密钥拷到咖啡馆笔记本很危险 | 密钥不离开远程 |
@@ -45,29 +45,30 @@
 
 ```mermaid
 flowchart LR
-  You[你的笔记本<br/>farssh TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[远程登录壳]
+  You[你的笔记本<br/>faragent TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[远程登录壳]
   Probe --> List[探测 claude / codex / grok / pi<br/>列出磁盘会话]
-  You -->|ssh -tt PTY| Tmux[tmux socket: farssh]
+  You -->|ssh -tt PTY| Tmux[tmux socket: faragent]
   Tmux --> Agent[原生 TUI<br/>权限、slash、鼠标]
 ```
 
 1. 从 `~/.ssh/config` 选一个具体 `Host`（`*` 通配会被忽略）。
 2. 用远程 **登录壳** 探测，这样 nvm / Homebrew / `~/.local/bin` 仍然有效。
 3. 选择 agent 和会话，或在远程目录里新建。
-4. 在独立 tmux socket `farssh` 上创建或复用会话（不碰你日常的 tmux）。
+4. 在独立 tmux socket `faragent` 上创建或复用会话（不碰你日常的 tmux）。
 5. 本机终端变成远程 agent。用 **`Ctrl-g d`** detach。以后再 attach；不要对 live 进程再 `resume`。
 
 ## 功能
 
-- **四家 agent，一个选择器** — Claude Code、Codex、Grok Build、Pi；未安装显示 `not installed`，已安装显示版本。
+- **四家 agent，一个选择器** — Claude Code、Codex、Grok Build、Pi；未安装显示「未安装 · 回车安装」。
 - **原生 vibe coding** — 不是自研聊天界面。slash、diff、权限提示都是该 agent 自己的。
 - **会话列表** — 磁盘上的 idle 记录，加上 **live** 的 tmux 窗格。
 - **安全重连** — live 只 attach，避免两个 Codex 同时改同一仓库（[openai/codex#30424](https://github.com/openai/codex/issues/30424)）。
-- **远程仍是你的** — 不在主机上装软件，不把 API key 拷到本机，不对外监听端口；流量走 SSH。
-- **Doctor** — `farssh doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
+- **远程仍是你的** — 官方安装器在你确认命令之后跑在那台机器上；API key 留在远程；不对外监听；流量走 SSH。
+- **安装 / 升级 / 卸载** — 确认屏列出每条命令，然后 `ssh -tt` 直播过程。agent：官方 `curl | bash`，用户目录，不用 sudo。tmux/curl 可用 sudo + brew/apt/dnf/yum/pacman/apk。
+- **Doctor** — `faragent doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
 
 ```
-┌ FarSSH · home-mac · Grok Build ──────────────────────────┐
+┌ FarAgent · home-mac · Grok Build ──────────────────────────┐
 │ sessions  [live]=tmux still running                          │
 │ ▸ [live]  SSH passthrough TUI   (/Users/you/code/app)        │
 │   [idle]  Fix flaky tests       (/Users/you/code/app)        │
@@ -82,11 +83,11 @@ flowchart LR
 
 **本机：** macOS 或 Linux，OpenSSH，对该 Host **密钥免密**（BatchMode，不能弹密码）。
 
-**远程：** `sshd`、`bash`、`tmux`，以及至少一个已登录的 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
+**远程：** `sshd` 和 `bash`。缺 tmux 或缺 agent 可从 TUI 代装。请在那台机器上登录一次 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
 
 ```bash
-git clone https://github.com/mahingbun-dev/FarSSH.git
-cd FarSSH
+git clone https://github.com/mahingbun-dev/FarAgent.git
+cd FarAgent
 cargo install --path .
 ```
 
@@ -100,8 +101,8 @@ Host home-mac
 
 ```bash
 ssh home-mac true          # 必须免密成功
-farssh doctor --host home-mac
-farssh                 # TUI：主机 → agent → 会话
+faragent doctor --host home-mac
+faragent                 # TUI：主机 → agent → 会话
 ```
 
 在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。
@@ -124,7 +125,7 @@ farssh                 # TUI：主机 → agent → 会话
 
 v0.1 适合已经习惯 SSH 的人。接下来要做：**Windows 原生（不使用 WSL）**，以及 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
 
-当前计划之外：密码 SSH、ProxyJump、代装 tmux 或 agent。
+当前计划之外：密码 SSH、ProxyJump。
 
 ## 许可证
 
