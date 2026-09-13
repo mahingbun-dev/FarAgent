@@ -21,6 +21,13 @@ pub fn attach_win(host: &str, cwd: &str, argv: &[String]) -> Result<i32> {
     run_remote_line(host, &crate::win::attach_launcher(cwd, argv))
 }
 
+/// Hands the tty to a PowerShell script (install/upgrade/uninstall plans).
+/// No stdin payload: the script rides an EncodedCommand and plans are short
+/// by construction, so the command-line stays well under cmd.exe's limit.
+pub fn run_remote_ps(host: &str, script: &str) -> Result<i32> {
+    run_remote_line(host, &crate::win::encoded_command(script))
+}
+
 /// Socket + conf follow the session name so pre-rename live panes still attach.
 pub fn attach_script(tmux_name: &str) -> String {
     let name_q = ssh::shell_single_quote(tmux_name);

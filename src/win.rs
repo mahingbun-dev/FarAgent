@@ -127,6 +127,35 @@ foreach ($a in @('claude','codex','grok','pi')) {{
     )
 }
 
+/// Install preflight in the shared `FARAGENT_PREFLIGHT_V1` protocol. There is
+/// no tmux or curl bootstrap on Windows; winget is the only package manager
+/// the planner can use (user-scope installs, no admin).
+pub fn preflight_script(agent: AgentKind) -> String {
+    format!(
+        r#"{UTF8_PREAMBLE}
+Write-Output 'FARAGENT_PREFLIGHT_V1'
+Write-Output "os`twindows"
+Write-Output "home`t$env:USERPROFILE"
+function Src([string]$n) {{
+  $c = Get-Command $n -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($c -and $c.Source) {{ return $c.Source }}
+  return ''
+}}
+Write-Output ("curl`t" + (Src 'curl.exe'))
+Write-Output ("node`t" + (Src 'node'))
+Write-Output ("npm`t" + (Src 'npm'))
+Write-Output 'nvm`t0'
+Write-Output 'tmux`t'
+$wg = Src 'winget'
+Write-Output ("winget`t" + $wg)
+if ($wg) {{ Write-Output 'pkg`twinget' }} else {{ Write-Output 'pkg`t' }}
+Write-Output ("agent_path`t" + (Src '{slug}'))
+Write-Output 'live`t0'
+"#,
+        slug = agent.slug(),
+    )
+}
+
 /// Session list for one agent: disk transcripts (`file` lines, same shapes and
 /// hint conventions as the POSIX script) plus a process scan that emits
 /// `proc\t<agent>\t<session-id-or-empty>` for anything that looks like this

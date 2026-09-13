@@ -856,7 +856,10 @@ fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     };
     app.status = app.lang.running_remote().into();
     ratatui::restore();
-    let code = pty::run_remote_script(&host, &plan.script);
+    let code = match probe_os(app) {
+        crate::remote::HostOs::Posix => pty::run_remote_script(&host, &plan.script),
+        crate::remote::HostOs::Windows => pty::run_remote_ps(&host, &plan.script),
+    };
     *terminal = ratatui::init();
     app.screen = Screen::Agents;
     app.plan = None;

@@ -89,9 +89,15 @@ pub fn run(host: Option<&str>) -> Result<()> {
                 println!("  {}", probe::format_agent_line(kind, &p));
                 let found = p.agent(kind).map(|a| a.found) == Some(true);
                 if !found {
-                    println!("      install: {}", install::agent_install_command(kind));
+                    println!(
+                        "      install: {}",
+                        install::agent_install_command(kind, p.os)
+                    );
                 } else {
-                    println!("      upgrade: {}", install::agent_upgrade_command(kind));
+                    println!(
+                        "      upgrade: {}",
+                        install::agent_upgrade_command(kind, p.os)
+                    );
                 }
             }
             println!("PATH (login shell): {}", p.path);
