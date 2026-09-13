@@ -1,4 +1,5 @@
 mod agents;
+mod askpass;
 mod config;
 mod diagnose;
 mod doctor;
@@ -10,6 +11,7 @@ mod remote;
 mod runtime;
 mod ssh;
 mod tui;
+mod win;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -66,9 +68,18 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // OpenSSH invokes us as `faragent "<prompt>"` when acting as askpass.
+    if askpass::is_child() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        std::process::exit(askpass::run_child(&args));
+    }
     let cli = Cli::parse();
     match cli.command {
-        None | Some(Command::Tui) => tui::run(),
+        None | Some(Command::Tui) => {
+            let result = tui::run();
+            askpass::clear();
+            result
+        }
         Some(Command::Doctor { host }) => doctor::run(host.as_deref()),
         Some(Command::Probe { host }) => report(&host, probe_json(&host)),
         Some(Command::Sessions { host, agent }) => report(&host, sessions_json(&host, &agent)),
@@ -104,7 +115,8 @@ fn probe_json(host: &str) -> Result<()> {
 
 fn sessions_json(host: &str, agent: &str) -> Result<()> {
     let kind = agents::AgentKind::parse(agent)?;
-    let rows = runtime::list_sessions(host, kind)?;
+    let os = probe::host_os(host)?;
+    let rows = runtime::list_sessions(host, kind, os)?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
 }
@@ -128,7 +140,7 @@ fn login(host: &str) -> Result<()> {
     let mode = config::auth_for(host);
     let client = ssh::Client::new(host)?;
     let code = pty::interactive_connect(host, mode, lang)?;
-    let out = client.exec(&["true"])?;
+    let out = client.exec_raw_line(ssh::REMOTE_PING)?;
     if out.status.success() {
         println!("{}", lang.login_ok(host));
         return Ok(());
@@ -151,6 +163,7 @@ fn login(host: &str) -> Result<()> {
 fn json_probe(p: &probe::Probe) -> serde_json::Value {
     serde_json::json!({
         "home": p.home,
+        "os": p.os.slug(),
         "shell": p.shell,
         "path": p.path,
         "tmux": {

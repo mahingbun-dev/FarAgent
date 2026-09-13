@@ -70,8 +70,10 @@ impl Lang {
         }
     }
 
-    /// Body of the confirmation screen. The `mkdir` line is highlighted.
-    pub fn new_dir_lines(self, dir: &str) -> Vec<String> {
+    /// Body of the confirmation screen. The command that will run sits at
+    /// `new_dir_cmd_index()` and is highlighted there.
+    pub fn new_dir_lines(self, dir: &str, os: crate::remote::HostOs) -> Vec<String> {
+        let cmd = self.new_dir_command(dir, os);
         match self {
             Self::Zh => vec![
                 "这是会话的工作目录：agent 读写代码的根目录，不是文件夹浏览器。".into(),
@@ -79,7 +81,7 @@ impl Lang {
                 format!("远程还没有这个目录：{dir}"),
                 String::new(),
                 "回车 = 由 FarAgent 在远程创建它（执行下面的命令），然后在这个目录里启动 / 恢复会话。".into(),
-                format!("mkdir -p {dir}"),
+                cmd,
                 String::new(),
                 "Esc / q = 返回修改路径（不会在远程写入任何东西）。".into(),
             ],
@@ -89,11 +91,25 @@ impl Lang {
                 format!("That directory is not on the remote yet: {dir}"),
                 String::new(),
                 "Enter = let FarAgent create it on the remote (the command below), then start or resume the session there.".into(),
-                format!("mkdir -p {dir}"),
+                cmd,
                 String::new(),
                 "Esc / q = back to edit the path (nothing is written on the remote).".into(),
             ],
         }
+    }
+
+    /// The one command the create screen runs on the remote, per dialect.
+    pub fn new_dir_command(self, dir: &str, os: crate::remote::HostOs) -> String {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => format!("mkdir -p {dir}"),
+            HostOs::Windows => format!("New-Item -ItemType Directory -Force -LiteralPath '{dir}'"),
+        }
+    }
+
+    /// Index into `new_dir_lines(..)` of the command line to highlight.
+    pub fn new_dir_cmd_index(self) -> usize {
+        5
     }
 
     pub fn new_dir_keys_hint(self) -> &'static str {
@@ -135,10 +151,13 @@ impl Lang {
         }
     }
 
-    pub fn sessions_list_title(self) -> &'static str {
-        match self {
-            Self::Zh => "会话  [live]=tmux 仍在运行",
-            Self::En => "sessions  [live]=tmux still running",
+    pub fn sessions_list_title(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match (self, os) {
+            (Self::Zh, HostOs::Posix) => "会话  [live]=tmux 仍在运行",
+            (Self::En, HostOs::Posix) => "sessions  [live]=tmux still running",
+            (Self::Zh, HostOs::Windows) => "会话  [running]=可能有进程仍在运行",
+            (Self::En, HostOs::Windows) => "sessions  [running]=a process may still be running",
         }
     }
 
@@ -161,6 +180,24 @@ impl Lang {
             Self::En => {
                 "enter open · n new session · r refresh · L language · q back · agent detach: C-g d"
             }
+        }
+    }
+
+    /// Footer for the session screens. On Windows remotes the agent runs in
+    /// the foreground: there is no detach — quitting the agent ends it, and
+    /// the conversation comes back through resume.
+    pub fn keys_hint_os(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => self.keys_hint(),
+            HostOs::Windows => match self {
+                Self::Zh => {
+                    "回车 打开 · n 新建会话 · r 刷新 · L 语言 · q 返回 · 退出助手即结束（可 resume 恢复）"
+                }
+                Self::En => {
+                    "enter open · n new session · r refresh · L language · q back · quitting the agent ends it (resume later)"
+                }
+            },
         }
     }
 
@@ -281,6 +318,67 @@ impl Lang {
         "idle"
     }
 
+    /// Windows-remote session mark: a process scan suggests it may be open
+    /// elsewhere (never a hard block — entering asks first).
+    pub fn running(self) -> &'static str {
+        "running"
+    }
+
+    pub fn sessions_status_os(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => self.sessions_status(),
+            HostOs::Windows => match self {
+                Self::Zh => "回车启动/恢复 · n 新建会话 · running 表示可能有进程在跑",
+                Self::En => {
+                    "enter start/resume · n new session · running means a process may be alive"
+                }
+            },
+        }
+    }
+
+    pub fn running_confirm_title(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!("FarAgent · {host} · 该会话可能在运行"),
+            Self::En => format!("FarAgent · {host} · session may be running"),
+        }
+    }
+
+    pub fn running_confirm_lines(self, title: &str) -> Vec<String> {
+        match self {
+            Self::Zh => vec![
+                format!("检测到与「{title}」相关的 agent 进程可能仍在运行。"),
+                String::new(),
+                "同一会话若被两个进程同时写入，可能互相覆盖改动（codex#30424）。建议先到那个终端里退出它，再回来恢复。".into(),
+                String::new(),
+                "回车 = 仍然进入（以 resume 方式新起一个前台进程）".into(),
+                "Esc = 返回会话列表".into(),
+            ],
+            Self::En => vec![
+                format!("A process that may belong to \"{title}\" appears to be running."),
+                String::new(),
+                "Two agents writing the same session can overwrite each other (codex#30424). Consider quitting it in its own terminal first.".into(),
+                String::new(),
+                "Enter = open anyway (starts a new foreground process via resume)".into(),
+                "Esc = back to the session list".into(),
+            ],
+        }
+    }
+
+    pub fn running_confirm_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "回车 仍然进入 · Esc 返回列表",
+            Self::En => "enter open anyway · esc back",
+        }
+    }
+
+    pub fn session_warning_block_title(self) -> &'static str {
+        match self {
+            Self::Zh => "可能的双开冲突",
+            Self::En => "possible double-open conflict",
+        }
+    }
+
     pub fn cancelled(self) -> &'static str {
         match self {
             Self::Zh => "已取消",
@@ -388,6 +486,21 @@ impl Lang {
         match self {
             Self::Zh => "已断开 · 会话仍在远程运行",
             Self::En => "detached · session stays alive on the remote",
+        }
+    }
+
+    /// Windows remote: the agent runs in the foreground of this connection.
+    pub fn attaching_resume(self, name: &str) -> String {
+        match self {
+            Self::Zh => format!("正在启动 {name}（前台运行 · 退出即结束，可 resume 恢复）"),
+            Self::En => format!("starting {name} (foreground · quitting ends it; resume later)"),
+        }
+    }
+
+    pub fn session_ended(self) -> &'static str {
+        match self {
+            Self::Zh => "会话已结束 · 回车可 resume 恢复",
+            Self::En => "session ended · enter resumes it later",
         }
     }
 
@@ -738,6 +851,47 @@ impl Lang {
         }
     }
 
+    /// Title of the in-memory password prompt (used when this machine's ssh
+    /// cannot multiplex, e.g. Win32 OpenSSH).
+    pub fn password_title(self) -> &'static str {
+        match self {
+            Self::Zh => "FarAgent · 密码",
+            Self::En => "FarAgent · password",
+        }
+    }
+
+    pub fn password_prompt(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!(
+                "输入 {host} 的登录密码。只保存在本次运行的进程内存里，不写盘、退出即清除；ssh 经 SSH_ASKPASS 读取，不再逐条命令提示。"
+            ),
+            Self::En => format!(
+                "Password for {host}. Kept in this process only - never written to disk, gone when faragent exits. ssh reads it through SSH_ASKPASS."
+            ),
+        }
+    }
+
+    pub fn password_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "回车 确认 · Esc 取消 · 输入不显示",
+            Self::En => "enter confirm · esc cancel · input is hidden",
+        }
+    }
+
+    pub fn password_required(self) -> &'static str {
+        match self {
+            Self::Zh => "密码不能为空",
+            Self::En => "password must not be empty",
+        }
+    }
+
+    pub fn password_stored(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!("{host} 的密码已记住（仅本次运行）"),
+            Self::En => format!("password remembered for {host} (this run only)"),
+        }
+    }
+
     pub fn problem_summary(self, p: crate::diagnose::Problem) -> &'static str {
         use crate::diagnose::Problem as P;
         match (self, p) {
@@ -843,6 +997,12 @@ impl Lang {
             (Self::En, P::RemoteBash) => {
                 "SSH works, but the remote login shell did not run bash or did not print the marker FarAgent expects."
             }
+            (Self::Zh, P::RemoteShellUnsupported) => {
+                "SSH 通了，但远端的默认 shell 根本不认识我们的命令（Windows 上常见于 sshd 默认 shell 配置损坏）。"
+            }
+            (Self::En, P::RemoteShellUnsupported) => {
+                "SSH works, but the remote's default shell does not recognize our commands at all (on Windows this usually means sshd's default-shell setting is broken)."
+            }
             (Self::Zh, P::Unknown) => "这个报错 FarAgent 还认不出来，下面是 ssh 的原始输出。",
             (Self::En, P::Unknown) => {
                 "FarAgent does not recognize this failure yet; the raw ssh output is below."
@@ -866,6 +1026,18 @@ impl Lang {
             .clone()
             .unwrap_or_else(|| "~/.ssh/id_ed25519".into());
         let steps: Vec<String> = match (self, p) {
+            (Self::Zh, P::SshMissing) if f.local == crate::remote::HostOs::Windows => vec![
+                "先在 PowerShell 里确认：`ssh -V`；报“无法将 ssh 项识别为 cmdlet”说明没装或不在 PATH。".into(),
+                "Windows 11 自带 OpenSSH 客户端，一般在 `C:\\Windows\\System32\\OpenSSH\\ssh.exe`。".into(),
+                "没装的话：设置 → 系统 → 可选功能 → 添加功能 → 安装「OpenSSH 客户端」，或在管理员 PowerShell 运行 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`。".into(),
+                "装好后重开终端确认：`ssh -V` 与 `where.exe ssh` 都应成功。".into(),
+            ],
+            (Self::En, P::SshMissing) if f.local == crate::remote::HostOs::Windows => vec![
+                "Check in PowerShell: `ssh -V`; \"not recognized as the name of a cmdlet\" means it is missing or not on PATH.".into(),
+                "Windows 11 ships the OpenSSH client, usually at `C:\\Windows\\System32\\OpenSSH\\ssh.exe`.".into(),
+                "If missing: Settings -> System -> Optional features -> Add a feature -> \"OpenSSH Client\", or run `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` in an admin PowerShell.".into(),
+                "Reopen the terminal and confirm: both `ssh -V` and `where.exe ssh` should succeed.".into(),
+            ],
             (Self::Zh, P::SshMissing) => vec![
                 "先确认有没有：`ssh -V`。macOS 自带 OpenSSH，报 command not found 说明没装或不在 PATH。".into(),
                 "macOS：`xcode-select --install`，或 `brew install openssh`。".into(),
@@ -894,6 +1066,42 @@ impl Lang {
                 format!("Fix remote permissions: `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys`, and check that the user exists on {target}."),
                 format!("If this machine only allows passwords: `faragent auth --host {host} --mode password`, then `faragent login --host {host}` (or press a in the TUI)."),
             ],
+            (Self::Zh, P::NeedsPassword) if f.local == crate::remote::HostOs::Windows => {
+                let mut steps = Vec::new();
+                steps.push(
+                    "Windows 自带的 ssh 不支持连接复用，FarAgent 改为在内存里记住一次密码（不写盘、退出即清除），后续命令经 SSH_ASKPASS 自动应答。".into(),
+                );
+                steps.push(format!(
+                    "在 TUI 的问题页按 a 输入密码即可；主机指纹等交互提示仍由 `faragent login --host {host}` 处理。"
+                ));
+                if f.mode != crate::ssh::AuthMode::Password {
+                    steps.push(format!(
+                        "也可以先把这台机器固定为密码模式：`faragent auth --host {host} --mode password`。"
+                    ));
+                }
+                steps.push(
+                    "更稳的做法仍是配密钥 / ssh-agent（见文档「配好密钥」），之后不再需要输入密码。".into(),
+                );
+                steps
+            }
+            (Self::En, P::NeedsPassword) if f.local == crate::remote::HostOs::Windows => {
+                let mut steps = Vec::new();
+                steps.push(
+                    "Windows' built-in ssh cannot multiplex, so FarAgent remembers the password in memory instead (never written to disk, gone on exit) and answers ssh through SSH_ASKPASS.".into(),
+                );
+                steps.push(format!(
+                    "Press a on the TUI problem screen to type it; host-key questions still go through `faragent login --host {host}`."
+                ));
+                if f.mode != crate::ssh::AuthMode::Password {
+                    steps.push(format!(
+                        "You can also pin this host to password mode first: `faragent auth --host {host} --mode password`."
+                    ));
+                }
+                steps.push(
+                    "Keys / ssh-agent remain the sturdier option (see \"set up keys\" in the docs).".into(),
+                );
+                steps
+            }
             (Self::Zh, P::NeedsPassword) => {
                 let mut steps = Vec::new();
                 if f.mode == crate::ssh::AuthMode::Password {
@@ -988,6 +1196,26 @@ impl Lang {
                 format!("Connect once to confirm the new key: `faragent login --host {host}`."),
                 "If the change is unexplained, check the network path (DNS / proxy / bastion) instead of accepting it.".into(),
             ],
+            (Self::Zh, P::PrivateFilePermissions)
+                if f.local == crate::remote::HostOs::Windows =>
+            {
+                vec![
+                    "Windows 的 OpenSSH 检查的是 ACL（不是 Unix 权限位）：先看 `icacls $env:USERPROFILE\\.ssh`。".into(),
+                    "收窄到仅当前用户（管理员 PowerShell）：`icacls $env:USERPROFILE\\.ssh /inheritance:r`，再 `icacls $env:USERPROFILE\\.ssh /grant:r \"$env:USERNAME:(OI)(CI)F\"`。".into(),
+                    "确认属主：`Get-Acl $env:USERPROFILE\\.ssh\\id_ed25519 | Format-List Owner`，应为当前用户，而不是 Administrators / SYSTEM。".into(),
+                    format!("再试一次：`ssh -o BatchMode=yes{port} {host} echo ok`。"),
+                ]
+            }
+            (Self::En, P::PrivateFilePermissions)
+                if f.local == crate::remote::HostOs::Windows =>
+            {
+                vec![
+                    "Windows OpenSSH checks ACLs (not Unix mode bits): start with `icacls $env:USERPROFILE\\.ssh`.".into(),
+                    "Narrow it to your user only (admin PowerShell): `icacls $env:USERPROFILE\\.ssh /inheritance:r`, then `icacls $env:USERPROFILE\\.ssh /grant:r \"$env:USERNAME:(OI)(CI)F\"`.".into(),
+                    "Check the owner: `Get-Acl $env:USERPROFILE\\.ssh\\id_ed25519 | Format-List Owner` should be your user, not Administrators / SYSTEM.".into(),
+                    format!("Retry: `ssh -o BatchMode=yes{port} {host} echo ok`."),
+                ]
+            }
             (Self::Zh, P::PrivateFilePermissions) => vec![
                 "`chmod 700 ~/.ssh`".into(),
                 "`chmod 600 ~/.ssh/config ~/.ssh/id_ed25519 ~/.ssh/known_hosts`（换成你实际用到的文件名）".into(),
@@ -1123,6 +1351,18 @@ impl Lang {
                 "Make sure the login shell does not block: no commands that wait for input in ~/.bashrc or ~/.bash_profile (read, ssh-add, sudo, ...).".into(),
                 "If only sh / zsh exists, install bash: Debian / Ubuntu `sudo apt-get install -y bash`; Fedora `sudo dnf install -y bash`.".into(),
                 format!("Inspect the login shell: `ssh{port} {host} -- bash -lc 'echo $SHELL; command -v bash; echo $PATH'`."),
+            ],
+            (Self::Zh, P::RemoteShellUnsupported) => vec![
+                format!("先看原样输出：`ssh{port} {host} echo FARAGENT_OS_V1`。"),
+                "Windows 远端：sshd 的默认 shell 必须可用（默认是 cmd.exe；改坏过就改回来：`New-ItemProperty -Path 'HKLM:\\SOFTWARE\\OpenSSH' -Name DefaultShell -Value 'C:\\Windows\\System32\\cmd.exe' -PropertyType String -Force`，然后 `Restart-Service sshd`）。".into(),
+                "Linux/macOS 远端：登录 shell 必须存在且可执行（`echo $SHELL`；不对就 `chsh -s /bin/bash <user>`），/etc/passwd 里的 shell 也不能指向已删除的程序。".into(),
+                format!("确认最基本的命令能跑通：`ssh{port} {host} echo ok`。"),
+            ],
+            (Self::En, P::RemoteShellUnsupported) => vec![
+                format!("See the raw output first: `ssh{port} {host} echo FARAGENT_OS_V1`."),
+                "Windows remote: sshd's default shell must work (cmd.exe by default; if it broke, restore it: `New-ItemProperty -Path 'HKLM:\\SOFTWARE\\OpenSSH' -Name DefaultShell -Value 'C:\\Windows\\System32\\cmd.exe' -PropertyType String -Force`, then `Restart-Service sshd`).".into(),
+                "Linux/macOS remote: the login shell must exist and be executable (`echo $SHELL`; fix with `chsh -s /bin/bash <user>`), and /etc/passwd must not point at a deleted program.".into(),
+                format!("Confirm the most basic command runs: `ssh{port} {host} echo ok`."),
             ],
             (Self::Zh, P::Unknown) => vec![
                 format!("详细模式复现：`ssh -vvv{port} {host} true`。"),

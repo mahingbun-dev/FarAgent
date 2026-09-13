@@ -1,4 +1,5 @@
 use crate::agents::AgentKind;
+use crate::askpass;
 use crate::config;
 use crate::diagnose::{self, Diagnosis};
 use crate::i18n::Lang;
@@ -31,6 +32,12 @@ enum Screen {
     Confirm,
     /// A connection problem: raw ssh output + cause + fixes.
     Problem,
+    /// Password for a host whose ssh cannot multiplex (Win32 OpenSSH). The
+    /// value is held in process memory only and fed to ssh via askpass.
+    Password,
+    /// Windows-remote session that looks like it may still be running: warn
+    /// before starting a second process on the same transcript.
+    RunningConfirm,
 }
 
 /// What to re-run when the user retries from the problem screen.
@@ -73,6 +80,8 @@ struct App {
     diag_scroll: u16,
     retry: Retry,
     problem_from: Screen,
+    /// Masked input on `Screen::Password`; moved into `askpass` on Enter.
+    password_input: String,
     quit: bool,
 }
 
@@ -111,6 +120,7 @@ impl App {
             diag_scroll: 0,
             retry: Retry::Probe,
             problem_from: Screen::Hosts,
+            password_input: String::new(),
             quit: false,
         }
     }
@@ -166,7 +176,12 @@ impl App {
                 let n = self.sessions.len() as i32;
                 self.session_idx = (self.session_idx as i32 + delta).rem_euclid(n) as usize;
             }
-            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
+            Screen::NewCwd
+            | Screen::NewDirConfirm
+            | Screen::Confirm
+            | Screen::Problem
+            | Screen::Password
+            | Screen::RunningConfirm => {}
         }
     }
 }
@@ -217,6 +232,12 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::Problem) {
         return handle_problem_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::Password) {
+        return handle_password_key(app, key, terminal);
+    }
+    if matches!(app.screen, Screen::RunningConfirm) {
+        return handle_running_confirm_key(app, key, terminal);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
             Screen::Language | Screen::Hosts => app.quit = true,
@@ -230,7 +251,12 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
                 app.screen = Screen::Agents;
                 app.status = app.lang.select_agent().into();
             }
-            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
+            Screen::NewCwd
+            | Screen::NewDirConfirm
+            | Screen::Confirm
+            | Screen::Problem
+            | Screen::Password
+            | Screen::RunningConfirm => {}
         },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),
@@ -279,8 +305,11 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
             };
             let agent = app.agent();
             // `~` only makes sense against the remote's home, so expand it here.
-            let home = app.probe.as_ref().map(|p| p.home.as_str()).unwrap_or("/");
-            let cwd = expand_home(&typed, home);
+            let (home, os) = match &app.probe {
+                Some(p) => (p.home.clone(), p.os),
+                None => ("/".into(), Default::default()),
+            };
+            let cwd = expand_home(&typed, &home, os);
             start_session(app, terminal, &host, agent, &cwd, None, false)?;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -327,15 +356,48 @@ fn handle_new_dir_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
     Ok(())
 }
 
-/// `~` / `~/x` against the **remote** home. Anything else is left alone.
-fn expand_home(typed: &str, home: &str) -> String {
+/// Can sessions be started on this host? On POSIX that needs tmux (it carries
+/// the session); Windows remotes run the agent in the foreground instead.
+fn sessions_supported(os: crate::remote::HostOs, tmux: bool) -> bool {
+    os == crate::remote::HostOs::Windows || tmux
+}
+
+/// The probed dialect, defaulting to POSIX before any probe has run.
+fn probe_os(app: &App) -> crate::remote::HostOs {
+    app.probe.as_ref().map(|p| p.os).unwrap_or_default()
+}
+
+/// `~` / `~/x` (or `~\x`) against the **remote** home, in the remote's own
+/// separator style. Anything else is left alone.
+fn expand_home(typed: &str, home: &str, os: crate::remote::HostOs) -> String {
+    use crate::remote::HostOs;
     if typed == "~" {
         return home.to_string();
     }
-    match typed.strip_prefix("~/") {
-        Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
-        None => typed.to_string(),
+    match os {
+        HostOs::Posix => match typed.strip_prefix("~/") {
+            Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
+            None => typed.to_string(),
+        },
+        HostOs::Windows => {
+            for prefix in ["~/", "~\\"] {
+                if let Some(rest) = typed.strip_prefix(prefix) {
+                    return format!(
+                        "{}\\{}",
+                        home.trim_end_matches(['/', '\\']),
+                        rest.replace('/', "\\")
+                    );
+                }
+            }
+            typed.to_string()
+        }
     }
+}
+
+/// One `*` per character (not per byte) — the password itself never reaches
+/// the screen buffer.
+fn mask(input: &str) -> String {
+    "*".repeat(input.chars().count())
 }
 
 fn begin_language(app: &mut App) {
@@ -370,7 +432,7 @@ fn begin_new(app: &mut App) {
         app.error = Some(app.lang.probe_host_first().into());
         return;
     };
-    if !probe.tmux.found {
+    if !sessions_supported(probe.os, probe.tmux.found) {
         app.error = Some(app.lang.tmux_missing_short().into());
         return;
     }
@@ -398,7 +460,11 @@ fn refresh(app: &mut App) -> Result<()> {
             app.status = app.lang.host_count(app.hosts.len());
         }
         Screen::Agents | Screen::Sessions | Screen::NewCwd => reload_probe_and_sessions(app)?,
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
+        Screen::Confirm
+        | Screen::Problem
+        | Screen::NewDirConfirm
+        | Screen::Password
+        | Screen::RunningConfirm => {}
     }
     app.clamp();
     Ok(())
@@ -433,17 +499,25 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
                 .and_then(|p| p.agent(app.agent()))
                 .map(|a| a.found)
                 == Some(true);
-            let tmux = app.probe.as_ref().map(|p| p.tmux.found) == Some(true);
-            if !found || !tmux {
+            let supported = app
+                .probe
+                .as_ref()
+                .map(|p| sessions_supported(p.os, p.tmux.found))
+                == Some(true);
+            if !found || !supported {
                 open_confirm(app, terminal, install::Action::Install)?;
                 return Ok(());
             }
             reload_sessions(app)?;
             app.screen = Screen::Sessions;
             app.session_idx = 0;
-            app.status = app.lang.sessions_status().into();
+            app.status = app.lang.sessions_status_os(probe_os(app)).into();
         }
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
+        Screen::Confirm
+        | Screen::Problem
+        | Screen::NewDirConfirm
+        | Screen::Password
+        | Screen::RunningConfirm => {}
         Screen::Sessions => {
             if app.sessions.is_empty() {
                 begin_new(app);
@@ -461,6 +535,18 @@ fn probe_selected_host(app: &mut App, terminal: &mut DefaultTerminal) -> Result<
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
+    // Password host on a machine without multiplexing (Win32 OpenSSH): ask
+    // for the password up front instead of running a probe that cannot
+    // authenticate. Auto hosts reach the same prompt via the problem screen.
+    if app.auth_of(app.host_idx) == AuthMode::Password
+        && !ssh::mux_capable()
+        && !askpass::active_for(&host)
+    {
+        app.retry = Retry::Probe;
+        app.problem_from = Screen::Hosts;
+        begin_password(app, &host);
+        return Ok(());
+    }
     app.status = app.lang.probing(&host);
     app.error = None;
     app.diag = None;
@@ -537,7 +623,7 @@ fn handle_problem_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
             app.error = None;
             app.screen = app.problem_from.clone();
             app.status = match app.screen {
-                Screen::Sessions => app.lang.sessions_status().into(),
+                Screen::Sessions => app.lang.sessions_status_os(probe_os(app)).into(),
                 Screen::Agents => app.lang.select_agent().into(),
                 _ => app.lang.status_ready().into(),
             };
@@ -590,12 +676,21 @@ fn retry(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     }
 }
 
-/// One interactive `ssh` on the real terminal: host key prompt, password, or
-/// key passphrase. The password goes straight into OpenSSH; nothing is stored.
+/// `a` on the problem screen. On machines whose ssh cannot multiplex
+/// (Win32 OpenSSH), a credential problem opens the in-memory password
+/// prompt — ssh then reads the secret via askpass instead of prompting per
+/// command. Host-key and passphrase problems keep the interactive path
+/// (`faragent login`), which is also how first-connect fingerprints get
+/// confirmed.
 fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
+    let problem = app.diag.as_ref().map(|d| d.problem);
+    if should_prompt_password(ssh::mux_capable(), problem) {
+        begin_password(app, &host);
+        return Ok(());
+    }
     let mode = app.auth_of(app.host_idx);
     ratatui::restore();
     let code = pty::interactive_connect(&host, mode, app.lang);
@@ -609,13 +704,76 @@ fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     Ok(())
 }
 
+/// Only credential problems on a machine without connection multiplexing
+/// warrant the in-memory prompt; everything else stays with OpenSSH's own
+/// interactive handling.
+fn should_prompt_password(mux: bool, problem: Option<diagnose::Problem>) -> bool {
+    !mux && matches!(
+        problem,
+        Some(diagnose::Problem::NeedsPassword | diagnose::Problem::PasswordDenied)
+    )
+}
+
+fn begin_password(app: &mut App, host: &str) {
+    app.password_input.clear();
+    app.error = None;
+    app.screen = Screen::Password;
+    app.status = app.lang.password_prompt(host);
+}
+
+/// Keys on the in-memory password screen. The input is rendered as `*` only;
+/// on Enter it moves into `askpass` (zeroized when faragent exits).
+fn handle_password_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.password_input.clear();
+            app.error = None;
+            app.screen = app.problem_from.clone();
+            app.status = match app.screen {
+                Screen::Sessions => app.lang.sessions_status_os(probe_os(app)).into(),
+                Screen::Agents => app.lang.select_agent().into(),
+                _ => app.lang.status_ready().into(),
+            };
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.password_input.clear();
+        }
+        KeyCode::Backspace => {
+            app.password_input.pop();
+        }
+        KeyCode::Enter => {
+            let Some(host) = app.host().map(|h| h.alias.clone()) else {
+                return Ok(());
+            };
+            if app.password_input.is_empty() {
+                app.error = Some(app.lang.password_required().into());
+                return Ok(());
+            }
+            let password = std::mem::take(&mut app.password_input);
+            askpass::install_session(&host, password);
+            app.error = None;
+            app.status = app.lang.password_stored(&host);
+            retry(app, terminal)?;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.password_input.push(c);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Copy-paste the whole report. Uses whichever clipboard tool exists.
 fn copy_to_clipboard(text: &str) -> bool {
-    let tools: [(&str, &[&str]); 3] = [
+    #[allow(unused_mut)]
+    let mut tools: Vec<(&str, &[&str])> = vec![
         ("pbcopy", &[]),
         ("wl-copy", &[]),
         ("xclip", &["-selection", "clipboard"]),
     ];
+    #[cfg(windows)]
+    tools.push(("clip", &[]));
     for (bin, args) in tools {
         let Ok(mut child) = Command::new(bin)
             .args(args)
@@ -698,7 +856,10 @@ fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     };
     app.status = app.lang.running_remote().into();
     ratatui::restore();
-    let code = pty::run_remote_script(&host, &plan.script);
+    let code = match probe_os(app) {
+        crate::remote::HostOs::Posix => pty::run_remote_script(&host, &plan.script),
+        crate::remote::HostOs::Windows => pty::run_remote_ps(&host, &plan.script),
+    };
     *terminal = ratatui::init();
     app.screen = Screen::Agents;
     app.plan = None;
@@ -744,7 +905,7 @@ fn reload_sessions(app: &mut App) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
-    match runtime::list_sessions(&host, app.agent()) {
+    match runtime::list_sessions(&host, app.agent(), probe_os(app)) {
         Ok(rows) => {
             app.sessions = rows;
             app.error = None;
@@ -756,6 +917,31 @@ fn reload_sessions(app: &mut App) -> Result<()> {
 }
 
 fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(sess) = app.sessions.get(app.session_idx).cloned() else {
+        return Ok(());
+    };
+    // Live tmux: attach only. Never resume a running session (Codex #30424).
+    if sess.live {
+        let Some(host) = app.host().map(|h| h.alias.clone()) else {
+            return Ok(());
+        };
+        let agent = app.agent();
+        let tmux = sess
+            .tmux
+            .clone()
+            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
+        return drop_into_tmux(app, terminal, &host, &tmux);
+    }
+    // A Windows remote cannot prove liveness, only suggest it: ask first.
+    if sess.running {
+        app.screen = Screen::RunningConfirm;
+        return Ok(());
+    }
+    open_session(app, terminal)
+}
+
+/// Start or resume the highlighted session in its working directory.
+fn open_session(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
@@ -769,16 +955,26 @@ fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> 
         .map(PathBuf::from)
         .or_else(|| app.probe.as_ref().map(|p| PathBuf::from(&p.home)))
         .unwrap_or_else(|| PathBuf::from("."));
-    // Live tmux: attach only. Never resume a running session (Codex #30424).
-    if sess.live {
-        let tmux = sess
-            .tmux
-            .clone()
-            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
-        return drop_into_tmux(app, terminal, &host, &tmux);
-    }
     let cwd_s = cwd.to_string_lossy().into_owned();
     start_session(app, terminal, &host, agent, &cwd_s, Some(&sess.id), false)
+}
+
+/// Keys on the "that session may still be running" confirmation.
+fn handle_running_confirm_key(
+    app: &mut App,
+    key: KeyEvent,
+    terminal: &mut DefaultTerminal,
+) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::Sessions;
+            app.status = app.lang.sessions_status_os(probe_os(app)).into();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Enter => open_session(app, terminal)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Start (or resume) a session in `cwd`. With `create_cwd = false` nothing is
@@ -793,17 +989,34 @@ fn start_session(
     session_id: Option<&str>,
     create_cwd: bool,
 ) -> Result<()> {
-    match runtime::ensure_tmux_session(
-        host,
-        agent,
-        std::path::Path::new(cwd),
-        session_id,
-        create_cwd,
-    ) {
-        Ok(tmux) => {
+    use crate::remote::HostOs;
+    let os = probe_os(app);
+    let result = match os {
+        HostOs::Posix => runtime::ensure_tmux_session(
+            host,
+            agent,
+            std::path::Path::new(cwd),
+            session_id,
+            create_cwd,
+        ),
+        HostOs::Windows => runtime::ensure_win_session(
+            host,
+            agent,
+            std::path::Path::new(cwd),
+            session_id,
+            create_cwd,
+        ),
+    };
+    match result {
+        Ok(name) => {
             app.pending = None;
             app.screen = Screen::Sessions;
-            drop_into_tmux(app, terminal, host, &tmux)?;
+            match os {
+                HostOs::Posix => drop_into_tmux(app, terminal, host, &name)?,
+                HostOs::Windows => {
+                    drop_into_win_session(app, terminal, host, agent, cwd, session_id)?
+                }
+            }
         }
         Err(e) => {
             match e.downcast_ref::<runtime::SessionError>() {
@@ -823,6 +1036,36 @@ fn start_session(
             }
         }
     }
+    Ok(())
+}
+
+/// Launch an agent in the foreground on a Windows remote. When it exits (or
+/// ssh drops), the session ends; resume restores the conversation later.
+fn drop_into_win_session(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    host: &str,
+    agent: AgentKind,
+    cwd: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    let argv = match session_id {
+        Some(id) => agent.resume_argv(id),
+        None => agent.new_argv(),
+    };
+    app.status = app.lang.attaching_resume(agent.title());
+    ratatui::restore();
+    let code = pty::attach_win(host, cwd, &argv);
+    *terminal = ratatui::init();
+    match code {
+        Ok(0) | Ok(1) => {
+            app.status = app.lang.session_ended().into();
+            app.error = None;
+        }
+        Ok(c) => app.status = app.lang.ssh_exited(c),
+        Err(e) => app.error = Some(e.to_string()),
+    }
+    let _ = reload_sessions(app);
     Ok(())
 }
 
@@ -850,7 +1093,13 @@ fn drop_into_tmux(
 }
 
 fn session_line(lang: Lang, s: &SessionSummary) -> String {
-    let mark = if s.live { lang.live() } else { lang.idle() };
+    let mark = if s.live {
+        lang.live()
+    } else if s.running {
+        lang.running()
+    } else {
+        lang.idle()
+    };
     let title = s
         .title
         .as_deref()
@@ -905,6 +1154,10 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Problem => app
             .lang
             .problem_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
+        Screen::Password => app.lang.password_title().into(),
+        Screen::RunningConfirm => app
+            .lang
+            .running_confirm_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
     };
     let header = Paragraph::new(title).block(
         Block::default()
@@ -972,7 +1225,7 @@ fn draw(frame: &mut Frame, app: &App) {
             draw_list(
                 frame,
                 chunks[1],
-                app.lang.sessions_list_title(),
+                app.lang.sessions_list_title(probe_os(app)),
                 &lines,
                 idx,
             );
@@ -988,6 +1241,33 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::NewDirConfirm => draw_new_dir(frame, chunks[1], app),
         Screen::Confirm => draw_confirm(frame, chunks[1], app),
         Screen::Problem => draw_problem(frame, chunks[1], app),
+        Screen::Password => {
+            let p = Paragraph::new(format!("> {}_", mask(&app.password_input))).block(
+                Block::default()
+                    .title(app.host().map(|h| h.alias.as_str()).unwrap_or("?"))
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(p, chunks[1]);
+        }
+        Screen::RunningConfirm => {
+            let title = app
+                .sessions
+                .get(app.session_idx)
+                .and_then(|s| s.title.clone())
+                .unwrap_or_default();
+            let lines: Vec<Line> = app
+                .lang
+                .running_confirm_lines(&title)
+                .into_iter()
+                .map(Line::from)
+                .collect();
+            let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .title(app.lang.session_warning_block_title())
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(p, chunks[1]);
+        }
     }
 
     let mut footer_lines = vec![Line::from(app.status.clone())];
@@ -1000,7 +1280,9 @@ fn draw(frame: &mut Frame, app: &App) {
             .lang
             .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
         Screen::Problem => app.lang.problem_keys_hint(),
-        _ => app.lang.keys_hint(),
+        Screen::Password => app.lang.password_keys_hint(),
+        Screen::RunningConfirm => app.lang.running_confirm_keys_hint(),
+        _ => app.lang.keys_hint_os(probe_os(app)),
     };
     footer_lines.push(Line::from(Span::styled(
         hint,
@@ -1022,15 +1304,21 @@ fn draw(frame: &mut Frame, app: &App) {
 /// do before anything is written there.
 fn draw_new_dir(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let dir = app.pending.as_ref().map(|p| p.dir.as_str()).unwrap_or("?");
+    let cmd_index = app.lang.new_dir_cmd_index();
     let mut lines: Vec<Line> = Vec::new();
-    for line in app.lang.new_dir_lines(dir) {
-        if line.starts_with("mkdir") {
+    for (i, line) in app
+        .lang
+        .new_dir_lines(dir, probe_os(app))
+        .iter()
+        .enumerate()
+    {
+        if i == cmd_index {
             lines.push(Line::from(Span::styled(
                 format!("  {line}"),
                 Style::default().fg(Color::Cyan),
             )));
         } else {
-            lines.push(Line::from(line));
+            lines.push(Line::from(line.clone()));
         }
     }
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -1200,12 +1488,105 @@ mod tests {
 
     #[test]
     fn tilde_expands_against_the_remote_home_only_as_a_prefix() {
-        assert_eq!(expand_home("~", "/home/me"), "/home/me");
-        assert_eq!(expand_home("~/code/app", "/home/me"), "/home/me/code/app");
-        assert_eq!(expand_home("~/code/app", "/home/me/"), "/home/me/code/app");
-        assert_eq!(expand_home("/srv/app", "/home/me"), "/srv/app");
+        use crate::remote::HostOs;
+        let os = HostOs::Posix;
+        assert_eq!(expand_home("~", "/home/me", os), "/home/me");
+        assert_eq!(
+            expand_home("~/code/app", "/home/me", os),
+            "/home/me/code/app"
+        );
+        assert_eq!(
+            expand_home("~/code/app", "/home/me/", os),
+            "/home/me/code/app"
+        );
+        assert_eq!(expand_home("/srv/app", "/home/me", os), "/srv/app");
         // Mid-path tildes are literal, and a user named `~bob` is not a home ref.
-        assert_eq!(expand_home("/srv/~weird", "/home/me"), "/srv/~weird");
-        assert_eq!(expand_home("~bob/app", "/home/me"), "~bob/app");
+        assert_eq!(expand_home("/srv/~weird", "/home/me", os), "/srv/~weird");
+        assert_eq!(expand_home("~bob/app", "/home/me", os), "~bob/app");
+    }
+
+    #[test]
+    fn tilde_expands_windows_style_home() {
+        use crate::remote::HostOs;
+        let os = HostOs::Windows;
+        let home = "C:\\Users\\me";
+        assert_eq!(expand_home("~", home, os), home);
+        assert_eq!(
+            expand_home("~\\code\\app", home, os),
+            "C:\\Users\\me\\code\\app"
+        );
+        assert_eq!(
+            expand_home("~/code/app", home, os),
+            "C:\\Users\\me\\code\\app"
+        );
+        assert_eq!(expand_home("C:\\srv\\app", home, os), "C:\\srv\\app");
+        assert_eq!(expand_home("~bob", home, os), "~bob");
+        // Trailing separators on the home do not double up.
+        assert_eq!(
+            expand_home("~\\x", "C:\\Users\\me\\", os),
+            "C:\\Users\\me\\x"
+        );
+    }
+
+    #[test]
+    fn windows_remotes_do_not_need_tmux_for_sessions() {
+        use crate::remote::HostOs;
+        assert!(sessions_supported(HostOs::Windows, false));
+        assert!(sessions_supported(HostOs::Posix, true));
+        assert!(!sessions_supported(HostOs::Posix, false));
+    }
+
+    #[test]
+    fn new_dir_command_index_matches_the_command_line() {
+        use crate::remote::HostOs;
+        for lang in Lang::ALL {
+            for os in [HostOs::Posix, HostOs::Windows] {
+                let dir = "C:\\tmp\\x";
+                let lines = lang.new_dir_lines(dir, os);
+                let idx = lang.new_dir_cmd_index();
+                assert_eq!(lines[idx], lang.new_dir_command(dir, os), "{lang:?} {os:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn session_line_prefers_live_then_running() {
+        let mk = |live: bool, running: bool| SessionSummary {
+            id: "x".into(),
+            agent: "claude".into(),
+            title: Some("t".into()),
+            cwd: Some("c".into()),
+            mtime: 0.0,
+            live,
+            running,
+            tmux: None,
+        };
+        assert!(session_line(Lang::En, &mk(true, false)).starts_with("[live]"));
+        assert!(session_line(Lang::En, &mk(false, true)).starts_with("[running]"));
+        assert!(session_line(Lang::En, &mk(false, false)).starts_with("[idle]"));
+        assert!(session_line(Lang::En, &mk(true, false)).contains("(c)"));
+    }
+
+    #[test]
+    fn mask_counts_characters_not_bytes() {
+        assert_eq!(mask(""), "");
+        assert_eq!(mask("abc"), "***");
+        assert_eq!(mask("密码"), "**");
+    }
+
+    #[test]
+    fn password_prompt_only_without_mux_on_credential_problems() {
+        use crate::diagnose::Problem;
+        assert!(should_prompt_password(false, Some(Problem::NeedsPassword)));
+        assert!(should_prompt_password(false, Some(Problem::PasswordDenied)));
+        // Host keys and passphrases keep the interactive OpenSSH path.
+        assert!(!should_prompt_password(
+            false,
+            Some(Problem::HostKeyUnknown)
+        ));
+        assert!(!should_prompt_password(false, Some(Problem::KeyPassphrase)));
+        // With multiplexing, `faragent login` covers password hosts.
+        assert!(!should_prompt_password(true, Some(Problem::NeedsPassword)));
+        assert!(!should_prompt_password(false, None));
     }
 }

@@ -5,12 +5,60 @@ use crate::ssh;
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TMUX_SOCKET: &str = "faragent";
 /// Pre-rename isolated tmux server; list/attach still query it.
 pub const LEGACY_TMUX_SOCKET: &str = "farssh";
+
+/// Which dialect the remote speaks. Posix = bash + tmux (Linux, macOS, WSL);
+/// Windows = cmd.exe default shell + PowerShell payloads, no tmux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostOs {
+    #[default]
+    Posix,
+    Windows,
+}
+
+impl HostOs {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "posix" | "linux" | "darwin" | "macos" | "unix" | "wsl" => Some(Self::Posix),
+            "windows" | "win" | "win32" => Some(Self::Windows),
+            _ => None,
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Posix => "posix",
+            Self::Windows => "windows",
+        }
+    }
+}
+
+/// One round trip every candidate remote shell answers: cmd.exe expands
+/// `%OS%`, PowerShell expands `"$env:OS"`, POSIX shells leave both literal.
+pub fn os_marker_command() -> &'static str {
+    r#"echo FARAGENT_OS_V1 %OS% "$env:OS""#
+}
+
+/// `Some(Windows)` when the marker reported `Windows_NT`, `Some(Posix)` when
+/// the marker ran but stayed literal. `None` means the marker never appeared
+/// (connection failure, exotic shell) — the caller must not cache that.
+pub fn parse_os_marker(text: &str) -> Option<HostOs> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("faragent_os_v1") {
+        return None;
+    }
+    if lower.contains("windows_nt") {
+        Some(HostOs::Windows)
+    } else {
+        Some(HostOs::Posix)
+    }
+}
 
 pub const TMUX_CONF: &str = r#"# Managed by faragent. Applies only to sessions started with -f this file.
 set -g prefix C-g
@@ -35,6 +83,8 @@ set -g update-environment "TERM COLORTERM"
 #[derive(Debug, Clone, Deserialize)]
 pub struct Probe {
     pub home: String,
+    #[serde(default)]
+    pub os: HostOs,
     #[serde(default)]
     pub shell: String,
     #[serde(default)]
@@ -84,10 +134,13 @@ pub struct DiskFile {
 pub struct ListDump {
     pub tmux: Vec<(String, String)>,
     pub files: Vec<DiskFile>,
+    /// `(agent, session-id-or-empty)` from the process scan (Windows remotes;
+    /// while tmux-less, this is the closest thing to a live marker).
+    pub procs: Vec<(String, String)>,
 }
 
 pub enum StartOutcome {
-    Ok { tmux: String },
+    Ok { name: String },
     Err { error: String, hint: String },
 }
 
@@ -98,6 +151,7 @@ pub fn write_tmux_conf_script() -> &'static str {
 pub fn probe_script() -> &'static str {
     r#"
 printf 'FARAGENT_PROBE_V1\n'
+printf 'os\tposix\n'
 printf 'home\t%s\n' "$HOME"
 printf 'user\t%s\n' "${USER:-${LOGNAME:-}}"
 printf 'shell\t%s\n' "${SHELL:-}"
@@ -341,6 +395,7 @@ fi
 pub fn parse_probe(text: &str) -> Result<Probe> {
     let body = after_magic(text, "FARAGENT_PROBE_V1")?;
     let mut home = String::new();
+    let mut os = HostOs::default();
     let mut shell = String::new();
     let mut path = String::new();
     let mut tmux_path = String::new();
@@ -354,6 +409,12 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
         let cols: Vec<&str> = line.split('\t').collect();
         match cols.first().copied() {
             Some("home") => home = cols.get(1).unwrap_or(&"").to_string(),
+            Some("os") => {
+                os = cols
+                    .get(1)
+                    .and_then(|s| HostOs::parse(s))
+                    .unwrap_or_default()
+            }
             Some("shell") => shell = cols.get(1).unwrap_or(&"").to_string(),
             Some("path") => path = cols.get(1).unwrap_or(&"").to_string(),
             Some("tmux_path") => tmux_path = cols.get(1).unwrap_or(&"").to_string(),
@@ -380,6 +441,7 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
     }
     Ok(Probe {
         home,
+        os,
         shell,
         path,
         tmux: TmuxProbe {
@@ -395,6 +457,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
     let body = after_magic(text, "FARAGENT_LIST_V1")?;
     let mut tmux = Vec::new();
     let mut files = Vec::new();
+    let mut procs = Vec::new();
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
         if line.is_empty() || line == "FARAGENT_LIST_V1" {
@@ -412,6 +475,12 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
                     }
                 }
             }
+            "proc" => {
+                let cols: Vec<&str> = line.splitn(3, '\t').collect();
+                if cols.len() >= 2 && !cols[1].is_empty() {
+                    procs.push((cols[1].to_string(), cols.get(2).unwrap_or(&"").to_string()));
+                }
+            }
             "file" => {
                 let cols: Vec<&str> = line.splitn(6, '\t').collect();
                 if cols.len() >= 4 {
@@ -427,7 +496,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
             _ => {}
         }
     }
-    Ok(ListDump { tmux, files })
+    Ok(ListDump { tmux, files, procs })
 }
 
 pub fn parse_start(text: &str) -> Result<StartOutcome> {
@@ -439,7 +508,7 @@ pub fn parse_start(text: &str) -> Result<StartOutcome> {
         match cols.first().copied() {
             Some("ok") if cols.len() >= 3 => {
                 last = Some(StartOutcome::Ok {
-                    tmux: cols[2].to_string(),
+                    name: cols[2].to_string(),
                 });
             }
             Some("err") if cols.len() >= 2 => {
@@ -517,9 +586,12 @@ pub fn grok_summary_meta(body: &[u8], cwd_hint: &str) -> (Option<String>, Option
     (title, cwd)
 }
 
-pub fn claude_guess_cwd(slug: &str) -> Option<String> {
+pub fn claude_guess_cwd(slug: &str, os: HostOs) -> Option<String> {
     if slug.is_empty() {
         return None;
+    }
+    if os == HostOs::Windows {
+        return crate::win::slug_to_cwd(slug);
     }
     let mut guessed = slug.replace('-', "/");
     if !guessed.starts_with('/') && guessed.starts_with("Users") {
@@ -705,6 +777,7 @@ mod tests {
         let text = "\
 login banner
 FARAGENT_PROBE_V1
+os	linux
 home	/home/me
 user	me
 shell	/bin/bash
@@ -718,6 +791,7 @@ agent	pi			missing
 ";
         let p = parse_probe(text).unwrap();
         assert_eq!(p.home, "/home/me");
+        assert_eq!(p.os, HostOs::Posix);
         assert!(p.tmux.found);
         assert_eq!(p.agent(AgentKind::Claude).unwrap().found, true);
         assert_eq!(p.agent(AgentKind::Codex).unwrap().found, false);
@@ -725,6 +799,52 @@ agent	pi			missing
             p.agent(AgentKind::Grok).unwrap().version.as_deref(),
             Some("0.9")
         );
+    }
+
+    #[test]
+    fn parse_probe_reads_windows_os() {
+        let text = "FARAGENT_PROBE_V1\r\nos\twindows\r\nhome\tC:\\Users\\me\r\n";
+        let p = parse_probe(text).unwrap();
+        assert_eq!(p.os, HostOs::Windows);
+        assert_eq!(p.home, "C:\\Users\\me");
+        assert!(!p.tmux.found);
+        // A probe from before the os line existed still parses.
+        let old = parse_probe("FARAGENT_PROBE_V1\nhome\t/home/me\n").unwrap();
+        assert_eq!(old.os, HostOs::Posix);
+    }
+
+    #[test]
+    fn os_marker_three_shells() {
+        // cmd.exe expands %OS%.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 Windows_NT \"$env:OS\""),
+            Some(HostOs::Windows)
+        );
+        // A PowerShell default shell expands $env:OS.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 %OS% Windows_NT"),
+            Some(HostOs::Windows)
+        );
+        // POSIX shells leave both forms literal.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 %OS% :OS"),
+            Some(HostOs::Posix)
+        );
+        // The marker never ran (connection failure): nothing to cache.
+        assert_eq!(
+            parse_os_marker("ssh: connect to host port 22: timed out"),
+            None
+        );
+    }
+
+    #[test]
+    fn os_marker_command_is_safe_in_every_shell() {
+        let cmd = os_marker_command();
+        assert!(cmd.contains("FARAGENT_OS_V1"));
+        assert!(cmd.contains("%OS%"));
+        assert!(cmd.contains("$env:OS"));
+        // No single quotes: cmd.exe would print them verbatim.
+        assert!(!cmd.contains('\''));
     }
 
     #[test]
@@ -765,7 +885,7 @@ agent	pi			missing
     fn parse_start_ok_and_err() {
         let ok = parse_start("FARAGENT_START_V1\nok\tcreated\tfaragent-grok-abc\n").unwrap();
         match ok {
-            StartOutcome::Ok { tmux } => assert_eq!(tmux, "faragent-grok-abc"),
+            StartOutcome::Ok { name } => assert_eq!(name, "faragent-grok-abc"),
             _ => panic!("expected ok"),
         }
         let err = parse_start("FARAGENT_START_V1\nerr\ttmux_missing\tInstall tmux\n").unwrap();
@@ -778,8 +898,34 @@ agent	pi			missing
     #[test]
     fn claude_slug_guess() {
         assert_eq!(
-            claude_guess_cwd("Users-me-src").as_deref(),
+            claude_guess_cwd("Users-me-src", HostOs::Posix).as_deref(),
             Some("/Users/me/src")
         );
+        assert_eq!(
+            claude_guess_cwd("C--Users-me-src-app", HostOs::Windows).as_deref(),
+            Some("C:\\Users\\me\\src\\app")
+        );
+        assert_eq!(claude_guess_cwd("", HostOs::Windows), None);
+    }
+
+    #[test]
+    fn parse_list_reads_proc_lines() {
+        let text = "\
+FARAGENT_LIST_V1
+file\tclaude\tabc123\t10.0\tC--Users-me\t
+proc\tclaude\tabc123
+proc\tclaude\t
+";
+        let dump = parse_list(text).unwrap();
+        assert_eq!(
+            dump.procs,
+            vec![
+                ("claude".to_string(), "abc123".to_string()),
+                ("claude".to_string(), String::new()),
+            ]
+        );
+        // POSIX output without proc lines still parses.
+        let old = parse_list("FARAGENT_LIST_V1\nfile\tgrok\tx\t1.0\thint\t\n").unwrap();
+        assert!(old.procs.is_empty());
     }
 }

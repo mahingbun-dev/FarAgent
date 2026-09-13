@@ -103,30 +103,41 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 ## 增加一家 agent
 
 1. `src/agents.rs` 的 `AgentKind`（`slug`、`title`、`resume_argv`）
-2. `src/remote.rs` 的 `list_script` / `row_from_file` 磁盘扫描
+2. 磁盘扫描：`src/remote.rs` 的 `list_script`（POSIX）**和** `src/win.rs` 的 `list_script`（Windows）
 3. resume argv 测试，以及 probe/list 解析测试
 4. 更新中英用户手册表格
 
 需要能按 id resume、家目录里有会话文件、并且有交互式 TUI。没有原生 TUI 的不要接到 attach 路径上。
 
+## Windows 方言
+
+`src/win.rs` 是 `src/remote.rs` POSIX 脚本在 Windows 上的对应物。基本规则：
+
+- 外壳是 cmd.exe（sshd 默认），干活的都是 PowerShell 5.1。
+- 脚本**全 ASCII**、经 stdin 交付（`powershell -File -`）；动态值走 base64 `$args`。上 ssh 命令行的内容完全不需要 cmd 引号处理，也不受 cmd ~8k 命令行上限约束。交互式 launcher 用 `-EncodedCommand`（stdin 要留给 tty），保持简短。
+- 每个脚本开头强制 UTF-8 输出（`[Console]::OutputEncoding`）。
+- `FARAGENT_*_V1` 标记与 tab 分隔协议和 POSIX 侧共用；`remote.rs` 的解析器不关心字节来自哪个方言。
+- 远端方言只探测一次（`echo FARAGENT_OS_V1 %OS% "$env:OS"`），按主机缓存在 `~/.faragent/config.json`；`probe_host` 会自愈缓存，并用另一方言重试一次。
+
+Windows 客户端没有 ControlMaster（Win32 OpenSSH）：`ssh::mux_capable()` 探测后整体省略复用参数。内存密码路径在 `src/askpass.rs`——改 ssh 环境变量相关代码前先读它的模块文档。
+
 ## 后续计划 vs 现在不要做
 
 已列入后续（见 [roadmap.md](roadmap.md)）：
 
-1. Windows 原生远程和客户端（OpenSSH + ConPTY，不依赖 WSL）
+1. Windows 会话托管：ConPTY + 命名管道 attach/detach，不用 WSL 也能有 tmux 等价保活
 2. 围绕主机 / agent / 会话的 App 前端样式
 3. 认证模式：`auto` / `key` / `password` 已支持；之后可考虑系统钥匙串与更省事的跳板机体验
 
 没有单独立项就不要做：
 
 - OpenClaw 式网关
-- 经 SSH 安装 tmux 或 agent
 - 把协议端口绑到 `0.0.0.0`
 - 把 API key 拷到笔记本
 
 ## 发布
 
-v0.1 只提供源码（`cargo install --path .`）。以后可以用 `cargo dist` 或 GitHub Actions 出 macOS/Linux 二进制。远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
+打 tag 后由 GitHub Actions（ubuntu/macos/windows）出各平台产物并附到 Release；`cargo install --path .` 依旧可用。POSIX 远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
 
 ## 许可证
 

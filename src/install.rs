@@ -2,13 +2,25 @@
 //! Official URLs are hardcoded here. The remote never supplies the script.
 
 use crate::agents::AgentKind;
+use crate::remote::HostOs;
 use crate::ssh::{self, Client};
+use crate::win;
 use anyhow::{anyhow, Result};
 
 pub const CLAUDE_INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
 pub const CODEX_INSTALL: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
 pub const GROK_INSTALL: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
 pub const PI_INSTALL: &str = "curl -fsSL https://pi.dev/install.sh | sh";
+
+/// Official Windows installers (PowerShell). Same "official only" rule as the
+/// POSIX side; all of them install per-user, no admin needed.
+pub const CLAUDE_INSTALL_PS1: &str = "irm https://claude.ai/install.ps1 | iex";
+pub const CODEX_INSTALL_PS1: &str = "irm https://chatgpt.com/codex/install.ps1 | iex";
+pub const GROK_INSTALL_PS1: &str = "irm https://x.ai/cli/install.ps1 | iex";
+pub const PI_INSTALL_PS1: &str = "irm https://pi.dev/install.ps1 | iex";
+
+pub const NODE_LTS_WINGET: &str =
+    "winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements";
 
 pub const NVM_INSTALL: &str =
     "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash";
@@ -53,6 +65,7 @@ pub enum PkgManager {
     Yum,
     Pacman,
     Apk,
+    Winget,
 }
 
 impl PkgManager {
@@ -65,6 +78,7 @@ impl PkgManager {
             "yum" => Some(Self::Yum),
             "pacman" => Some(Self::Pacman),
             "apk" => Some(Self::Apk),
+            "winget" => Some(Self::Winget),
             _ => None,
         }
     }
@@ -79,10 +93,11 @@ impl PkgManager {
             Self::Yum => "yum",
             Self::Pacman => "pacman",
             Self::Apk => "apk",
+            Self::Winget => "winget",
         }
     }
 
-    /// `(command, needs_sudo)`
+    /// `(command, needs_sudo)` — winget installs per-user, never sudo.
     pub fn install_cmd(self, pkg: &str) -> (String, bool) {
         match self {
             Self::Brew => (format!("brew install {pkg}"), false),
@@ -98,6 +113,12 @@ impl PkgManager {
             Self::Yum => (format!("sudo yum install -y {pkg}"), true),
             Self::Pacman => (format!("sudo pacman -S --noconfirm {pkg}"), true),
             Self::Apk => (format!("sudo apk add {pkg}"), true),
+            Self::Winget => (
+                format!(
+                    "winget install -e --id {pkg} --accept-source-agreements --accept-package-agreements"
+                ),
+                false,
+            ),
         }
     }
 }
@@ -143,33 +164,52 @@ impl Plan {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preflight {
+    pub os: HostOs,
     pub home: String,
     pub curl: bool,
     pub node: bool,
     pub npm: bool,
     pub nvm: bool,
     pub tmux: bool,
+    pub winget: bool,
     pub pkg: Option<PkgManager>,
     pub agent_found: bool,
     pub agent_path: Option<String>,
     pub live_tmux: bool,
 }
 
-pub fn agent_install_command(agent: AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Claude => CLAUDE_INSTALL,
-        AgentKind::Codex => CODEX_INSTALL,
-        AgentKind::Grok => GROK_INSTALL,
-        AgentKind::Pi => PI_INSTALL,
+pub fn agent_install_command(agent: AgentKind, os: HostOs) -> &'static str {
+    match os {
+        HostOs::Posix => match agent {
+            AgentKind::Claude => CLAUDE_INSTALL,
+            AgentKind::Codex => CODEX_INSTALL,
+            AgentKind::Grok => GROK_INSTALL,
+            AgentKind::Pi => PI_INSTALL,
+        },
+        HostOs::Windows => match agent {
+            AgentKind::Claude => CLAUDE_INSTALL_PS1,
+            AgentKind::Codex => CODEX_INSTALL_PS1,
+            AgentKind::Grok => GROK_INSTALL_PS1,
+            AgentKind::Pi => PI_INSTALL_PS1,
+        },
     }
 }
 
-pub fn agent_upgrade_command(agent: AgentKind) -> String {
-    match agent {
-        AgentKind::Claude => format!("claude update || {CLAUDE_INSTALL}"),
-        AgentKind::Grok => format!("grok update || {GROK_INSTALL}"),
-        AgentKind::Codex => CODEX_INSTALL.to_string(),
-        AgentKind::Pi => PI_INSTALL.to_string(),
+pub fn agent_upgrade_command(agent: AgentKind, os: HostOs) -> String {
+    match os {
+        HostOs::Posix => match agent {
+            AgentKind::Claude => format!("claude update || {CLAUDE_INSTALL}"),
+            AgentKind::Grok => format!("grok update || {GROK_INSTALL}"),
+            AgentKind::Codex => CODEX_INSTALL.to_string(),
+            AgentKind::Pi => PI_INSTALL.to_string(),
+        },
+        // PowerShell 5.1 has no `||`; `$?` carries the previous status.
+        HostOs::Windows => match agent {
+            AgentKind::Claude => format!("claude update; if (-not $?) {{ {CLAUDE_INSTALL_PS1} }}"),
+            AgentKind::Grok => format!("grok update; if (-not $?) {{ {GROK_INSTALL_PS1} }}"),
+            AgentKind::Codex => CODEX_INSTALL_PS1.to_string(),
+            AgentKind::Pi => PI_INSTALL_PS1.to_string(),
+        },
     }
 }
 
@@ -220,11 +260,15 @@ pub fn classify_path(path: &str) -> InstallMethod {
     InstallMethod::Native
 }
 
-pub fn preflight_script(agent: AgentKind) -> String {
+pub fn preflight_script(agent: AgentKind, os: HostOs) -> String {
+    if os == HostOs::Windows {
+        return win::preflight_script(agent);
+    }
     let slug = agent.slug();
     format!(
         r#"
 printf 'FARAGENT_PREFLIGHT_V1\n'
+printf 'os\tposix\n'
 printf 'home\t%s\n' "$HOME"
 which1() {{ command -v "$1" 2>/dev/null || true; }}
 printf 'curl\t%s\n' "$(which1 curl)"
@@ -271,12 +315,14 @@ pub fn parse_preflight(text: &str) -> Result<Preflight> {
         let key = cols.next().unwrap_or("");
         let val = cols.next().unwrap_or("").trim();
         match key {
+            "os" => pf.os = HostOs::parse(val).unwrap_or_default(),
             "home" => pf.home = val.to_string(),
             "curl" => pf.curl = !val.is_empty(),
             "node" => pf.node = !val.is_empty(),
             "npm" => pf.npm = !val.is_empty(),
             "nvm" => pf.nvm = val == "1" || val.eq_ignore_ascii_case("yes") || val == "true",
             "tmux" => pf.tmux = !val.is_empty() && val != "0",
+            "winget" => pf.winget = !val.is_empty() && val != "0",
             "pkg" => pf.pkg = PkgManager::parse(val),
             "agent_path" => {
                 if !val.is_empty() {
@@ -293,11 +339,18 @@ pub fn parse_preflight(text: &str) -> Result<Preflight> {
 
 pub fn preflight_host(host: &str, agent: AgentKind) -> Result<Preflight> {
     let client = Client::new(host)?;
-    let output = client.exec_login(&preflight_script(agent))?;
+    let os = crate::probe::host_os(host)?;
+    let output = match os {
+        HostOs::Posix => client.exec_login(&preflight_script(agent, os))?,
+        HostOs::Windows => client.exec_win(&win::preflight_script(agent), &[])?,
+    };
     if !output.status.success() {
         client.require_ok(&output)?;
     }
-    parse_preflight(&String::from_utf8_lossy(&output.stdout))
+    let mut pf = parse_preflight(&String::from_utf8_lossy(&output.stdout))?;
+    // The dispatcher already knows; the script's own line is advisory.
+    pf.os = os;
+    Ok(pf)
 }
 
 pub fn plan_for(action: Action, agent: AgentKind, pf: &Preflight) -> Plan {
@@ -309,6 +362,59 @@ pub fn plan_for(action: Action, agent: AgentKind, pf: &Preflight) -> Plan {
 }
 
 fn plan_install(agent: AgentKind, pf: &Preflight) -> Plan {
+    match pf.os {
+        HostOs::Posix => plan_install_posix(agent, pf),
+        HostOs::Windows => plan_install_windows(agent, pf),
+    }
+}
+
+/// Windows has no tmux and no curl bootstrapping: the agents' official
+/// PowerShell installers are per-user and self-contained; Node (only for Pi)
+/// comes from winget when available.
+fn plan_install_windows(agent: AgentKind, pf: &Preflight) -> Plan {
+    let mut steps = Vec::new();
+    let mut suggested = Vec::new();
+    let want_agent = !pf.agent_found;
+    let want_node = want_agent && agent == AgentKind::Pi && !pf.node;
+
+    if want_node {
+        if pf.winget {
+            steps.push(Step {
+                title: "Install Node.js LTS via winget".into(),
+                command: NODE_LTS_WINGET.to_string(),
+                sudo: false,
+            });
+        } else {
+            suggested.push(NODE_LTS_WINGET.to_string());
+        }
+    }
+
+    if want_agent {
+        steps.push(Step {
+            title: format!("Install {}", agent.title()),
+            command: agent_install_command(agent, HostOs::Windows).to_string(),
+            sudo: false,
+        });
+        steps.push(verify_step(agent, HostOs::Windows));
+    }
+
+    let blocked = if steps.is_empty() {
+        Some(Blocked::NothingToDo)
+    } else {
+        None
+    };
+    finish_plan(
+        Action::Install,
+        agent,
+        steps,
+        blocked,
+        Vec::new(),
+        suggested,
+        pf.os,
+    )
+}
+
+fn plan_install_posix(agent: AgentKind, pf: &Preflight) -> Plan {
     let mut steps = Vec::new();
     let mut warnings = Vec::new();
     let mut suggested = Vec::new();
@@ -378,10 +484,10 @@ fn plan_install(agent: AgentKind, pf: &Preflight) -> Plan {
     if want_agent && blocked.is_none() {
         steps.push(Step {
             title: format!("Install {}", agent.title()),
-            command: agent_install_command(agent).to_string(),
+            command: agent_install_command(agent, HostOs::Posix).to_string(),
             sudo: false,
         });
-        steps.push(verify_step(agent));
+        steps.push(verify_step(agent, HostOs::Posix));
     } else if !want_agent && want_tmux && blocked.is_none() && !steps.is_empty() {
         steps.push(Step {
             title: "Verify tmux".into(),
@@ -394,7 +500,15 @@ fn plan_install(agent: AgentKind, pf: &Preflight) -> Plan {
         blocked = Some(Blocked::NothingToDo);
     }
 
-    finish_plan(Action::Install, agent, steps, blocked, warnings, suggested)
+    finish_plan(
+        Action::Install,
+        agent,
+        steps,
+        blocked,
+        warnings,
+        suggested,
+        pf.os,
+    )
 }
 
 fn plan_upgrade(agent: AgentKind, pf: &Preflight) -> Plan {
@@ -408,12 +522,20 @@ fn plan_upgrade(agent: AgentKind, pf: &Preflight) -> Plan {
     let steps = vec![
         Step {
             title: format!("Upgrade {}", agent.title()),
-            command: agent_upgrade_command(agent),
+            command: agent_upgrade_command(agent, pf.os),
             sudo: false,
         },
-        verify_step(agent),
+        verify_step(agent, pf.os),
     ];
-    finish_plan(Action::Upgrade, agent, steps, None, warnings, Vec::new())
+    finish_plan(
+        Action::Upgrade,
+        agent,
+        steps,
+        None,
+        warnings,
+        Vec::new(),
+        pf.os,
+    )
 }
 
 fn plan_uninstall(agent: AgentKind, pf: &Preflight) -> Plan {
@@ -425,6 +547,7 @@ fn plan_uninstall(agent: AgentKind, pf: &Preflight) -> Plan {
             Some(Blocked::NotInstalled),
             Vec::new(),
             Vec::new(),
+            pf.os,
         );
     }
     let mut warnings = Vec::new();
@@ -432,20 +555,29 @@ fn plan_uninstall(agent: AgentKind, pf: &Preflight) -> Plan {
         warnings.push(Warning::LiveTmux);
     }
     let path = pf.agent_path.as_deref().unwrap_or("");
-    let command = uninstall_command(agent, path);
+    let command = uninstall_command(agent, path, pf.os);
     let steps = vec![Step {
         title: format!("Uninstall {} CLI (keep config)", agent.title()),
         command,
         sudo: false,
     }];
-    finish_plan(Action::Uninstall, agent, steps, None, warnings, Vec::new())
+    finish_plan(
+        Action::Uninstall,
+        agent,
+        steps,
+        None,
+        warnings,
+        Vec::new(),
+        pf.os,
+    )
 }
 
-pub fn uninstall_command(agent: AgentKind, path: &str) -> String {
-    match classify_path(path) {
-        InstallMethod::Npm => format!("npm uninstall -g {}", npm_package(agent)),
-        InstallMethod::Brew => brew_uninstall_command(agent).to_string(),
-        InstallMethod::Native => native_uninstall_command(agent, path),
+pub fn uninstall_command(agent: AgentKind, path: &str, os: HostOs) -> String {
+    match (os, classify_path(path)) {
+        (_, InstallMethod::Npm) => format!("npm uninstall -g {}", npm_package(agent)),
+        (HostOs::Posix, InstallMethod::Brew) => brew_uninstall_command(agent).to_string(),
+        (HostOs::Posix, InstallMethod::Native) => native_uninstall_command(agent, path),
+        (HostOs::Windows, _) => native_uninstall_command_windows(agent, path),
     }
 }
 
@@ -473,20 +605,67 @@ rm -f \"$HOME/.local/bin/claude\"; rm -rf \"$HOME/.local/share/claude\" \"$HOME/
     }
 }
 
+/// Windows native uninstall: best-effort removal of the detected binary plus
+/// the standard per-user install locations. Config directories stay, matching
+/// the POSIX arm's "keep config" promise.
+fn native_uninstall_command_windows(agent: AgentKind, path: &str) -> String {
+    let extra = if path.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Remove-Item -Force -ErrorAction SilentlyContinue {}; ",
+            win::ps_single_quote(path)
+        )
+    };
+    match agent {
+        AgentKind::Claude => format!(
+            "{extra}claude uninstall 2>$null; \
+Remove-Item -Force -Recurse -ErrorAction SilentlyContinue \
+\"$env:USERPROFILE\\.local\\bin\\claude.exe\", \"$env:USERPROFILE\\.local\\bin\\claude.cmd\", \
+\"$env:USERPROFILE\\.local\\share\\claude\""
+        ),
+        AgentKind::Codex => format!(
+            "{extra}Remove-Item -Force -Recurse -ErrorAction SilentlyContinue \
+\"$env:USERPROFILE\\.local\\bin\\codex.exe\", \"$env:USERPROFILE\\.local\\bin\\codex.cmd\""
+        ),
+        AgentKind::Grok => format!(
+            "{extra}Remove-Item -Force -Recurse -ErrorAction SilentlyContinue \
+\"$env:USERPROFILE\\.grok\\bin\\grok.exe\", \"$env:USERPROFILE\\.grok\\bin\\agent.exe\", \
+\"$env:USERPROFILE\\.local\\bin\\grok.exe\""
+        ),
+        AgentKind::Pi => format!(
+            "{extra}npm uninstall -g {pkg} 2>$null; \
+Remove-Item -Force -Recurse -ErrorAction SilentlyContinue \
+\"$env:USERPROFILE\\.local\\bin\\pi.exe\", \"$env:USERPROFILE\\.local\\bin\\pi.cmd\"",
+            pkg = NPM_PI
+        ),
+    }
+}
+
 fn nvm_use_and_install_lts() -> String {
     format!("export NVM_DIR=\"$HOME/.nvm\"; . \"$NVM_DIR/nvm.sh\"; {NVM_NODE_LTS}")
 }
 
-fn verify_step(agent: AgentKind) -> Step {
+fn verify_step(agent: AgentKind, os: HostOs) -> Step {
     let bin = agent.bin();
-    Step {
-        title: format!("Verify {bin}"),
-        command: format!(
-            "export PATH=\"$HOME/.local/bin:$HOME/.grok/bin:$PATH\"; \
+    match os {
+        HostOs::Posix => Step {
+            title: format!("Verify {bin}"),
+            command: format!(
+                "export PATH=\"$HOME/.local/bin:$HOME/.grok/bin:$PATH\"; \
 if [ -s \"$HOME/.nvm/nvm.sh\" ]; then export NVM_DIR=\"$HOME/.nvm\"; . \"$NVM_DIR/nvm.sh\"; fi; \
 hash -r || true; command -v {bin}; {bin} --version || {bin} -V || true"
-        ),
-        sudo: false,
+            ),
+            sudo: false,
+        },
+        HostOs::Windows => Step {
+            title: format!("Verify {bin}"),
+            command: format!(
+                "$env:PATH = \"$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.grok\\bin;$env:PATH\"; \
+(Get-Command {bin} -ErrorAction SilentlyContinue).Source; & {bin} --version"
+            ),
+            sudo: false,
+        },
     }
 }
 
@@ -497,6 +676,7 @@ fn finish_plan(
     blocked: Option<Blocked>,
     mut warnings: Vec<Warning>,
     suggested: Vec<String>,
+    os: HostOs,
 ) -> Plan {
     if steps.iter().any(|s| s.sudo) && !warnings.contains(&Warning::NeedsSudo) {
         warnings.push(Warning::NeedsSudo);
@@ -504,7 +684,7 @@ fn finish_plan(
     let script = if blocked.is_some() || steps.is_empty() {
         String::new()
     } else {
-        render_script(agent, action, &steps)
+        render_script(agent, action, &steps, os)
     };
     Plan {
         action,
@@ -517,7 +697,44 @@ fn finish_plan(
     }
 }
 
-fn render_script(agent: AgentKind, action: Action, steps: &[Step]) -> String {
+fn render_script(agent: AgentKind, action: Action, steps: &[Step], os: HostOs) -> String {
+    match os {
+        HostOs::Posix => render_script_posix(agent, action, steps),
+        HostOs::Windows => render_script_windows(agent, action, steps),
+    }
+}
+
+/// PowerShell twin of the POSIX wrapper: same `========== [n] title ==========`
+/// section shape, a closing line, and Read-Host so the live terminal pauses
+/// before dropping back to the TUI. Scripts stay short by construction; the
+/// launcher rides an EncodedCommand whose command line must fit cmd's limit.
+fn render_script_windows(agent: AgentKind, action: Action, steps: &[Step]) -> String {
+    let mut s = String::new();
+    s.push_str(win::UTF8_PREAMBLE);
+    s.push('\n');
+    s.push_str("$ErrorActionPreference = 'Continue'\n");
+    s.push_str(&format!(
+        "Write-Output 'faragent: {} {}'\n",
+        action_word(action),
+        agent.slug()
+    ));
+    s.push_str("Write-Output (\"host: \" + $env:COMPUTERNAME)\n");
+    for (i, step) in steps.iter().enumerate() {
+        let n = i + 1;
+        let title = step.title.replace('\'', "");
+        s.push_str(&format!(
+            "\nWrite-Output ''\nWrite-Output '========== [{n}] {title} =========='\n"
+        ));
+        s.push_str(&step.command);
+        s.push('\n');
+    }
+    s.push_str(
+        "\nWrite-Output ''\nWrite-Output 'faragent: finished. Press Enter to return to FarAgent.'\nRead-Host | Out-Null\n",
+    );
+    s
+}
+
+fn render_script_posix(agent: AgentKind, action: Action, steps: &[Step]) -> String {
     let mut s = String::from(
         r#"set -eo pipefail
 faragent_cleanup() {
@@ -581,12 +798,14 @@ mod tests {
 
     fn pf(curl: bool, tmux: bool, pkg: Option<PkgManager>, agent_path: Option<&str>) -> Preflight {
         Preflight {
+            os: HostOs::Posix,
             home: "/home/you".into(),
             curl,
             node: false,
             npm: false,
             nvm: false,
             tmux,
+            winget: false,
             pkg,
             agent_found: agent_path.is_some(),
             agent_path: agent_path.map(|s| s.to_string()),
@@ -594,23 +813,53 @@ mod tests {
         }
     }
 
+    fn pf_windows(node: bool, winget: bool, agent_path: Option<&str>) -> Preflight {
+        Preflight {
+            os: HostOs::Windows,
+            home: "C:\\Users\\you".into(),
+            node,
+            winget,
+            pkg: winget.then_some(PkgManager::Winget),
+            agent_found: agent_path.is_some(),
+            agent_path: agent_path.map(|s| s.to_string()),
+            ..Preflight::default()
+        }
+    }
+
     #[test]
     fn official_install_strings() {
         assert_eq!(
-            agent_install_command(AgentKind::Claude),
+            agent_install_command(AgentKind::Claude, HostOs::Posix),
             "curl -fsSL https://claude.ai/install.sh | bash"
         );
         assert_eq!(
-            agent_install_command(AgentKind::Codex),
+            agent_install_command(AgentKind::Codex, HostOs::Posix),
             "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
         );
         assert_eq!(
-            agent_install_command(AgentKind::Grok),
+            agent_install_command(AgentKind::Grok, HostOs::Posix),
             "curl -fsSL https://x.ai/cli/install.sh | bash"
         );
         assert_eq!(
-            agent_install_command(AgentKind::Pi),
+            agent_install_command(AgentKind::Pi, HostOs::Posix),
             "curl -fsSL https://pi.dev/install.sh | sh"
+        );
+        // Windows keeps the same "official installer only" rule.
+        assert_eq!(
+            agent_install_command(AgentKind::Claude, HostOs::Windows),
+            CLAUDE_INSTALL_PS1
+        );
+        assert_eq!(
+            agent_install_command(AgentKind::Codex, HostOs::Windows),
+            CODEX_INSTALL_PS1
+        );
+        assert_eq!(
+            agent_install_command(AgentKind::Grok, HostOs::Windows),
+            GROK_INSTALL_PS1
+        );
+        assert_eq!(
+            agent_install_command(AgentKind::Pi, HostOs::Windows),
+            PI_INSTALL_PS1
         );
     }
 
@@ -756,7 +1005,11 @@ mod tests {
 
     #[test]
     fn uninstall_native_local_bin() {
-        let cmd = uninstall_command(AgentKind::Claude, "/home/you/.local/bin/claude");
+        let cmd = uninstall_command(
+            AgentKind::Claude,
+            "/home/you/.local/bin/claude",
+            HostOs::Posix,
+        );
         assert!(cmd.contains("rm -f"));
         assert!(cmd.contains("/home/you/.local/bin/claude"));
         assert!(!cmd.contains("rm -rf \"$HOME/.claude\""));
@@ -768,11 +1021,13 @@ mod tests {
         let cmd = uninstall_command(
             AgentKind::Codex,
             "/home/you/.nvm/versions/node/v22.0.0/bin/codex",
+            HostOs::Posix,
         );
         assert_eq!(cmd, "npm uninstall -g @openai/codex");
         let pi = uninstall_command(
             AgentKind::Pi,
             "/var/services/homes/Mr.Ma/.npm-global/bin/pi",
+            HostOs::Posix,
         );
         assert_eq!(pi, "npm uninstall -g @earendil-works/pi-coding-agent");
     }
@@ -850,5 +1105,99 @@ live\t0
             classify_path("/home/you/.npm-global/bin/pi"),
             InstallMethod::Npm
         );
+        // Windows npm-global paths normalize to the same classification.
+        assert_eq!(
+            classify_path("C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex"),
+            InstallMethod::Npm
+        );
+    }
+
+    #[test]
+    fn windows_install_plan_uses_official_ps1_no_tmux() {
+        let plan = plan_for(
+            Action::Install,
+            AgentKind::Claude,
+            &pf_windows(false, true, None),
+        );
+        assert!(plan.can_run());
+        assert!(plan.blocked.is_none());
+        let cmds: Vec<_> = plan.steps.iter().map(|s| s.command.as_str()).collect();
+        assert!(cmds.contains(&CLAUDE_INSTALL_PS1));
+        assert!(!cmds.iter().any(|c| c.contains("tmux")));
+        assert!(!cmds.iter().any(|c| c.contains("curl")));
+        assert!(plan.script.contains("========== [1]"));
+        assert!(plan.script.contains("Read-Host"));
+        assert!(plan.script.contains("claude.ai/install.ps1"));
+        assert!(plan.script.contains("[Console]::OutputEncoding"));
+    }
+
+    #[test]
+    fn windows_pi_without_node_uses_winget_or_suggests_it() {
+        let plan = plan_for(
+            Action::Install,
+            AgentKind::Pi,
+            &pf_windows(false, true, None),
+        );
+        assert!(plan
+            .steps
+            .iter()
+            .any(|s| s.command.contains("OpenJS.NodeJS.LTS")));
+        assert!(plan.steps.iter().any(|s| s.command == PI_INSTALL_PS1));
+
+        // No winget: the node install becomes a copy-paste suggestion.
+        let plan = plan_for(
+            Action::Install,
+            AgentKind::Pi,
+            &pf_windows(false, false, None),
+        );
+        assert!(plan.suggested.iter().any(|s| s.contains("NodeJS.LTS")));
+        assert!(!plan.steps.iter().any(|s| s.command.contains("winget")));
+        assert!(plan.steps.iter().any(|s| s.command == PI_INSTALL_PS1));
+    }
+
+    #[test]
+    fn windows_uninstall_removes_native_binaries() {
+        let cmd = uninstall_command(
+            AgentKind::Grok,
+            "C:\\Users\\you\\.grok\\bin\\grok.exe",
+            HostOs::Windows,
+        );
+        assert!(cmd.contains("Remove-Item"));
+        assert!(cmd.contains("C:\\Users\\you\\.grok\\bin\\grok.exe"));
+        assert!(cmd.contains("$env:USERPROFILE\\.grok\\bin\\grok.exe"));
+
+        // npm shims still go through npm.
+        let npm = uninstall_command(
+            AgentKind::Codex,
+            "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
+            HostOs::Windows,
+        );
+        assert_eq!(npm, "npm uninstall -g @openai/codex");
+    }
+
+    #[test]
+    fn windows_upgrade_avoids_ps51_unsupported_operators() {
+        let cmd = agent_upgrade_command(AgentKind::Claude, HostOs::Windows);
+        assert!(cmd.contains("claude update"));
+        assert!(cmd.contains("install.ps1"));
+        assert!(!cmd.contains("||"), "PS 5.1 has no || operator: {cmd}");
+    }
+
+    #[test]
+    fn parse_preflight_windows_fixture() {
+        let text = "FARAGENT_PREFLIGHT_V1\r\n\
+os\twindows\r\n\
+home\tC:\\Users\\you\r\n\
+node\t\r\n\
+winget\tC:\\Users\\you\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe\r\n\
+pkg\twinget\r\n\
+agent_path\tC:\\Users\\you\\.local\\bin\\claude.exe\r\n\
+live\t0\r\n";
+        let p = parse_preflight(text).unwrap();
+        assert_eq!(p.os, HostOs::Windows);
+        assert!(p.winget);
+        assert_eq!(p.pkg, Some(PkgManager::Winget));
+        assert!(p.agent_found);
+        assert!(!p.tmux);
     }
 }

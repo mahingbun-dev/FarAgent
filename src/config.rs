@@ -1,6 +1,7 @@
 //! Local client config: `~/.faragent/config.json`.
 
 use crate::i18n::Lang;
+use crate::remote::HostOs;
 use crate::ssh::{self, AuthMode};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,10 @@ pub struct Config {
 pub struct HostConfig {
     #[serde(default)]
     pub auth: AuthMode,
+    /// Cached remote dialect. Saves one round trip per command on machines
+    /// whose ssh cannot multiplex; self-heals when the probe disagrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<HostOs>,
 }
 
 pub fn path() -> Result<PathBuf> {
@@ -64,15 +69,39 @@ pub fn auth_for(host: &str) -> AuthMode {
     load().hosts.get(host).map(|h| h.auth).unwrap_or_default()
 }
 
-/// `auto` is the default, so storing it just removes the override.
+/// `auto` is the default, so storing it just removes the override — but the
+/// cached `os` is not an override, it must survive.
 pub fn set_auth(host: &str, mode: AuthMode) -> Result<()> {
     let mut cfg = load();
+    apply_auth(&mut cfg, host, mode);
+    save(&cfg)
+}
+
+fn apply_auth(cfg: &mut Config, host: &str, mode: AuthMode) {
     if mode == AuthMode::Auto {
-        cfg.hosts.remove(host);
+        match cfg.hosts.get_mut(host) {
+            Some(h) if h.os.is_some() => h.auth = AuthMode::Auto,
+            _ => {
+                cfg.hosts.remove(host);
+            }
+        }
     } else {
-        cfg.hosts
-            .insert(host.to_string(), HostConfig { auth: mode });
+        cfg.hosts.entry(host.to_string()).or_default().auth = mode;
     }
+}
+
+/// Cached remote dialect for a host, if it was ever detected.
+pub fn host_os(host: &str) -> Option<HostOs> {
+    load().hosts.get(host).and_then(|h| h.os)
+}
+
+pub fn set_host_os(host: &str, os: HostOs) -> Result<()> {
+    let mut cfg = load();
+    let entry = cfg.hosts.entry(host.to_string()).or_default();
+    if entry.os == Some(os) {
+        return Ok(());
+    }
+    entry.os = Some(os);
     save(&cfg)
 }
 
@@ -113,5 +142,34 @@ mod tests {
         assert!(old.hosts.is_empty());
         let json = serde_json::to_string(&Config::default()).unwrap();
         assert!(!json.contains("hosts"), "empty map stays out of the file");
+    }
+
+    #[test]
+    fn cached_os_survives_auth_reset() {
+        let mut cfg = Config::default();
+        apply_auth(&mut cfg, "devbox", AuthMode::Password);
+        cfg.hosts.get_mut("devbox").unwrap().os = Some(HostOs::Windows);
+        apply_auth(&mut cfg, "devbox", AuthMode::Auto);
+        let h = cfg.hosts.get("devbox").expect("os cache keeps the entry");
+        assert_eq!(h.auth, AuthMode::Auto);
+        assert_eq!(h.os, Some(HostOs::Windows));
+
+        // Without a cached os, auto still drops the whole entry.
+        apply_auth(&mut cfg, "plain", AuthMode::Password);
+        apply_auth(&mut cfg, "plain", AuthMode::Auto);
+        assert!(!cfg.hosts.contains_key("plain"));
+    }
+
+    #[test]
+    fn host_os_roundtrips_and_defaults() {
+        let cfg: Config = serde_json::from_str(r#"{"hosts":{"win":{"os":"windows"}}}"#).unwrap();
+        assert_eq!(cfg.hosts["win"].os, Some(HostOs::Windows));
+        assert_eq!(cfg.hosts["win"].auth, AuthMode::Auto);
+        // A config written before the field existed still loads.
+        let old: Config =
+            serde_json::from_str(r#"{"hosts":{"devbox":{"auth":"password"}}}"#).unwrap();
+        assert_eq!(old.hosts["devbox"].os, None);
+        let json = serde_json::to_string(&Config::default()).unwrap();
+        assert!(!json.contains("\"os\""));
     }
 }

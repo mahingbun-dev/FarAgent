@@ -7,8 +7,8 @@
 ## 我们假定
 
 - 你已经信任以该用户执行 `ssh <host>`。
-- 认证默认是 **密钥 / ssh-agent**（`BatchMode`），SSH 本身不弹密码。服务端只让用账号密码时，可以切到密码模式：**密码只输入给系统 OpenSSH**，FarAgent 不读取、不转发、不写进配置或日志；登录成功后只留下一条 ControlMaster 多路复用 socket（`~/.faragent/cm/`，权限 `0700`，密码模式默认保留 4 小时）。用 `faragent auth --host X --mode key` 可随时退回只允许密钥。
-- 远程命令（`bash -lc`、tmux socket `faragent`）以 SSH 用户身份运行。确认过的 tmux/curl 步骤可能在直播 PTY 里调用 `sudo`（密码当场输入，FarAgent 不保存）。
+- 认证默认是 **密钥 / ssh-agent**（`BatchMode`），SSH 本身不弹密码。服务端只让用账号密码时可以切到密码模式。macOS/Linux 上**密码只输入给系统 OpenSSH**，FarAgent 不读取、不转发、不写进配置或日志；登录成功后只留下一条 ControlMaster 多路复用 socket（`~/.faragent/cm/`，权限 `0700`，密码模式默认保留 4 小时）。Windows 客户端（自带 ssh 不支持复用）改由 FarAgent 自己询问密码，**只保留在本次运行的进程内存里**——退出即清零、绝不写盘——再经 `SSH_ASKPASS` 助手（把 faragent 自身再拉起一次）交给 OpenSSH，密码经回环 socket + 一次性令牌传递。`faragent auth --host X --mode key` 可随时退回只允许密钥。
+- 远程命令以 SSH 用户身份运行：Linux/macOS 上是 `bash -lc` 加 tmux socket `faragent`；Windows 上经默认 cmd 外壳调 PowerShell，没有 tmux。确认过的 tmux/curl 步骤可能在直播 PTY 里调用 `sudo`（密码当场输入，FarAgent 不保存）；Windows 安装全部是用户级，从不需要管理员。
 
 ## 我们不会做的事
 

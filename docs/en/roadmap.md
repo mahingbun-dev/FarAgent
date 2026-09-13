@@ -2,20 +2,18 @@
 
 **English** · [中文](../zh/roadmap.md)
 
-v0.1 is the SSH picker plus native TUI passthrough on Linux, macOS, and Windows **WSL**. The items below are committed follow-up work, not v0.1 scope.
+v0.2 ships the SSH picker plus native TUI passthrough on Linux, macOS, and **Windows 11** — both as a client and as a remote host (resume mode, no WSL). WSL remains supported; it is just a Linux host. The items below are committed follow-up work.
 
-## 1. Native Windows (no WSL)
+## 1. Windows session host (tmux-equivalent keep-alive, no WSL)
 
-Use Windows as both a **client** and a **remote host** without requiring WSL2.
+v0.2's Windows remote runs agents in the **foreground**: quitting the agent (or losing the connection) ends it, and the conversation comes back through `resume`. The next step is real persistence.
 
 | Area | Intent |
 | --- | --- |
-| Remote | Talk to Win32 OpenSSH + ConPTY directly (`claude` / `codex` / `grok` / `pi` as native Windows binaries) |
-| Persistence | Keep sessions alive without relying on Linux `tmux` (Windows-native session host or equivalent) |
-| Client | `faragent` itself runs on Windows Terminal / PowerShell, not only macOS and Linux |
-| PATH / probe | Honor user-level PATH, `AppData`, and `%USERPROFILE%\.claude` / `.codex` / `.grok` / `.pi` |
-
-WSL remains supported. Native Windows is additive.
+| Host | A hidden faragent subcommand hosts the agent under a ConPTY; the session survives disconnects |
+| Attach | Named-pipe attach/detach with the `C-g d` prefix, the way tmux behaves |
+| Live | `[live]` works on Windows remotes; the process-scan `[running]` heuristic stays for foreign processes |
+| Upload | Shipped to the remote on first use, with the user's confirmation; no admin rights, nothing in the registry |
 
 ## 2. App frontend styling
 
@@ -31,4 +29,4 @@ The manager UI can evolve; remote execution and credentials stay on the host.
 
 ## Still out of scope until separately planned
 
-An OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop. (Password / keyboard-interactive login now ships — see [SSH access](ssh-access.md#password-only-servers-optional).)
+An OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop. (Password / keyboard-interactive login ships — see [SSH access](ssh-access.md#password-only-servers-optional); Windows 10 is not supported, Windows 11 only.)

@@ -7,8 +7,8 @@
 ## What we assume
 
 - You already trust `ssh <host>` as that user.
-- Authentication defaults to **keys / ssh-agent** (`BatchMode`); SSH itself does not prompt. When a server only accepts an account password you can switch that host to password mode: the password goes **only into system OpenSSH** — FarAgent never reads it, forwards it, or writes it to config or logs. What is left behind is a multiplexed ControlMaster socket (`~/.faragent/cm/`, mode `0700`, kept 4 hours by default). `faragent auth --host X --mode key` goes back to keys-only at any time.
-- Remote commands (`bash -lc`, tmux socket `faragent`) run as the SSH user. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarAgent does not store it).
+- Authentication defaults to **keys / ssh-agent** (`BatchMode`); SSH itself does not prompt. When a server only accepts an account password you can switch that host to password mode. On macOS/Linux the password goes **only into system OpenSSH** — FarAgent never reads it, forwards it, or writes it to config or logs — and what is left behind is a multiplexed ControlMaster socket (`~/.faragent/cm/`, mode `0700`, kept 4 hours by default). On a Windows client (whose ssh cannot multiplex) FarAgent asks for the password itself and keeps it **in this process's memory only** — zeroized on exit, never written to disk — and feeds it to OpenSSH through the `SSH_ASKPASS` helper (faragent re-invoked; the secret crosses a loopback socket behind a one-time token). `faragent auth --host X --mode key` goes back to keys-only at any time.
+- Remote commands run as the SSH user: `bash -lc` plus tmux socket `faragent` on Linux/macOS, PowerShell (via the default cmd shell) on Windows with no tmux. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarAgent does not store it); Windows installs are per-user and never need admin.
 
 ## What we do not do
 
