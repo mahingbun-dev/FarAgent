@@ -5,12 +5,60 @@ use crate::ssh;
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TMUX_SOCKET: &str = "faragent";
 /// Pre-rename isolated tmux server; list/attach still query it.
 pub const LEGACY_TMUX_SOCKET: &str = "farssh";
+
+/// Which dialect the remote speaks. Posix = bash + tmux (Linux, macOS, WSL);
+/// Windows = cmd.exe default shell + PowerShell payloads, no tmux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostOs {
+    #[default]
+    Posix,
+    Windows,
+}
+
+impl HostOs {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "posix" | "linux" | "darwin" | "macos" | "unix" | "wsl" => Some(Self::Posix),
+            "windows" | "win" | "win32" => Some(Self::Windows),
+            _ => None,
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Posix => "posix",
+            Self::Windows => "windows",
+        }
+    }
+}
+
+/// One round trip every candidate remote shell answers: cmd.exe expands
+/// `%OS%`, PowerShell expands `"$env:OS"`, POSIX shells leave both literal.
+pub fn os_marker_command() -> &'static str {
+    r#"echo FARAGENT_OS_V1 %OS% "$env:OS""#
+}
+
+/// `Some(Windows)` when the marker reported `Windows_NT`, `Some(Posix)` when
+/// the marker ran but stayed literal. `None` means the marker never appeared
+/// (connection failure, exotic shell) — the caller must not cache that.
+pub fn parse_os_marker(text: &str) -> Option<HostOs> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("faragent_os_v1") {
+        return None;
+    }
+    if lower.contains("windows_nt") {
+        Some(HostOs::Windows)
+    } else {
+        Some(HostOs::Posix)
+    }
+}
 
 pub const TMUX_CONF: &str = r#"# Managed by faragent. Applies only to sessions started with -f this file.
 set -g prefix C-g
@@ -35,6 +83,8 @@ set -g update-environment "TERM COLORTERM"
 #[derive(Debug, Clone, Deserialize)]
 pub struct Probe {
     pub home: String,
+    #[serde(default)]
+    pub os: HostOs,
     #[serde(default)]
     pub shell: String,
     #[serde(default)]
@@ -98,6 +148,7 @@ pub fn write_tmux_conf_script() -> &'static str {
 pub fn probe_script() -> &'static str {
     r#"
 printf 'FARAGENT_PROBE_V1\n'
+printf 'os\tposix\n'
 printf 'home\t%s\n' "$HOME"
 printf 'user\t%s\n' "${USER:-${LOGNAME:-}}"
 printf 'shell\t%s\n' "${SHELL:-}"
@@ -341,6 +392,7 @@ fi
 pub fn parse_probe(text: &str) -> Result<Probe> {
     let body = after_magic(text, "FARAGENT_PROBE_V1")?;
     let mut home = String::new();
+    let mut os = HostOs::default();
     let mut shell = String::new();
     let mut path = String::new();
     let mut tmux_path = String::new();
@@ -354,6 +406,12 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
         let cols: Vec<&str> = line.split('\t').collect();
         match cols.first().copied() {
             Some("home") => home = cols.get(1).unwrap_or(&"").to_string(),
+            Some("os") => {
+                os = cols
+                    .get(1)
+                    .and_then(|s| HostOs::parse(s))
+                    .unwrap_or_default()
+            }
             Some("shell") => shell = cols.get(1).unwrap_or(&"").to_string(),
             Some("path") => path = cols.get(1).unwrap_or(&"").to_string(),
             Some("tmux_path") => tmux_path = cols.get(1).unwrap_or(&"").to_string(),
@@ -380,6 +438,7 @@ pub fn parse_probe(text: &str) -> Result<Probe> {
     }
     Ok(Probe {
         home,
+        os,
         shell,
         path,
         tmux: TmuxProbe {
@@ -705,6 +764,7 @@ mod tests {
         let text = "\
 login banner
 FARAGENT_PROBE_V1
+os	linux
 home	/home/me
 user	me
 shell	/bin/bash
@@ -718,6 +778,7 @@ agent	pi			missing
 ";
         let p = parse_probe(text).unwrap();
         assert_eq!(p.home, "/home/me");
+        assert_eq!(p.os, HostOs::Posix);
         assert!(p.tmux.found);
         assert_eq!(p.agent(AgentKind::Claude).unwrap().found, true);
         assert_eq!(p.agent(AgentKind::Codex).unwrap().found, false);
@@ -725,6 +786,52 @@ agent	pi			missing
             p.agent(AgentKind::Grok).unwrap().version.as_deref(),
             Some("0.9")
         );
+    }
+
+    #[test]
+    fn parse_probe_reads_windows_os() {
+        let text = "FARAGENT_PROBE_V1\r\nos\twindows\r\nhome\tC:\\Users\\me\r\n";
+        let p = parse_probe(text).unwrap();
+        assert_eq!(p.os, HostOs::Windows);
+        assert_eq!(p.home, "C:\\Users\\me");
+        assert!(!p.tmux.found);
+        // A probe from before the os line existed still parses.
+        let old = parse_probe("FARAGENT_PROBE_V1\nhome\t/home/me\n").unwrap();
+        assert_eq!(old.os, HostOs::Posix);
+    }
+
+    #[test]
+    fn os_marker_three_shells() {
+        // cmd.exe expands %OS%.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 Windows_NT \"$env:OS\""),
+            Some(HostOs::Windows)
+        );
+        // A PowerShell default shell expands $env:OS.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 %OS% Windows_NT"),
+            Some(HostOs::Windows)
+        );
+        // POSIX shells leave both forms literal.
+        assert_eq!(
+            parse_os_marker("FARAGENT_OS_V1 %OS% :OS"),
+            Some(HostOs::Posix)
+        );
+        // The marker never ran (connection failure): nothing to cache.
+        assert_eq!(
+            parse_os_marker("ssh: connect to host port 22: timed out"),
+            None
+        );
+    }
+
+    #[test]
+    fn os_marker_command_is_safe_in_every_shell() {
+        let cmd = os_marker_command();
+        assert!(cmd.contains("FARAGENT_OS_V1"));
+        assert!(cmd.contains("%OS%"));
+        assert!(cmd.contains("$env:OS"));
+        // No single quotes: cmd.exe would print them verbatim.
+        assert!(!cmd.contains('\''));
     }
 
     #[test]

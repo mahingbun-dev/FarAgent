@@ -579,13 +579,25 @@ impl Client {
             .map(|a| shell_single_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
+        self.run_remote_line(&joined)
+    }
+
+    /// Run a literal command line with **no** local quoting: the remote's
+    /// default shell receives it verbatim. Only for lines already safe in
+    /// every shell (e.g. the OS marker); `exec` POSIX-quotes and would feed
+    /// cmd.exe literal single quotes.
+    pub fn exec_raw_line(&self, line: &str) -> Result<Output> {
+        self.run_remote_line(line)
+    }
+
+    fn run_remote_line(&self, line: &str) -> Result<Output> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
-        cmd.arg(&joined);
+        cmd.arg(line);
         cmd.stdin(Stdio::null());
-        let line = self.command_line(flavor, &joined);
-        self.run_cmd(cmd, &line, EXEC_TIMEOUT)
+        let full = self.command_line(flavor, line);
+        self.run_cmd(cmd, &full, EXEC_TIMEOUT)
     }
 
     /// Login-shell so nvm / Homebrew / ~/.local/bin are visible.

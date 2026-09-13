@@ -151,6 +151,7 @@ fn login(host: &str) -> Result<()> {
 fn json_probe(p: &probe::Probe) -> serde_json::Value {
     serde_json::json!({
         "home": p.home,
+        "os": p.os.slug(),
         "shell": p.shell,
         "path": p.path,
         "tmux": {
