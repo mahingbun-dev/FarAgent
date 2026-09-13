@@ -31,4 +31,4 @@ WSL 仍然支持。原生 Windows 是增量能力。
 
 ## 在另立项之前仍不做
 
-密码 / OTP SSH、ProxyJump、OpenClaw 式网关、源码编译 tmux、Entware/synopkg、把 API key 拷到笔记本。
+OpenClaw 式网关、源码编译 tmux、Entware/synopkg、把 API key 拷到笔记本。（密码 / 键盘交互登录已支持，见 [SSH 连接](ssh-access.md#服务端只让用密码可选)。）

@@ -2,9 +2,11 @@
 
 [English](../en/ssh-access.md) · **中文**
 
-FarAgent **不自己做网络穿透**。它只读本机 `~/.ssh/config` 里的具体 `Host`，再用系统 OpenSSH 以 **BatchMode**（密钥免密、不弹密码）连过去。
+FarAgent **不自己做网络穿透**。它只读本机 `~/.ssh/config` 里的具体 `Host`，再用系统 OpenSSH 连过去。
 
-所以本章的目标只有一句：让 `ssh <Host> true` 在你真正使用 faragent 的那张网上成功。成功之后，TUI 里选这个 Host 即可。
+认证默认走 **密钥 / ssh-agent**（`BatchMode`，不弹密码）。如果服务端只让用账号密码，FarAgent 会**在报错页里明确告诉你**，并让你做一次交互式登录（密码只交给系统 ssh），之后复用这条连接，见 [服务端只让用密码](#服务端只让用密码可选)。
+
+所以本章的目标只有一句：让 `ssh <Host> true` 在你真正使用 faragent 的那张网上成功。成功之后，TUI 里选这个 Host 即可。连不上时，FarAgent 会把 **ssh 的原始报错 + 原因 + 可直接复制的修复命令** 一起显示出来，对照表见 [连不上时](#连不上时原始报错--原因--解决)。
 
 四种常见连法：
 
@@ -15,7 +17,9 @@ FarAgent **不自己做网络穿透**。它只读本机 `~/.ssh/config` 里的�
 | 公网 IP 会变，或想记一个名字 | [域名](#域名) | 家宽通常仍要端口转发 |
 | 家宽在 NAT / CGNAT 后面，或要在咖啡馆、4G 连家里 | [Tailscale 内网穿透](#用-tailscale-做内网穿透推荐) | **否（推荐）** |
 
-v0.1 **不支持** 密码 SSH、OTP、`ProxyJump`。跳板机、frp 的「先跳再连」写不成 FarAgent 能用的 Host。把隧道做成 **看起来像直连** 的地址（例如本机端口转发到 `127.0.0.1`）可以，但更省事的是 Tailscale。
+跳板机 / `ProxyJump` 由系统 ssh 处理，FarAgent 不干预：判定标准仍然是 `ssh <Host> true` 能通。把隧道做成 **看起来像直连** 的地址（例如本机端口转发到 `127.0.0.1`）也可以，家宽场景更省事的是 Tailscale。
+
+OTP / 两步验证：服务端用 **keyboard-interactive** 提供验证码时，在密码模式的交互式登录里按提示输入即可。
 
 ---
 
@@ -33,15 +37,33 @@ v0.1 **不支持** 密码 SSH、OTP、`ProxyJump`。跳板机、frp 的「先跳
 打开 TUI 之前先确认：
 
 ```bash
-ssh -o BatchMode=yes home-mac true
+ssh -o BatchMode=yes home-mac true    # 密钥这条路必须零交互成功
 faragent doctor --host home-mac
 ```
 
-`BatchMode=yes` 失败 = 还在要密码或密钥没配对。FarAgent 同样会失败。
+`BatchMode=yes` 成功 → 什么都不用做，直接用。
+
+失败也没关系，先看清它要什么：
+
+```bash
+# 问服务端「你接受哪些认证方式」（不会真的登录）
+ssh -o PreferredAuthentications=none home-mac true
+# → Permission denied (publickey).                       只收密钥
+# → Permission denied (publickey,password).              也接受密码
+```
+
+对应的三种登录方式，随时可以切换（TUI 主机列表按 **`g`** 循环切换，等价于）：
+
+```bash
+faragent auth --host home-mac                 # 看当前模式
+faragent auth --host home-mac --mode auto     # 默认：先试密钥，服务端要密码就提示
+faragent auth --host home-mac --mode key      # 只允许密钥，绝不弹密码
+faragent auth --host home-mac --mode password # 账号密码 / 键盘交互
+```
 
 ---
 
-## 所有方式共用：打开 sshd，配好密钥
+## 所有方式共用：打开 sshd，配好密钥（推荐）
 
 先做完这一节，再选局域网 / 公网 / 域名 / Tailscale。
 
@@ -107,7 +129,7 @@ macOS 打开「远程登录」后一般会自动放行。
 
 ### 3. 本机生成密钥，拷到远程
 
-FarAgent 只接受密钥 / ssh-agent。没有密钥就生成一把：
+这是推荐路线：密钥登录稳定、可单独吊销、不受改密码影响。没有密钥就生成一把：
 
 ```bash
 ssh-keygen -t ed25519 -C "you@laptop" -f ~/.ssh/id_ed25519
@@ -431,6 +453,59 @@ TUI 里选 `home-mac`。之后探测、安装 agent、attach tmux，全部走这
 
 ---
 
+## 服务端只让用密码（可选）
+
+有些机器只让用账号密码 —— 同事临时给你的账号、刚装好还没放公钥的新服务器，或者 sshd 关掉了 `PubkeyAuthentication`。FarAgent 支持这条路：
+
+1. 把这个 Host 切到密码模式：`faragent auth --host home-mac --mode password`（TUI 主机列表按 `g` 循环切换也一样）。
+2. 做一次交互式登录：`faragent login --host home-mac`（TUI 里在报错页按 `a`）。
+3. 之后 FarAgent 复用这条连接，默认 4 小时内不用再输。
+
+先说清楚边界：
+
+- 密码**只输入给系统 OpenSSH**。FarAgent 不读取、不转发、不写进配置文件、不记日志。
+- 登录成功后留下一条 ControlMaster 多路复用连接（socket 在 `~/.faragent/cm/`，目录权限 `0700`），探测、列会话、attach 全都走它，所以不会反复问你密码。
+- 连接断了或超过 `ControlPersist`（密码模式默认 **4 小时**）后，再 `faragent login` 一次即可。
+- 第一次连这台机器还会问主机指纹（`yes/no`），交互式登录时核对后回答 `yes` 就行。
+- `faragent doctor` 会打印当前模式；`faragent auth --host home-mac --mode auto` 切回默认（先钥匙、必要时提示密码）。
+
+```bash
+faragent auth --host home-mac --mode password   # 切换
+faragent login --host home-mac                  # 输一次密码 / 确认指纹
+faragent doctor --host home-mac                 # 之后正常用
+```
+
+> 密钥仍然更稳：不受改密码影响，能单独吊销，也不需要复用连接。配好密钥后 `faragent auth --host home-mac --mode auto` 即可。
+
+---
+
+## 连不上时：原始报错 → 原因 → 解决
+
+FarAgent 不猜、也不只丢一句「连接失败」：它把 **ssh 的原始输出** 原样留下，再给出原因和可直接复制的命令。TUI 报错页的按键是 `j/k` 滚动、`a` 交互式登录、`r` 重试、`y` 复制全文、`Esc` 返回；`faragent doctor --host X` 和 `faragent probe --host X` 会打印同样的内容。
+
+| 原始报错（ssh 原样输出） | 原因 | 解决 |
+| --- | --- | --- |
+| `Permission denied (publickey).` | 服务端拒绝了公钥：公钥没上传、`User` 不对，或远程权限不对 | `ssh -v <Host> true` 看送的是哪把钥匙；`ssh-copy-id -i ~/.ssh/id_ed25519.pub <Host>`；在 `~/.ssh/config` 里写 `IdentityFile` + `IdentitiesOnly yes`；只让用密码时见上一节 |
+| `Permission denied (publickey,password).` | 服务端接受密码，但 FarAgent 不会自己弹密码框 | `faragent auth --host <Host> --mode password` 后 `faragent login --host <Host>`（TUI 里按 `a`） |
+| `Too many authentication failures` | ssh-agent 里的钥匙太多，轮到你那把之前服务端就断了 | 钉一把：`IdentityFile` + `IdentitiesOnly yes`；`ssh-add -D` 清掉不用的钥匙 |
+| `Host key verification failed.` | 这台机器的指纹不在 `known_hosts`（第一次连） | `faragent login --host <Host>` 核对指纹后回答 `yes`；或 `ssh-keyscan` 写入后再核对 |
+| `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!` | 指纹变了：重装系统、重建云主机，或有人在中间 | 先在远程 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 核对，再 `ssh-keygen -R <Host>`（非 22 端口用 `ssh-keygen -R "[<Host>]:<端口>"`） |
+| `WARNING: UNPROTECTED PRIVATE KEY FILE!` / `Permissions 0644 ... are too open` | 本机 `~/.ssh` 文件权限过宽或属主不对 | `chmod 700 ~/.ssh && chmod 600 ~/.ssh/config ~/.ssh/id_ed25519 ~/.ssh/known_hosts` |
+| `Load key "...": invalid format` | 私钥损坏，或 `IdentityFile` 写成了 `.pub` | 重新 `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519`，再 `ssh-copy-id` |
+| `Enter passphrase for key '...'` | 私钥有口令，本机 agent 没记住 | `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`（Linux：`ssh-add ~/.ssh/id_ed25519`） |
+| `No such identity` / `Identity file ... not accessible` | `IdentityFile` 指的文件不存在 | `grep -n -i identityfile ~/.ssh/config`，改成真实路径或生成密钥 |
+| `Could not resolve hostname` | 主机名解析不了：`HostName` 写错、DNS 不通，或内网名字要先连 VPN / Tailscale | `dig +short <HostName>`；`tailscale status`；临时把可达 IP 写进 `HostName` |
+| `Connection refused` | 到了机器但端口没人监听：sshd 没起、端口不同，或防火墙 REJECT | 远程 `sudo systemctl status ssh`（macOS 打开「远程登录」）；`nc -vz <Host> <端口>`；安全组放行 |
+| `Operation timed out` | 完全没有响应：地址不可达、丢包，或远程登录壳卡住 | `ping -c 2 <Host>`、`nc -vz <Host> <端口>`；`~/.bashrc` 里不要有等待输入的命令 |
+| `No route to host` / `Network is unreachable` | 本机没有到那个地址的路由 | 换网络、开 Tailscale / VPN，或用公网 IP / 域名 |
+| `kex_exchange_identification: Connection closed by remote host` | 握手阶段就被关：sshd 没真在跑、被 fail2ban 类机制拉黑、`hosts.deny` 拒绝 | 等几分钟再试；远程 `sudo systemctl status ssh`；检查 `hosts.allow` / `hosts.deny` |
+| `no matching key exchange method found. Their offer: ...` | 服务端太老（只给 ssh-rsa / 老 KEX） | `ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa <Host> true` 能用就把这几行写进 `~/.ssh/config` |
+| `bash: ...` / 探测输出里没有 `FARAGENT_PROBE_V1` | SSH 通了，但远程登录壳没跑成 bash | `ssh <Host> -- bash -lc 'echo ok'`；确认远程有 bash，`~/.bashrc` / `~/.bash_profile` 里没有 `read` / `ssh-add` 之类会卡住的命令 |
+
+报错页里按 `y` 会把 **结论 + 原始报错 + 上面这些步骤** 整段复制到剪贴板，可以直接贴给同事或在 issue 里附上。
+
+---
+
 ## 一台机器几个 Host
 
 选择器按 `Host` 别名列出条目。同一台远程建议写成两个名字，免得在家还绕一圈 VPN：
@@ -461,10 +536,19 @@ faragent doctor --host home-mac
 faragent
 ```
 
-日常用法见 [用户手册](user-guide.md)。能 SSH 进这台机器，就等于能用这个用户的 agent 和代码——按这个标准保护密钥、sshd 和 Tailscale 账号。
+服务端只让用密码时，多两步改用密码模式：
+
+```bash
+faragent auth --host home-mac --mode password   # 或 TUI 主机列表按 g
+faragent login --host home-mac                  # 输一次密码（FarAgent 不保存）
+```
+
+日常用法见 [用户手册](user-guide.md)。能 SSH 进这台机器，就等于能用这个用户的 agent 和代码——按这个标准保护密钥、密码、sshd 和 Tailscale 账号。
 
 ## 另见
 
+- [服务端只让用密码（可选）](#服务端只让用密码可选)
+- [连不上时：原始报错 → 原因 → 解决](#连不上时原始报错--原因--解决)
 - [用户手册 · 配置 SSH](user-guide.md#配置-ssh)
 - [安全说明](security.md)
 - [Tailscale 下载](https://tailscale.com/download) · [Linux 安装](https://tailscale.com/docs/install/linux) · [macOS 安装](https://tailscale.com/docs/install/mac) · [MagicDNS](https://tailscale.com/docs/features/magicdns)

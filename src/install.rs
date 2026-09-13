@@ -295,7 +295,7 @@ pub fn preflight_host(host: &str, agent: AgentKind) -> Result<Preflight> {
     let client = Client::new(host)?;
     let output = client.exec_login(&preflight_script(agent))?;
     if !output.status.success() {
-        Client::require_ok(&output)?;
+        client.require_ok(&output)?;
     }
     parse_preflight(&String::from_utf8_lossy(&output.stdout))
 }

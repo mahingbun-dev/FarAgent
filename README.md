@@ -45,7 +45,7 @@ It is not a new coding agent, not a cloud IDE, and not a gateway you install on 
 
 ```mermaid
 flowchart LR
-  You[Your laptop<br/>faragent TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[Remote login shell]
+  You[Your laptop<br/>faragent TUI] -->|OpenSSH ControlMaster<br/>keys or password| Probe[Remote login shell]
   Probe --> List[Detect claude / codex / grok / pi<br/>List disk sessions]
   You -->|ssh -tt PTY| Tmux[tmux socket: faragent]
   Tmux --> Agent[Native TUI<br/>permissions, slash, mouse]
@@ -65,6 +65,8 @@ flowchart LR
 - **Safe reconnect** — live sessions only attach, so you do not get two Codex agents rewriting the same tree ([openai/codex#30424](https://github.com/openai/codex/issues/30424)).
 - **Remote stays yours** — official installers run on the host after you confirm the commands; API keys stay remote; protocol servers bind nowhere; traffic is SSH.
 - **Install / upgrade / uninstall** — confirm screen lists every command, then `ssh -tt` streams the process. Agent CLIs: official `curl | bash`, user directory, no sudo. tmux/curl may use sudo + brew/apt/dnf/yum/pacman/apk.
+- **Fixes, not riddles** — a failed connection shows the verbatim ssh output, the likely cause, and copy-pasteable commands (press `y` to copy the whole report). See the [error table](docs/en/ssh-access.md#when-it-fails-error-cause-fix).
+- **Keys or passwords** — key/agent login by default; when the server only accepts a password, log in once interactively and FarAgent reuses the multiplexed connection. The password goes straight to OpenSSH, never stored.
 - **Doctor** — `faragent doctor --host devbox` prints PATH, tmux, and agent versions.
 
 ```
@@ -81,7 +83,7 @@ flowchart LR
 
 ## Quick start
 
-**Laptop:** macOS or Linux, OpenSSH, key-based login to the host (`BatchMode`, no password prompt).
+**Laptop:** macOS or Linux, OpenSSH, and a working path to the host — key-based login (`BatchMode`, no password prompt), or a password you type once via `faragent login` when the server only takes one.
 
 **Remote:** `sshd` and `bash`. `tmux` and agents can be installed from the TUI if missing. Log in to an agent once on that machine. No python3. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
@@ -101,12 +103,14 @@ Host home-mac
 ```
 
 ```bash
-ssh home-mac true          # must work without a password
+ssh home-mac true          # the key path must work with zero prompts (first run asks for the host key)
 faragent doctor --host home-mac
 faragent                 # TUI: host → agent → session
 ```
 
 Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
+
+Host that only accepts a password: `faragent auth --host home-mac --mode password`, then `faragent login --host home-mac` (or press `g` in the TUI host list / `a` on the error screen).
 
 Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release binary, copying the binary to another computer). Reaching a machine behind NAT: [SSH access](docs/en/ssh-access.md) (LAN, public IP, domain, Tailscale).
 
@@ -127,7 +131,7 @@ Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release b
 
 v0.1 is usable if you already live in SSH. Next: **native Windows (no WSL)** and a **styled app frontend**. Details: [Roadmap](docs/en/roadmap.md).
 
-Not in the current plan: password SSH, ProxyJump.
+Password / keyboard-interactive login ships (see [SSH access](docs/en/ssh-access.md#password-only-servers-optional)). Not in the current plan: an OpenClaw-style gateway, compiling tmux from source.
 
 ## License
 

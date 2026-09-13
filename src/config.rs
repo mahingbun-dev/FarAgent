@@ -1,9 +1,10 @@
 //! Local client config: `~/.faragent/config.json`.
 
 use crate::i18n::Lang;
-use crate::ssh;
+use crate::ssh::{self, AuthMode};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,6 +13,15 @@ pub struct Config {
     /// `"zh"` or `"en"`. Absent on first run so the TUI can ask once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Per-host overrides keyed by the `Host` alias from `~/.ssh/config`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hosts: BTreeMap<String, HostConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostConfig {
+    #[serde(default)]
+    pub auth: AuthMode,
 }
 
 pub fn path() -> Result<PathBuf> {
@@ -49,6 +59,23 @@ pub fn set_language(lang: Lang) -> Result<()> {
     save(&cfg)
 }
 
+/// `auto` unless the user pinned this host to key- or password-only.
+pub fn auth_for(host: &str) -> AuthMode {
+    load().hosts.get(host).map(|h| h.auth).unwrap_or_default()
+}
+
+/// `auto` is the default, so storing it just removes the override.
+pub fn set_auth(host: &str, mode: AuthMode) -> Result<()> {
+    let mut cfg = load();
+    if mode == AuthMode::Auto {
+        cfg.hosts.remove(host);
+    } else {
+        cfg.hosts
+            .insert(host.to_string(), HostConfig { auth: mode });
+    }
+    save(&cfg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +84,7 @@ mod tests {
     fn roundtrip_language() {
         let cfg = Config {
             language: Some("zh".into()),
+            ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
@@ -71,5 +99,19 @@ mod tests {
     fn missing_language_is_first_run() {
         let cfg: Config = serde_json::from_str("{}").unwrap();
         assert!(cfg.language.is_none());
+    }
+
+    #[test]
+    fn host_auth_roundtrip_and_default() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"language":"zh","hosts":{"devbox":{"auth":"password"}}}"#)
+                .unwrap();
+        assert_eq!(cfg.hosts["devbox"].auth, AuthMode::Password);
+        assert_eq!(cfg.language.as_deref(), Some("zh"));
+        // A config written before this field existed still loads.
+        let old: Config = serde_json::from_str(r#"{"language":"en"}"#).unwrap();
+        assert!(old.hosts.is_empty());
+        let json = serde_json::to_string(&Config::default()).unwrap();
+        assert!(!json.contains("hosts"), "empty map stays out of the file");
     }
 }

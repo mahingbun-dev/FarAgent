@@ -7,7 +7,7 @@
 ## 我们假定
 
 - 你已经信任以该用户执行 `ssh <host>`。
-- 认证只有 **密钥 / ssh-agent**（`BatchMode`）。SSH 本身不会弹密码。
+- 认证默认是 **密钥 / ssh-agent**（`BatchMode`），SSH 本身不弹密码。服务端只让用账号密码时，可以切到密码模式：**密码只输入给系统 OpenSSH**，FarAgent 不读取、不转发、不写进配置或日志；登录成功后只留下一条 ControlMaster 多路复用 socket（`~/.faragent/cm/`，权限 `0700`，密码模式默认保留 4 小时）。用 `faragent auth --host X --mode key` 可随时退回只允许密钥。
 - 远程命令（`bash -lc`、tmux socket `faragent`）以 SSH 用户身份运行。确认过的 tmux/curl 步骤可能在直播 PTY 里调用 `sudo`（密码当场输入，FarAgent 不保存）。
 
 ## 我们不会做的事

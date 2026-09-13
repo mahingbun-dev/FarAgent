@@ -43,7 +43,7 @@ laptop                          SSH                         remote account
                                                       └──────────────────────────┘
 ```
 
-**SSH is never reimplemented.** Flags always include `BatchMode=yes`, `ControlMaster=auto`, `ControlPath=~/.faragent/cm/%r@%h:%p`, `ControlPersist=600`.
+**SSH is never reimplemented.** Flags always include `ControlMaster=auto` and `ControlPath=~/.faragent/cm/%r@%h:%p`. `args_for()` picks the auth bundle from `AuthMode`: `key` is `BatchMode=yes` with publickey only, `password` allows prompts and reuses the multiplexed master afterwards. The password only ever goes into system OpenSSH — FarAgent never reads or stores it.
 
 **Coding UI is never reimplemented.** After attach, bytes are a raw PTY to the vendor TUI.
 
@@ -77,7 +77,8 @@ faragent-<agent>-<shortid>
 
 | File | Tests / contracts |
 | --- | --- |
-| `ssh.rs` | Wildcard Hosts skipped; `Match` stops parsing; BatchMode in `base_args` |
+| `ssh.rs` | Wildcard Hosts skipped; `Match` stops parsing; `args_for`/`Flavor` pick auth flags; `SshError` keeps the verbatim output |
+| `diagnose.rs` | Raw output → `Problem` (ordered matching) → wording + fix commands; `diagnosis_of` decides whether the TUI opens the error screen |
 | `agents.rs` | Resume argv table must stay aligned with `remote.rs` start_script |
 | `remote.rs` | Probe/list/start text protocol; JSONL meta; no `python` in scripts |
 | `install.rs` | Official URL constants; plan_for fixtures; `bash_login_command` keeps `|` quoted |
@@ -114,11 +115,11 @@ Planned next (see [roadmap.md](roadmap.md)):
 
 1. Native Windows remote and client (OpenSSH + ConPTY, no WSL required)
 2. A styled application frontend around host / agent / session management
+3. Auth modes: `auto` / `key` / `password` ship today; keychain integration and a smoother jump-host flow are candidates
 
 Do not add without a separate plan:
 
 - An OpenClaw-style gateway
-- Password / keyboard-interactive SSH
 - Installing tmux or agents over SSH
 - Binding agent protocol ports on `0.0.0.0`
 - Copying API keys to the laptop

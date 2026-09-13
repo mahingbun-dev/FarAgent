@@ -1,11 +1,12 @@
 use crate::agents::AgentKind;
 use crate::config;
+use crate::diagnose::{self, Diagnosis};
 use crate::i18n::Lang;
 use crate::install::{self, Plan};
 use crate::probe::{self, Probe};
 use crate::pty;
 use crate::runtime::{self, SessionSummary};
-use crate::ssh::{self, SshHost};
+use crate::ssh::{self, AuthMode, SshHost};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -13,7 +14,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -23,7 +26,29 @@ enum Screen {
     Agents,
     Sessions,
     NewCwd,
+    /// The typed working directory does not exist: ask before creating it.
+    NewDirConfirm,
     Confirm,
+    /// A connection problem: raw ssh output + cause + fixes.
+    Problem,
+}
+
+/// What to re-run when the user retries from the problem screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Re-probe the selected host (the usual entry point).
+    Probe,
+    /// Re-probe and, when we were on the session list, reload it too.
+    Reload,
+}
+
+/// A session we could not start yet: its working directory is missing, so the
+/// TUI asks before anything is written on the remote. `session_id` is `Some`
+/// when the user was resuming an idle session rather than starting a new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingStart {
+    dir: String,
+    session_id: Option<String>,
 }
 
 struct App {
@@ -31,15 +56,23 @@ struct App {
     lang: Lang,
     lang_idx: usize,
     hosts: Vec<SshHost>,
+    /// Sign-in mode per host row: `auto`, `key` or `password`.
+    auth: Vec<AuthMode>,
     host_idx: usize,
     agent_idx: usize,
     session_idx: usize,
     probe: Option<Probe>,
     sessions: Vec<SessionSummary>,
     cwd_input: String,
+    /// Session awaiting the "create the working directory?" confirmation.
+    pending: Option<PendingStart>,
     plan: Option<Plan>,
     status: String,
     error: Option<String>,
+    diag: Option<Diagnosis>,
+    diag_scroll: u16,
+    retry: Retry,
+    problem_from: Screen,
     quit: bool,
 }
 
@@ -57,22 +90,33 @@ impl App {
                 Lang::Zh.language_keys_hint().to_string(),
             ),
         };
+        let auth = auth_modes(&hosts);
         Self {
             screen,
             lang,
             lang_idx,
             hosts,
+            auth,
             host_idx: 0,
             agent_idx: 0,
             session_idx: 0,
             probe: None,
             sessions: Vec::new(),
             cwd_input: String::new(),
+            pending: None,
             plan: None,
             status,
             error: None,
+            diag: None,
+            diag_scroll: 0,
+            retry: Retry::Probe,
+            problem_from: Screen::Hosts,
             quit: false,
         }
+    }
+
+    fn auth_of(&self, idx: usize) -> AuthMode {
+        self.auth.get(idx).copied().unwrap_or_default()
     }
 
     fn host(&self) -> Option<&SshHost> {
@@ -86,6 +130,9 @@ impl App {
     fn clamp(&mut self) {
         if !self.hosts.is_empty() {
             self.host_idx = self.host_idx.min(self.hosts.len() - 1);
+        }
+        if self.auth.len() != self.hosts.len() {
+            self.auth = auth_modes(&self.hosts);
         }
         self.agent_idx = self.agent_idx.min(3);
         self.lang_idx = self.lang_idx.min(Lang::ALL.len().saturating_sub(1));
@@ -119,9 +166,13 @@ impl App {
                 let n = self.sessions.len() as i32;
                 self.session_idx = (self.session_idx as i32 + delta).rem_euclid(n) as usize;
             }
-            Screen::NewCwd | Screen::Confirm => {}
+            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
         }
     }
+}
+
+fn auth_modes(hosts: &[SshHost]) -> Vec<AuthMode> {
+    hosts.iter().map(|h| config::auth_for(&h.alias)).collect()
 }
 
 pub fn run() -> Result<()> {
@@ -157,8 +208,14 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::NewCwd) {
         return handle_cwd_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::NewDirConfirm) {
+        return handle_new_dir_key(app, key, terminal);
+    }
     if matches!(app.screen, Screen::Confirm) {
         return handle_confirm_key(app, key, terminal);
+    }
+    if matches!(app.screen, Screen::Problem) {
+        return handle_problem_key(app, key, terminal);
     }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
@@ -173,12 +230,13 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
                 app.screen = Screen::Agents;
                 app.status = app.lang.select_agent().into();
             }
-            Screen::NewCwd | Screen::Confirm => {}
+            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
         },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),
         KeyCode::Up | KeyCode::Char('k') => app.move_sel(-1),
         KeyCode::Char('r') => refresh(app)?,
+        KeyCode::Char('g') if matches!(app.screen, Screen::Hosts) => cycle_auth(app)?,
         KeyCode::Char('l') | KeyCode::Char('L')
             if matches!(app.screen, Screen::Hosts | Screen::Language) =>
         {
@@ -210,8 +268,8 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
             app.cwd_input.pop();
         }
         KeyCode::Enter => {
-            let cwd = app.cwd_input.trim().to_string();
-            if cwd.is_empty() {
+            let typed = app.cwd_input.trim().to_string();
+            if typed.is_empty() {
                 app.error = Some(app.lang.cwd_required().into());
                 return Ok(());
             }
@@ -220,7 +278,10 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
                 return Ok(());
             };
             let agent = app.agent();
-            attach_new(app, terminal, &host, agent, PathBuf::from(cwd))?;
+            // `~` only makes sense against the remote's home, so expand it here.
+            let home = app.probe.as_ref().map(|p| p.home.as_str()).unwrap_or("/");
+            let cwd = expand_home(&typed, home);
+            start_session(app, terminal, &host, agent, &cwd, None, false)?;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.cwd_input.push(c);
@@ -228,6 +289,53 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
         _ => {}
     }
     Ok(())
+}
+
+/// Keys on the "directory does not exist, create it?" screen.
+fn handle_new_dir_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.pending = None;
+            app.screen = Screen::NewCwd;
+            app.status = app.lang.type_cwd().into();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Enter => {
+            let Some(pending) = app.pending.clone() else {
+                app.screen = Screen::NewCwd;
+                return Ok(());
+            };
+            let Some(host) = app.host().map(|h| h.alias.clone()) else {
+                return Ok(());
+            };
+            let agent = app.agent();
+            app.status = app.lang.dir_creating(&pending.dir);
+            app.error = None;
+            terminal.draw(|f| draw(f, app))?;
+            start_session(
+                app,
+                terminal,
+                &host,
+                agent,
+                &pending.dir,
+                pending.session_id.as_deref(),
+                true,
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `~` / `~/x` against the **remote** home. Anything else is left alone.
+fn expand_home(typed: &str, home: &str) -> String {
+    if typed == "~" {
+        return home.to_string();
+    }
+    match typed.strip_prefix("~/") {
+        Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
+        None => typed.to_string(),
+    }
 }
 
 fn begin_language(app: &mut App) {
@@ -275,6 +383,8 @@ fn begin_new(app: &mut App) {
         .iter()
         .find_map(|s| s.cwd.clone())
         .unwrap_or_else(|| probe.home.clone());
+    app.pending = None;
+    app.error = None;
     app.screen = Screen::NewCwd;
     app.status = app.lang.type_cwd().into();
 }
@@ -284,39 +394,38 @@ fn refresh(app: &mut App) -> Result<()> {
         Screen::Language => {}
         Screen::Hosts => {
             app.hosts = ssh::list_hosts()?;
+            app.auth = auth_modes(&app.hosts);
             app.status = app.lang.host_count(app.hosts.len());
         }
         Screen::Agents | Screen::Sessions | Screen::NewCwd => reload_probe_and_sessions(app)?,
-        Screen::Confirm => {}
+        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
     }
     app.clamp();
     Ok(())
 }
 
+/// `auto` -> `key` -> `password` -> `auto` for the highlighted host.
+fn cycle_auth(app: &mut App) -> Result<()> {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    let next = next_auth(app.auth_of(app.host_idx));
+    config::set_auth(&host, next)?;
+    app.auth = auth_modes(&app.hosts);
+    app.status = app.lang.auth_saved(&host, next);
+    Ok(())
+}
+
+/// `auto` -> `key` -> `password` -> `auto`.
+fn next_auth(mode: AuthMode) -> AuthMode {
+    let i = AuthMode::ALL.iter().position(|m| *m == mode).unwrap_or(0);
+    AuthMode::ALL[(i + 1) % AuthMode::ALL.len()]
+}
+
 fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     match app.screen {
         Screen::Language => commit_language(app)?,
-        Screen::Hosts => {
-            let Some(host) = app.host().map(|h| h.alias.clone()) else {
-                return Ok(());
-            };
-            app.status = app.lang.probing(&host);
-            app.error = None;
-            terminal.draw(|f| draw(f, app))?;
-            match probe::probe_host(&host) {
-                Ok(p) => {
-                    app.probe = Some(p);
-                    app.screen = Screen::Agents;
-                    app.agent_idx = 0;
-                    app.error = None;
-                    app.status = app.lang.select_agent().into();
-                }
-                Err(e) => {
-                    app.status = app.lang.probe_failed(&host);
-                    app.error = Some(e.to_string());
-                }
-            }
-        }
+        Screen::Hosts => probe_selected_host(app, terminal)?,
         Screen::Agents => {
             let found = app
                 .probe
@@ -334,7 +443,7 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             app.session_idx = 0;
             app.status = app.lang.sessions_status().into();
         }
-        Screen::Confirm => {}
+        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
         Screen::Sessions => {
             if app.sessions.is_empty() {
                 begin_new(app);
@@ -345,6 +454,57 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
         Screen::NewCwd => {}
     }
     Ok(())
+}
+
+/// Probe the highlighted host and move on to its agent list.
+fn probe_selected_host(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    app.status = app.lang.probing(&host);
+    app.error = None;
+    app.diag = None;
+    terminal.draw(|f| draw(f, app))?;
+    match probe::probe_host(&host) {
+        Ok(p) => {
+            app.probe = Some(p);
+            app.screen = Screen::Agents;
+            app.agent_idx = 0;
+            app.error = None;
+            app.status = app.lang.select_agent().into();
+        }
+        Err(e) => {
+            app.status = app.lang.probe_failed(&host);
+            report_error(app, Retry::Probe, Screen::Hosts, &e);
+        }
+    }
+    Ok(())
+}
+
+/// Connection failures get the full report; anything else stays a one-line
+/// red footer message.
+fn report_error(app: &mut App, retry: Retry, from: Screen, e: &anyhow::Error) {
+    let host = app.host().map(|h| h.alias.clone()).unwrap_or_default();
+    match diagnose::diagnosis_of(e, &host, app.lang) {
+        Some(diag) => {
+            app.status = if diag.timed_out {
+                app.lang.problem_status_timeout().to_string()
+            } else {
+                app.lang.problem_status(diag.needs_auth).to_string()
+            };
+            app.diag = Some(diag);
+            app.diag_scroll = 0;
+            app.retry = retry;
+            app.problem_from = from;
+            app.error = None;
+            app.screen = Screen::Problem;
+        }
+        None => {
+            if app.error.is_none() {
+                app.error = Some(e.to_string());
+            }
+        }
+    }
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -365,6 +525,115 @@ fn handle_confirm_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
         _ => {}
     }
     Ok(())
+}
+
+/// Keys on the connection-problem screen. `a` is the escape hatch for password
+/// hosts and for first-connect host key confirmation.
+fn handle_problem_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.diag = None;
+            app.diag_scroll = 0;
+            app.error = None;
+            app.screen = app.problem_from.clone();
+            app.status = match app.screen {
+                Screen::Sessions => app.lang.sessions_status().into(),
+                Screen::Agents => app.lang.select_agent().into(),
+                _ => app.lang.status_ready().into(),
+            };
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.diag_scroll = app.diag_scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.diag_scroll = app.diag_scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown | KeyCode::Char(' ') => {
+            app.diag_scroll = app.diag_scroll.saturating_add(8);
+        }
+        KeyCode::PageUp => {
+            app.diag_scroll = app.diag_scroll.saturating_sub(8);
+        }
+        KeyCode::Char('r') => retry(app, terminal)?,
+        KeyCode::Char('a') => authenticate(app, terminal)?,
+        KeyCode::Char('y') => {
+            let ok = match &app.diag {
+                Some(d) => copy_to_clipboard(&d.plain(app.lang)),
+                None => false,
+            };
+            app.status = if ok {
+                app.lang.clipboard_ok().into()
+            } else {
+                app.lang.clipboard_failed().into()
+            };
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Re-run whatever failed, now that the user fixed something on the host.
+fn retry(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    app.diag = None;
+    app.diag_scroll = 0;
+    app.error = None;
+    match app.retry {
+        Retry::Probe => {
+            app.screen = Screen::Hosts;
+            probe_selected_host(app, terminal)
+        }
+        Retry::Reload => {
+            app.screen = app.problem_from.clone();
+            reload_probe_and_sessions(app)
+        }
+    }
+}
+
+/// One interactive `ssh` on the real terminal: host key prompt, password, or
+/// key passphrase. The password goes straight into OpenSSH; nothing is stored.
+fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    let mode = app.auth_of(app.host_idx);
+    ratatui::restore();
+    let code = pty::interactive_connect(&host, mode, app.lang);
+    *terminal = ratatui::init();
+    app.auth = auth_modes(&app.hosts);
+    match code {
+        Ok(0) => retry(app, terminal)?,
+        Ok(c) => app.status = app.lang.auth_failed(c),
+        Err(e) => app.error = Some(e.to_string()),
+    }
+    Ok(())
+}
+
+/// Copy-paste the whole report. Uses whichever clipboard tool exists.
+fn copy_to_clipboard(text: &str) -> bool {
+    let tools: [(&str, &[&str]); 3] = [
+        ("pbcopy", &[]),
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+    ];
+    for (bin, args) in tools {
+        let Ok(mut child) = Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        if matches!(child.wait(), Ok(status) if status.success()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn begin_agent_action(
@@ -410,6 +679,7 @@ fn open_confirm(
         }
         Err(e) => {
             app.error = Some(app.lang.plan_failed(&e.to_string()));
+            report_error(app, Retry::Reload, Screen::Agents, &e);
         }
     }
     Ok(())
@@ -459,7 +729,8 @@ fn reload_probe_and_sessions(app: &mut App) -> Result<()> {
         }
         Err(e) => {
             app.status = app.lang.probe_failed(&host);
-            app.error = Some(e.to_string());
+            let from = app.screen.clone();
+            report_error(app, Retry::Reload, from, &e);
             return Ok(());
         }
     }
@@ -479,7 +750,7 @@ fn reload_sessions(app: &mut App) -> Result<()> {
             app.error = None;
             app.status = app.lang.session_count(app.sessions.len());
         }
-        Err(e) => app.error = Some(e.to_string()),
+        Err(e) => report_error(app, Retry::Reload, Screen::Sessions, &e),
     }
     Ok(())
 }
@@ -499,31 +770,57 @@ fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> 
         .or_else(|| app.probe.as_ref().map(|p| PathBuf::from(&p.home)))
         .unwrap_or_else(|| PathBuf::from("."));
     // Live tmux: attach only. Never resume a running session (Codex #30424).
-    let tmux = if sess.live {
-        sess.tmux
+    if sess.live {
+        let tmux = sess
+            .tmux
             .clone()
-            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id))
-    } else {
-        runtime::ensure_tmux_session(&host, agent, &cwd, Some(&sess.id))?
-    };
-    drop_into_tmux(app, terminal, &host, &tmux)
+            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
+        return drop_into_tmux(app, terminal, &host, &tmux);
+    }
+    let cwd_s = cwd.to_string_lossy().into_owned();
+    start_session(app, terminal, &host, agent, &cwd_s, Some(&sess.id), false)
 }
 
-fn attach_new(
+/// Start (or resume) a session in `cwd`. With `create_cwd = false` nothing is
+/// written on the remote: a missing directory comes back as a confirmation
+/// screen instead of an error.
+fn start_session(
     app: &mut App,
     terminal: &mut DefaultTerminal,
     host: &str,
     agent: AgentKind,
-    cwd: PathBuf,
+    cwd: &str,
+    session_id: Option<&str>,
+    create_cwd: bool,
 ) -> Result<()> {
-    match runtime::ensure_tmux_session(host, agent, &cwd, None) {
+    match runtime::ensure_tmux_session(
+        host,
+        agent,
+        std::path::Path::new(cwd),
+        session_id,
+        create_cwd,
+    ) {
         Ok(tmux) => {
+            app.pending = None;
             app.screen = Screen::Sessions;
             drop_into_tmux(app, terminal, host, &tmux)?;
         }
         Err(e) => {
-            app.error = Some(e.to_string());
-            app.screen = Screen::Sessions;
+            match e.downcast_ref::<runtime::SessionError>() {
+                // Not an error: we simply need the user's go-ahead to write.
+                Some(runtime::SessionError::CwdMissing { dir }) => {
+                    app.pending = Some(PendingStart {
+                        dir: dir.clone(),
+                        session_id: session_id.map(|s| s.to_string()),
+                    });
+                    app.screen = Screen::NewDirConfirm;
+                    app.status = app.lang.dir_missing_status().into();
+                }
+                _ => {
+                    app.screen = Screen::Sessions;
+                    report_error(app, Retry::Reload, Screen::Sessions, &e);
+                }
+            }
         }
     }
     Ok(())
@@ -585,6 +882,9 @@ fn draw(frame: &mut Frame, app: &App) {
             app.agent().title(),
         ),
         Screen::NewCwd => app.lang.new_cwd_title().into(),
+        Screen::NewDirConfirm => app
+            .lang
+            .new_dir_title(app.pending.as_ref().map(|p| p.dir.as_str()).unwrap_or("?")),
         Screen::Confirm => {
             let action = app
                 .plan
@@ -602,6 +902,9 @@ fn draw(frame: &mut Frame, app: &App) {
                 agent,
             )
         }
+        Screen::Problem => app
+            .lang
+            .problem_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
     };
     let header = Paragraph::new(title).block(
         Block::default()
@@ -628,7 +931,11 @@ fn draw(frame: &mut Frame, app: &App) {
             frame,
             chunks[1],
             app.lang.hosts_list_title(),
-            &app.hosts.iter().map(|h| h.label()).collect::<Vec<_>>(),
+            &app.hosts
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("{}{}", h.label(), app.lang.auth_tag(app.auth_of(i))))
+                .collect::<Vec<_>>(),
             app.host_idx,
         ),
         Screen::Agents => {
@@ -678,16 +985,21 @@ fn draw(frame: &mut Frame, app: &App) {
             );
             frame.render_widget(p, chunks[1]);
         }
+        Screen::NewDirConfirm => draw_new_dir(frame, chunks[1], app),
         Screen::Confirm => draw_confirm(frame, chunks[1], app),
+        Screen::Problem => draw_problem(frame, chunks[1], app),
     }
 
     let mut footer_lines = vec![Line::from(app.status.clone())];
     let hint = match app.screen {
         Screen::Language => app.lang.language_keys_hint(),
+        Screen::Hosts => app.lang.hosts_keys_hint(),
         Screen::Agents => app.lang.agents_keys_hint(),
+        Screen::NewDirConfirm => app.lang.new_dir_keys_hint(),
         Screen::Confirm => app
             .lang
             .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
+        Screen::Problem => app.lang.problem_keys_hint(),
         _ => app.lang.keys_hint(),
     };
     footer_lines.push(Line::from(Span::styled(
@@ -704,6 +1016,29 @@ fn draw(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
+}
+
+/// "That directory is not on the remote yet" — show exactly what Enter will
+/// do before anything is written there.
+fn draw_new_dir(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let dir = app.pending.as_ref().map(|p| p.dir.as_str()).unwrap_or("?");
+    let mut lines: Vec<Line> = Vec::new();
+    for line in app.lang.new_dir_lines(dir) {
+        if line.starts_with("mkdir") {
+            lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::Cyan),
+            )));
+        } else {
+            lines.push(Line::from(line));
+        }
+    }
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(app.lang.new_dir_list_title())
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(p, area);
 }
 
 fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
@@ -762,6 +1097,66 @@ fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_widget(p, area);
 }
 
+/// The whole point of this screen: verbatim ssh output, then the fix.
+fn draw_problem(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let Some(diag) = &app.diag else {
+        return;
+    };
+    let lang = app.lang;
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            diag.summary.clone(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    let raw = diag.raw.trim();
+    if !raw.is_empty() {
+        lines.push(Line::from(Span::styled(lang.problem_raw(), bold)));
+        for line in raw.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    if !diag.command.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("{}: {}", lang.problem_command(), diag.command),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(lang.problem_fixes(), bold)));
+    for (i, step) in diag.steps.iter().enumerate() {
+        lines.push(Line::from(format!("  {}. {step}", i + 1)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("{}: {}", lang.problem_docs(), lang.ssh_doc()),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let max_scroll = lines.len().saturating_sub(1) as u16;
+    let scroll = app.diag_scroll.min(max_scroll);
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
+        .block(
+            Block::default()
+                .title(lang.problem_list_title(diag.problem.slug()))
+                .borders(Borders::ALL),
+        );
+    frame.render_widget(p, area);
+}
+
 fn draw_list(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -784,4 +1179,33 @@ fn draw_list(
         state.select(Some(idx.min(items.len() - 1)));
     }
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn g_cycles_through_every_auth_mode() {
+        assert_eq!(next_auth(AuthMode::Auto), AuthMode::Key);
+        assert_eq!(next_auth(AuthMode::Key), AuthMode::Password);
+        assert_eq!(next_auth(AuthMode::Password), AuthMode::Auto);
+        // Three presses come back to where we started.
+        let mut mode = AuthMode::Auto;
+        for _ in 0..AuthMode::ALL.len() {
+            mode = next_auth(mode);
+        }
+        assert_eq!(mode, AuthMode::Auto);
+    }
+
+    #[test]
+    fn tilde_expands_against_the_remote_home_only_as_a_prefix() {
+        assert_eq!(expand_home("~", "/home/me"), "/home/me");
+        assert_eq!(expand_home("~/code/app", "/home/me"), "/home/me/code/app");
+        assert_eq!(expand_home("~/code/app", "/home/me/"), "/home/me/code/app");
+        assert_eq!(expand_home("/srv/app", "/home/me"), "/srv/app");
+        // Mid-path tildes are literal, and a user named `~bob` is not a home ref.
+        assert_eq!(expand_home("/srv/~weird", "/home/me"), "/srv/~weird");
+        assert_eq!(expand_home("~bob/app", "/home/me"), "~bob/app");
+    }
 }

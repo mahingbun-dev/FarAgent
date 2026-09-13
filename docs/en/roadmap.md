@@ -31,4 +31,4 @@ The manager UI can evolve; remote execution and credentials stay on the host.
 
 ## Still out of scope until separately planned
 
-Password / OTP SSH, ProxyJump, an OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop.
+An OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop. (Password / keyboard-interactive login now ships — see [SSH access](ssh-access.md#password-only-servers-optional).)

@@ -246,6 +246,7 @@ pub fn start_script(
     cwd: &str,
     session_id: Option<&str>,
     tmux_name: &str,
+    create_cwd: bool,
 ) -> String {
     let argv = match session_id {
         Some(id) => agent.resume_argv(id),
@@ -278,10 +279,7 @@ if ! command -v {agent_q} >/dev/null 2>&1; then
   printf 'err\tagent_missing\t{agent_q} is not on PATH in a login shell.\n'
   exit 0
 fi
-if [ ! -d {cwd_q} ]; then
-  printf 'err\tcwd_missing\tNot a directory.\n'
-  exit 0
-fi
+{cwd_block}
 if tmux -L {sock} -f "$HOME/.faragent/tmux.conf" has-session -t {name_q} 2>/dev/null; then
   printf 'ok\texists\t%s\n' {name_q}
   exit 0
@@ -301,12 +299,43 @@ printf 'ok\tcreated\t%s\n' {name_q}
 "#,
         agent_q = agent_q,
         cwd_q = cwd_q,
+        cwd_block = cwd_block(&cwd_q, create_cwd),
         name_q = name_q,
         legacy_q = legacy_q,
         inner_q = inner_q,
         sock = TMUX_SOCKET,
         legacy_sock = LEGACY_TMUX_SOCKET,
     )
+}
+
+/// Remote check for the session's working directory.
+///
+/// The plain form only reports `cwd_missing`, so the TUI can ask the user
+/// before anything is written. The `create` form runs `mkdir -p` — but only
+/// because the user confirmed on that screen — and turns any failure (missing
+/// permissions, read-only mount, a file in the way) into printable text.
+fn cwd_block(cwd_q: &str, create: bool) -> String {
+    if create {
+        format!(
+            r#"if [ ! -d {cwd_q} ]; then
+  _mkerr=$(mkdir -p -- {cwd_q} 2>&1)
+  if [ ! -d {cwd_q} ]; then
+    _mkerr=$(printf '%s' "$_mkerr" | tr '\t\n\r' '   ' | cut -c1-400)
+    printf 'err\tmkdir_failed\t%s\n' "$_mkerr"
+    exit 0
+  fi
+fi
+"#
+        )
+    } else {
+        format!(
+            r#"if [ ! -d {cwd_q} ]; then
+  printf 'err\tcwd_missing\tNot a directory.\n'
+  exit 0
+fi
+"#
+        )
+    }
 }
 
 pub fn parse_probe(text: &str) -> Result<Probe> {
@@ -616,16 +645,59 @@ mod tests {
         assert!(!probe_script().contains("python"));
         assert!(!list_script(AgentKind::Grok).contains("python"));
         assert!(
-            !start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc").contains("python")
+            !start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc", false)
+                .contains("python")
         );
         assert!(probe_script().contains("FARAGENT_PROBE_V1"));
         assert!(TMUX_CONF.contains("prefix C-g"));
         assert_eq!(TMUX_SOCKET, "faragent");
         assert!(list_script(AgentKind::Grok).contains("tmux -L faragent"));
         assert!(list_script(AgentKind::Grok).contains("tmux -L farssh"));
-        let start = start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc");
+        let start = start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc", false);
         assert!(start.contains("$HOME/.faragent/tmux.conf"));
         assert!(start.contains("tmux -L farssh"));
+    }
+
+    #[test]
+    fn only_the_confirmed_form_creates_the_directory() {
+        let ask = start_script(
+            AgentKind::Codex,
+            "/home/me/app",
+            None,
+            "faragent-codex-abc",
+            false,
+        );
+        // The script is a raw string: `\t` reaches the remote and printf expands it.
+        assert!(ask.contains(r"err\tcwd_missing"));
+        assert!(
+            !ask.contains("mkdir"),
+            "no write without confirmation: {ask}"
+        );
+
+        let create = start_script(
+            AgentKind::Codex,
+            "/home/me/app",
+            None,
+            "faragent-codex-abc",
+            true,
+        );
+        assert!(create.contains("mkdir -p -- /home/me/app"), "{create}");
+        assert!(create.contains(r"err\tmkdir_failed"));
+        // Still checked afterwards, so a silent mkdir failure cannot slip through.
+        assert!(create.contains("[ ! -d /home/me/app ]"));
+
+        // Odd paths stay quoted and cannot turn into extra shell words.
+        let quoted = start_script(
+            AgentKind::Codex,
+            "/tmp/a b; rm -rf /",
+            None,
+            "faragent-codex-abc",
+            true,
+        );
+        assert!(
+            quoted.contains("mkdir -p -- '/tmp/a b; rm -rf /'"),
+            "{quoted}"
+        );
     }
 
     #[test]

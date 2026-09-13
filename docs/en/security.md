@@ -7,7 +7,7 @@
 ## What we assume
 
 - You already trust `ssh <host>` as that user.
-- Authentication is **keys / ssh-agent only** (`BatchMode`). SSH itself will not prompt for a password.
+- Authentication defaults to **keys / ssh-agent** (`BatchMode`); SSH itself does not prompt. When a server only accepts an account password you can switch that host to password mode: the password goes **only into system OpenSSH** — FarAgent never reads it, forwards it, or writes it to config or logs. What is left behind is a multiplexed ControlMaster socket (`~/.faragent/cm/`, mode `0700`, kept 4 hours by default). `faragent auth --host X --mode key` goes back to keys-only at any time.
 - Remote commands (`bash -lc`, tmux socket `faragent`) run as the SSH user. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarAgent does not store it).
 
 ## What we do not do
