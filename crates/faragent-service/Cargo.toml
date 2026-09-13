@@ -1,0 +1,24 @@
+[package]
+name = "faragent-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent service layer: probing, sessions, doctor and error diagnosis"
+
+[dependencies]
+faragent-core = { path = "../faragent-core" }
+faragent-install = { path = "../faragent-install" }
+faragent-remote = { path = "../faragent-remote" }
+faragent-transport = { path = "../faragent-transport" }
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

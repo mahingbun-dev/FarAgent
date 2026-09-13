@@ -1,9 +1,5 @@
 mod chrome;
-mod diagnose;
-mod doctor;
-mod probe;
 mod pty;
-mod runtime;
 mod tui;
 
 // Moved into faragent-core / faragent-remote / faragent-transport; aliased at
@@ -11,6 +7,8 @@ mod tui;
 pub use faragent_core::{agents, config, text};
 pub use faragent_install as install;
 pub use faragent_remote::{remote, win};
+pub use faragent_service::sessions as runtime;
+pub use faragent_service::{diagnose, doctor, probe};
 pub use faragent_transport as ssh;
 pub use faragent_transport::askpass;
 

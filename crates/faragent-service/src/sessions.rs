@@ -1,9 +1,10 @@
-use crate::agents::{self, AgentKind};
-use crate::remote::{self, DiskFile, HostOs, ListDump, StartOutcome};
-use crate::ssh::{run_login, run_win_login, run_win_login_args, OpenSshTransport};
-use crate::text::LocalizedText;
-use crate::win;
 use anyhow::Result;
+use faragent_core::agents::{self, AgentKind};
+use faragent_core::text::LocalizedText;
+use faragent_core::vocab::HostOs;
+use faragent_remote::remote::{self, DiskFile, ListDump, StartOutcome};
+use faragent_remote::win;
+use faragent_transport::{run_login, run_win_login, run_win_login_args, OpenSshTransport};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -336,7 +337,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::DiskFile;
+    use faragent_remote::remote::DiskFile;
 
     #[test]
     fn merge_marks_live_tmux_and_disk() {

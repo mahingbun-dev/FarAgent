@@ -1,16 +1,16 @@
-use crate::agents::AgentKind;
-use crate::config;
-use crate::remote::{self, HostOs};
-use crate::ssh::{self, run_login, run_win_login, OpenSshTransport};
-use crate::text::{Lang, LocalizedText};
-use crate::win;
 use anyhow::Result;
+use faragent_core::agents::AgentKind;
+use faragent_core::config;
+use faragent_core::text::{Lang, LocalizedText};
+use faragent_core::vocab::HostOs;
+use faragent_remote::{remote, win};
+use faragent_transport::{host_os, run_login, run_win_login, OpenSshTransport};
 
-pub use crate::remote::Probe;
+pub use faragent_remote::remote::Probe;
 
 pub fn probe_host(host: &str) -> Result<Probe> {
     let client = OpenSshTransport::connect(host)?;
-    let expected = ssh::host_os(host).unwrap_or_default();
+    let expected = host_os(host).unwrap_or_default();
     let probe = match try_probe(&client, expected) {
         Ok(p) => p,
         Err(e) => {

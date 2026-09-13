@@ -4,9 +4,9 @@
 //! truth. We keep it verbatim, then name the likely cause and the exact
 //! commands that fix it — instead of making the user go read a wiki first.
 
-use crate::remote::HostOs;
-use crate::ssh::{self, AuthMode, TransportError};
-use crate::text::{Lang, Lines, LocalizedText};
+use faragent_core::text::{Lang, Lines, LocalizedText};
+use faragent_core::vocab::HostOs;
+use faragent_transport::{self as ssh, AuthMode, TransportError};
 
 /// Every failure we know how to explain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,13 +444,13 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
         .clone()
         .unwrap_or_else(|| "~/.ssh/id_ed25519".into());
     let steps: Vec<String> = match (lang, p) {
-            (Lang::Zh, P::SshMissing) if f.local == crate::remote::HostOs::Windows => vec![
+            (Lang::Zh, P::SshMissing) if f.local == HostOs::Windows => vec![
                 "先在 PowerShell 里确认：`ssh -V`；报“无法将 ssh 项识别为 cmdlet”说明没装或不在 PATH。".into(),
                 "Windows 11 自带 OpenSSH 客户端，一般在 `C:\\Windows\\System32\\OpenSSH\\ssh.exe`。".into(),
                 "没装的话：设置 → 系统 → 可选功能 → 添加功能 → 安装「OpenSSH 客户端」，或在管理员 PowerShell 运行 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`。".into(),
                 "装好后重开终端确认：`ssh -V` 与 `where.exe ssh` 都应成功。".into(),
             ],
-            (Lang::En, P::SshMissing) if f.local == crate::remote::HostOs::Windows => vec![
+            (Lang::En, P::SshMissing) if f.local == HostOs::Windows => vec![
                 "Check in PowerShell: `ssh -V`; \"not recognized as the name of a cmdlet\" means it is missing or not on PATH.".into(),
                 "Windows 11 ships the OpenSSH client, usually at `C:\\Windows\\System32\\OpenSSH\\ssh.exe`.".into(),
                 "If missing: Settings -> System -> Optional features -> Add a feature -> \"OpenSSH Client\", or run `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` in an admin PowerShell.".into(),
@@ -484,7 +484,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 format!("Fix remote permissions: `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys`, and check that the user exists on {target}."),
                 format!("If this machine only allows passwords: `faragent auth --host {host} --mode password`, then `faragent login --host {host}` (or press a in the TUI)."),
             ],
-            (Lang::Zh, P::NeedsPassword) if f.local == crate::remote::HostOs::Windows => {
+            (Lang::Zh, P::NeedsPassword) if f.local == HostOs::Windows => {
                 let mut steps = Vec::new();
                 steps.push(
                     "Windows 自带的 ssh 不支持连接复用，FarAgent 改为在内存里记住一次密码（不写盘、退出即清除），后续命令经 SSH_ASKPASS 自动应答。".into(),
@@ -492,7 +492,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 steps.push(format!(
                     "在 TUI 的问题页按 a 输入密码即可；主机指纹等交互提示仍由 `faragent login --host {host}` 处理。"
                 ));
-                if f.mode != crate::ssh::AuthMode::Password {
+                if f.mode != AuthMode::Password {
                     steps.push(format!(
                         "也可以先把这台机器固定为密码模式：`faragent auth --host {host} --mode password`。"
                     ));
@@ -502,7 +502,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 );
                 steps
             }
-            (Lang::En, P::NeedsPassword) if f.local == crate::remote::HostOs::Windows => {
+            (Lang::En, P::NeedsPassword) if f.local == HostOs::Windows => {
                 let mut steps = Vec::new();
                 steps.push(
                     "Windows' built-in ssh cannot multiplex, so FarAgent remembers the password in memory instead (never written to disk, gone on exit) and answers ssh through SSH_ASKPASS.".into(),
@@ -510,7 +510,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 steps.push(format!(
                     "Press a on the TUI problem screen to type it; host-key questions still go through `faragent login --host {host}`."
                 ));
-                if f.mode != crate::ssh::AuthMode::Password {
+                if f.mode != AuthMode::Password {
                     steps.push(format!(
                         "You can also pin this host to password mode first: `faragent auth --host {host} --mode password`."
                     ));
@@ -522,7 +522,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
             }
             (Lang::Zh, P::NeedsPassword) => {
                 let mut steps = Vec::new();
-                if f.mode == crate::ssh::AuthMode::Password {
+                if f.mode == AuthMode::Password {
                     steps.push(format!(
                         "这台主机已经是密码模式，直接做一次交互式登录：`faragent login --host {host}`。"
                     ));
@@ -544,7 +544,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
             }
             (Lang::En, P::NeedsPassword) => {
                 let mut steps = Vec::new();
-                if f.mode == crate::ssh::AuthMode::Password {
+                if f.mode == AuthMode::Password {
                     steps.push(format!(
                         "This host is already in password mode; just do one interactive login: `faragent login --host {host}`."
                     ));
@@ -615,7 +615,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 "If the change is unexplained, check the network path (DNS / proxy / bastion) instead of accepting it.".into(),
             ],
             (Lang::Zh, P::PrivateFilePermissions)
-                if f.local == crate::remote::HostOs::Windows =>
+                if f.local == HostOs::Windows =>
             {
                 vec![
                     "Windows 的 OpenSSH 检查的是 ACL（不是 Unix 权限位）：先看 `icacls $env:USERPROFILE\\.ssh`。".into(),
@@ -625,7 +625,7 @@ fn steps_for(lang: Lang, p: Problem, f: &Facts) -> Vec<String> {
                 ]
             }
             (Lang::En, P::PrivateFilePermissions)
-                if f.local == crate::remote::HostOs::Windows =>
+                if f.local == HostOs::Windows =>
             {
                 vec![
                     "Windows OpenSSH checks ACLs (not Unix mode bits): start with `icacls $env:USERPROFILE\\.ssh`.".into(),

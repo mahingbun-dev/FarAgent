@@ -1,10 +1,10 @@
 use crate::diagnose::Diagnosis;
-use crate::install;
-use crate::probe;
-use crate::runtime;
-use crate::ssh::{self, OpenSshTransport};
-use crate::text::Lang;
+use crate::{probe, sessions};
 use anyhow::Result;
+use faragent_core::config;
+use faragent_core::text::Lang;
+use faragent_install as install;
+use faragent_transport::{self as ssh, OpenSshTransport};
 
 pub fn run(host: Option<&str>) -> Result<()> {
     println!("faragent doctor");
@@ -24,7 +24,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
         println!(
             "  - {}{}",
             h.label(),
-            ssh::auth_tag(crate::config::auth_for(&h.alias)).pick(lang())
+            ssh::auth_tag(config::auth_for(&h.alias)).pick(lang())
         );
     }
     if hosts.is_empty() {
@@ -85,7 +85,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
                     "NOT INSTALLED (TUI Enter can install via brew/apt/dnf/yum/pacman/apk; sudo allowed)".into()
                 }
             );
-            for kind in crate::agents::AgentKind::ALL {
+            for kind in faragent_core::agents::AgentKind::ALL {
                 // Agent lines keep their long-standing English form (the rest
                 // of this section is localized); do not change output here.
                 println!("  {}", probe::format_agent_line(kind, &p).pick(Lang::En));
@@ -104,7 +104,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
             }
             println!("PATH (login shell): {}", p.path);
             if p.tmux.found {
-                if let Err(e) = runtime::ensure_tmux_conf(&client) {
+                if let Err(e) = sessions::ensure_tmux_conf(&client) {
                     println!("tmux.conf: {e}");
                 } else {
                     println!("tmux conf: {}/.faragent/tmux.conf", p.home);
@@ -149,7 +149,7 @@ fn which_in(dirs: &[std::path::PathBuf], bin: &str, exts: &[&str]) -> Option<Str
 
 /// doctor speaks the language the user picked in the TUI (Zh on first run).
 fn lang() -> Lang {
-    crate::config::language_or_default()
+    config::language_or_default()
 }
 
 #[cfg(test)]

@@ -278,17 +278,13 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
- "dirs",
  "faragent-core",
  "faragent-install",
  "faragent-remote",
+ "faragent-service",
  "faragent-transport",
- "pretty_assertions",
  "ratatui",
- "serde",
  "serde_json",
- "tempfile",
- "thiserror",
 ]
 
 [[package]]
@@ -324,6 +320,23 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "faragent-service"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "faragent-core",
+ "faragent-install",
+ "faragent-remote",
+ "faragent-transport",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
