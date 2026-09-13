@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 /// Kill a hung remote login shell instead of freezing the TUI forever.
 pub const EXEC_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// A no-op remote command that exits 0 in bash, cmd.exe and PowerShell alike.
+pub const REMOTE_PING: &str = "echo FARAGENT_OK";
+
 /// How long the multiplexed ControlMaster socket is kept alive.
 pub const KEY_PERSIST: &str = "600";
 /// Password logins prompt **once**; keep the multiplexed master around longer
@@ -573,19 +576,10 @@ impl Client {
         s
     }
 
-    pub fn exec(&self, remote: &[&str]) -> Result<Output> {
-        let joined = remote
-            .iter()
-            .map(|a| shell_single_quote(a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.run_remote_line(&joined)
-    }
-
     /// Run a literal command line with **no** local quoting: the remote's
     /// default shell receives it verbatim. Only for lines already safe in
-    /// every shell (e.g. the OS marker); `exec` POSIX-quotes and would feed
-    /// cmd.exe literal single quotes.
+    /// every shell (e.g. the OS marker); `exec_login` POSIX-quotes and would
+    /// feed cmd.exe literal single quotes.
     pub fn exec_raw_line(&self, line: &str) -> Result<Output> {
         self.run_remote_line(line)
     }
@@ -606,15 +600,19 @@ impl Client {
     }
 
     pub fn exec_login_stdin(&self, bash_lc: &str, stdin: &[u8]) -> Result<Output> {
-        let remote = bash_login_command(bash_lc);
+        self.exec_stdio(&bash_login_command(bash_lc), stdin)
+    }
+
+    /// Run a caller-built remote command line, piping `stdin` into it.
+    pub fn exec_stdio(&self, remote: &str, stdin: &[u8]) -> Result<Output> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
-        cmd.arg(&remote);
+        cmd.arg(remote);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let line = self.command_line(flavor, &remote);
+        let line = self.command_line(flavor, remote);
         let mut child = cmd.spawn().map_err(|e| self.spawn_error(&line, e))?;
         if let Some(mut s) = child.stdin.take() {
             s.write_all(stdin).ok();

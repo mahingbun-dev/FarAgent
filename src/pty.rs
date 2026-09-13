@@ -29,6 +29,12 @@ pub fn attach_script(tmux_name: &str) -> String {
 /// Hand the local tty to `ssh -tt` running a login-shell script. No exec timeout:
 /// installers and sudo password prompts can take minutes.
 pub fn run_remote_script(host: &str, script: &str) -> Result<i32> {
+    run_remote_line(host, &ssh::bash_login_command(script))
+}
+
+/// Same handoff, with a caller-built remote command line: POSIX callers pass
+/// `bash -lc '…'`, Windows callers a `powershell -EncodedCommand …` launcher.
+pub fn run_remote_line(host: &str, remote: &str) -> Result<i32> {
     restore_tty()?;
     let client = Client::new(host)?;
     let flavor = interactive_flavor(client.mode);
@@ -39,7 +45,7 @@ pub fn run_remote_script(host: &str, script: &str) -> Result<i32> {
     cmd.arg("-tt");
     cmd.arg(&client.host);
     cmd.arg("--");
-    cmd.arg(ssh::bash_login_command(script));
+    cmd.arg(remote);
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
@@ -56,7 +62,7 @@ pub fn interactive_flavor(mode: AuthMode) -> Flavor {
     }
 }
 
-/// One interactive `ssh <host> true` that lets OpenSSH ask for whatever it
+/// One interactive `ssh <host> <no-op>` that lets OpenSSH ask for whatever it
 /// needs: the host key fingerprint, the account password, or a key passphrase.
 ///
 /// With `ControlMaster=auto`, a successful run leaves a multiplexed master
@@ -74,7 +80,7 @@ pub fn interactive_connect(host: &str, mode: AuthMode, lang: Lang) -> Result<i32
     cmd.arg("-tt");
     cmd.arg(&client.host);
     cmd.arg("--");
-    cmd.arg("true");
+    cmd.arg(ssh::REMOTE_PING);
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());

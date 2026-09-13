@@ -50,7 +50,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
         client.mode.code(),
         lang().auth_mode_label(client.mode)
     );
-    let ping = client.exec(&["true"])?;
+    let ping = client.exec_raw_line(ssh::REMOTE_PING)?;
     if ping.status.success() {
         println!("ssh: ok");
         println!(

@@ -128,7 +128,7 @@ fn login(host: &str) -> Result<()> {
     let mode = config::auth_for(host);
     let client = ssh::Client::new(host)?;
     let code = pty::interactive_connect(host, mode, lang)?;
-    let out = client.exec(&["true"])?;
+    let out = client.exec_raw_line(ssh::REMOTE_PING)?;
     if out.status.success() {
         println!("{}", lang.login_ok(host));
         return Ok(());
