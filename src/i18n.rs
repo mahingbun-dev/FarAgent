@@ -70,8 +70,10 @@ impl Lang {
         }
     }
 
-    /// Body of the confirmation screen. The `mkdir` line is highlighted.
-    pub fn new_dir_lines(self, dir: &str) -> Vec<String> {
+    /// Body of the confirmation screen. The command that will run sits at
+    /// `new_dir_cmd_index()` and is highlighted there.
+    pub fn new_dir_lines(self, dir: &str, os: crate::remote::HostOs) -> Vec<String> {
+        let cmd = self.new_dir_command(dir, os);
         match self {
             Self::Zh => vec![
                 "这是会话的工作目录：agent 读写代码的根目录，不是文件夹浏览器。".into(),
@@ -79,7 +81,7 @@ impl Lang {
                 format!("远程还没有这个目录：{dir}"),
                 String::new(),
                 "回车 = 由 FarAgent 在远程创建它（执行下面的命令），然后在这个目录里启动 / 恢复会话。".into(),
-                format!("mkdir -p {dir}"),
+                cmd,
                 String::new(),
                 "Esc / q = 返回修改路径（不会在远程写入任何东西）。".into(),
             ],
@@ -89,11 +91,25 @@ impl Lang {
                 format!("That directory is not on the remote yet: {dir}"),
                 String::new(),
                 "Enter = let FarAgent create it on the remote (the command below), then start or resume the session there.".into(),
-                format!("mkdir -p {dir}"),
+                cmd,
                 String::new(),
                 "Esc / q = back to edit the path (nothing is written on the remote).".into(),
             ],
         }
+    }
+
+    /// The one command the create screen runs on the remote, per dialect.
+    pub fn new_dir_command(self, dir: &str, os: crate::remote::HostOs) -> String {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => format!("mkdir -p {dir}"),
+            HostOs::Windows => format!("New-Item -ItemType Directory -Force -LiteralPath '{dir}'"),
+        }
+    }
+
+    /// Index into `new_dir_lines(..)` of the command line to highlight.
+    pub fn new_dir_cmd_index(self) -> usize {
+        5
     }
 
     pub fn new_dir_keys_hint(self) -> &'static str {
@@ -135,10 +151,13 @@ impl Lang {
         }
     }
 
-    pub fn sessions_list_title(self) -> &'static str {
-        match self {
-            Self::Zh => "会话  [live]=tmux 仍在运行",
-            Self::En => "sessions  [live]=tmux still running",
+    pub fn sessions_list_title(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match (self, os) {
+            (Self::Zh, HostOs::Posix) => "会话  [live]=tmux 仍在运行",
+            (Self::En, HostOs::Posix) => "sessions  [live]=tmux still running",
+            (Self::Zh, HostOs::Windows) => "会话  [running]=可能有进程仍在运行",
+            (Self::En, HostOs::Windows) => "sessions  [running]=a process may still be running",
         }
     }
 
@@ -161,6 +180,24 @@ impl Lang {
             Self::En => {
                 "enter open · n new session · r refresh · L language · q back · agent detach: C-g d"
             }
+        }
+    }
+
+    /// Footer for the session screens. On Windows remotes the agent runs in
+    /// the foreground: there is no detach — quitting the agent ends it, and
+    /// the conversation comes back through resume.
+    pub fn keys_hint_os(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => self.keys_hint(),
+            HostOs::Windows => match self {
+                Self::Zh => {
+                    "回车 打开 · n 新建会话 · r 刷新 · L 语言 · q 返回 · 退出助手即结束（可 resume 恢复）"
+                }
+                Self::En => {
+                    "enter open · n new session · r refresh · L language · q back · quitting the agent ends it (resume later)"
+                }
+            },
         }
     }
 

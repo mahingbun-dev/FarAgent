@@ -297,8 +297,11 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
             };
             let agent = app.agent();
             // `~` only makes sense against the remote's home, so expand it here.
-            let home = app.probe.as_ref().map(|p| p.home.as_str()).unwrap_or("/");
-            let cwd = expand_home(&typed, home);
+            let (home, os) = match &app.probe {
+                Some(p) => (p.home.clone(), p.os),
+                None => ("/".into(), Default::default()),
+            };
+            let cwd = expand_home(&typed, &home, os);
             start_session(app, terminal, &host, agent, &cwd, None, false)?;
         }
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -345,14 +348,41 @@ fn handle_new_dir_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
     Ok(())
 }
 
-/// `~` / `~/x` against the **remote** home. Anything else is left alone.
-fn expand_home(typed: &str, home: &str) -> String {
+/// Can sessions be started on this host? On POSIX that needs tmux (it carries
+/// the session); Windows remotes run the agent in the foreground instead.
+fn sessions_supported(os: crate::remote::HostOs, tmux: bool) -> bool {
+    os == crate::remote::HostOs::Windows || tmux
+}
+
+/// The probed dialect, defaulting to POSIX before any probe has run.
+fn probe_os(app: &App) -> crate::remote::HostOs {
+    app.probe.as_ref().map(|p| p.os).unwrap_or_default()
+}
+
+/// `~` / `~/x` (or `~\x`) against the **remote** home, in the remote's own
+/// separator style. Anything else is left alone.
+fn expand_home(typed: &str, home: &str, os: crate::remote::HostOs) -> String {
+    use crate::remote::HostOs;
     if typed == "~" {
         return home.to_string();
     }
-    match typed.strip_prefix("~/") {
-        Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
-        None => typed.to_string(),
+    match os {
+        HostOs::Posix => match typed.strip_prefix("~/") {
+            Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
+            None => typed.to_string(),
+        },
+        HostOs::Windows => {
+            for prefix in ["~/", "~\\"] {
+                if let Some(rest) = typed.strip_prefix(prefix) {
+                    return format!(
+                        "{}\\{}",
+                        home.trim_end_matches(['/', '\\']),
+                        rest.replace('/', "\\")
+                    );
+                }
+            }
+            typed.to_string()
+        }
     }
 }
 
@@ -394,7 +424,7 @@ fn begin_new(app: &mut App) {
         app.error = Some(app.lang.probe_host_first().into());
         return;
     };
-    if !probe.tmux.found {
+    if !sessions_supported(probe.os, probe.tmux.found) {
         app.error = Some(app.lang.tmux_missing_short().into());
         return;
     }
@@ -457,8 +487,12 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
                 .and_then(|p| p.agent(app.agent()))
                 .map(|a| a.found)
                 == Some(true);
-            let tmux = app.probe.as_ref().map(|p| p.tmux.found) == Some(true);
-            if !found || !tmux {
+            let supported = app
+                .probe
+                .as_ref()
+                .map(|p| sessions_supported(p.os, p.tmux.found))
+                == Some(true);
+            if !found || !supported {
                 open_confirm(app, terminal, install::Action::Install)?;
                 return Ok(());
             }
@@ -1081,7 +1115,7 @@ fn draw(frame: &mut Frame, app: &App) {
             draw_list(
                 frame,
                 chunks[1],
-                app.lang.sessions_list_title(),
+                app.lang.sessions_list_title(probe_os(app)),
                 &lines,
                 idx,
             );
@@ -1118,7 +1152,7 @@ fn draw(frame: &mut Frame, app: &App) {
             .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
         Screen::Problem => app.lang.problem_keys_hint(),
         Screen::Password => app.lang.password_keys_hint(),
-        _ => app.lang.keys_hint(),
+        _ => app.lang.keys_hint_os(probe_os(app)),
     };
     footer_lines.push(Line::from(Span::styled(
         hint,
@@ -1140,15 +1174,21 @@ fn draw(frame: &mut Frame, app: &App) {
 /// do before anything is written there.
 fn draw_new_dir(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let dir = app.pending.as_ref().map(|p| p.dir.as_str()).unwrap_or("?");
+    let cmd_index = app.lang.new_dir_cmd_index();
     let mut lines: Vec<Line> = Vec::new();
-    for line in app.lang.new_dir_lines(dir) {
-        if line.starts_with("mkdir") {
+    for (i, line) in app
+        .lang
+        .new_dir_lines(dir, probe_os(app))
+        .iter()
+        .enumerate()
+    {
+        if i == cmd_index {
             lines.push(Line::from(Span::styled(
                 format!("  {line}"),
                 Style::default().fg(Color::Cyan),
             )));
         } else {
-            lines.push(Line::from(line));
+            lines.push(Line::from(line.clone()));
         }
     }
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
@@ -1318,13 +1358,65 @@ mod tests {
 
     #[test]
     fn tilde_expands_against_the_remote_home_only_as_a_prefix() {
-        assert_eq!(expand_home("~", "/home/me"), "/home/me");
-        assert_eq!(expand_home("~/code/app", "/home/me"), "/home/me/code/app");
-        assert_eq!(expand_home("~/code/app", "/home/me/"), "/home/me/code/app");
-        assert_eq!(expand_home("/srv/app", "/home/me"), "/srv/app");
+        use crate::remote::HostOs;
+        let os = HostOs::Posix;
+        assert_eq!(expand_home("~", "/home/me", os), "/home/me");
+        assert_eq!(
+            expand_home("~/code/app", "/home/me", os),
+            "/home/me/code/app"
+        );
+        assert_eq!(
+            expand_home("~/code/app", "/home/me/", os),
+            "/home/me/code/app"
+        );
+        assert_eq!(expand_home("/srv/app", "/home/me", os), "/srv/app");
         // Mid-path tildes are literal, and a user named `~bob` is not a home ref.
-        assert_eq!(expand_home("/srv/~weird", "/home/me"), "/srv/~weird");
-        assert_eq!(expand_home("~bob/app", "/home/me"), "~bob/app");
+        assert_eq!(expand_home("/srv/~weird", "/home/me", os), "/srv/~weird");
+        assert_eq!(expand_home("~bob/app", "/home/me", os), "~bob/app");
+    }
+
+    #[test]
+    fn tilde_expands_windows_style_home() {
+        use crate::remote::HostOs;
+        let os = HostOs::Windows;
+        let home = "C:\\Users\\me";
+        assert_eq!(expand_home("~", home, os), home);
+        assert_eq!(
+            expand_home("~\\code\\app", home, os),
+            "C:\\Users\\me\\code\\app"
+        );
+        assert_eq!(
+            expand_home("~/code/app", home, os),
+            "C:\\Users\\me\\code\\app"
+        );
+        assert_eq!(expand_home("C:\\srv\\app", home, os), "C:\\srv\\app");
+        assert_eq!(expand_home("~bob", home, os), "~bob");
+        // Trailing separators on the home do not double up.
+        assert_eq!(
+            expand_home("~\\x", "C:\\Users\\me\\", os),
+            "C:\\Users\\me\\x"
+        );
+    }
+
+    #[test]
+    fn windows_remotes_do_not_need_tmux_for_sessions() {
+        use crate::remote::HostOs;
+        assert!(sessions_supported(HostOs::Windows, false));
+        assert!(sessions_supported(HostOs::Posix, true));
+        assert!(!sessions_supported(HostOs::Posix, false));
+    }
+
+    #[test]
+    fn new_dir_command_index_matches_the_command_line() {
+        use crate::remote::HostOs;
+        for lang in Lang::ALL {
+            for os in [HostOs::Posix, HostOs::Windows] {
+                let dir = "C:\\tmp\\x";
+                let lines = lang.new_dir_lines(dir, os);
+                let idx = lang.new_dir_cmd_index();
+                assert_eq!(lines[idx], lang.new_dir_command(dir, os), "{lang:?} {os:?}");
+            }
+        }
     }
 
     #[test]
