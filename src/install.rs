@@ -3,7 +3,7 @@
 
 use crate::agents::AgentKind;
 use crate::remote::HostOs;
-use crate::ssh::{self, Client};
+use crate::ssh::{self, OpenSshTransport};
 use crate::text::LocalizedText;
 use crate::win;
 use anyhow::{anyhow, Result};
@@ -339,13 +339,13 @@ pub fn parse_preflight(text: &str) -> Result<Preflight> {
 }
 
 pub fn preflight_host(host: &str, agent: AgentKind) -> Result<Preflight> {
-    let client = Client::new(host)?;
-    let os = crate::probe::host_os(host)?;
+    let client = OpenSshTransport::connect(host)?;
+    let os = crate::ssh::host_os(host)?;
     let output = match os {
         HostOs::Posix => client.exec_login(&preflight_script(agent, os))?,
         HostOs::Windows => client.exec_win(&win::preflight_script(agent), &[])?,
     };
-    if !output.status.success() {
+    if !output.success() {
         client.require_ok(&output)?;
     }
     let mut pf = parse_preflight(&String::from_utf8_lossy(&output.stdout))?;

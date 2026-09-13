@@ -1,17 +1,17 @@
 //! Drive the system OpenSSH client. Never reimplements the wire protocol.
 
-use crate::text::LocalizedText;
+use crate::{ExecOutput, Transport, TransportError};
 use anyhow::{anyhow, Context, Result};
 use faragent_core::paths::faragent_home;
 pub use faragent_core::shell::shell_single_quote;
-pub use faragent_core::vocab::AuthMode;
-use std::fmt;
+use faragent_core::text::LocalizedText;
+use faragent_core::vocab::AuthMode;
 use std::fs;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -203,37 +203,6 @@ pub fn mux_capable() -> bool {
         Err(_) => true,
     })
 }
-
-/// A failed SSH run, kept structured so the UI can show the verbatim error
-/// **and** the matching fix instead of a paraphrased one-liner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SshError {
-    pub host: String,
-    pub mode: AuthMode,
-    /// Local command line we actually executed (copy-pasteable).
-    pub command: String,
-    /// Verbatim OpenSSH stdout + stderr. Never truncated.
-    pub raw: String,
-    pub status: Option<i32>,
-    pub timed_out: bool,
-    /// The server wants an interactive login (password / host key confirm).
-    pub needs_auth: bool,
-    /// Auth methods the server reported, e.g. `publickey,password`.
-    pub methods: String,
-}
-
-impl fmt::Display for SshError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let raw = self.raw.trim();
-        if raw.is_empty() {
-            write!(f, "ssh to {} failed (status {:?})", self.host, self.status)
-        } else {
-            write!(f, "{raw}")
-        }
-    }
-}
-
-impl std::error::Error for SshError {}
 
 /// `Permission denied (publickey,password).` → `publickey,password`
 pub fn parse_auth_methods(text: &str) -> Option<String> {
@@ -513,22 +482,24 @@ pub fn control_path() -> Result<String> {
         .into_owned())
 }
 
-/// OpenSSH flags shared by exec and PTY attach.
+/// The desktop transport: the system OpenSSH client, driven as a child
+/// process. Auth flags, ControlMaster reuse and askpass all live here; the
+/// `Transport` impl at the bottom of this file is the seam other layers use.
 #[derive(Debug, Clone)]
-pub struct Client {
-    pub host: String,
-    pub mode: AuthMode,
+pub struct OpenSshTransport {
+    host: String,
+    mode: AuthMode,
     /// None when this machine's ssh cannot multiplex (Win32 OpenSSH).
     control_path: Option<String>,
     persist: String,
     mux: bool,
 }
 
-impl Client {
+impl OpenSshTransport {
     /// Auth mode comes from `~/.faragent/config.json` (`auto` unless set).
-    pub fn new(host: impl Into<String>) -> Result<Self> {
+    pub fn connect(host: impl Into<String>) -> Result<Self> {
         let host = host.into();
-        let mode = crate::config::auth_for(&host);
+        let mode = faragent_core::config::auth_for(&host);
         Self::with_mode(host, mode)
     }
 
@@ -546,6 +517,16 @@ impl Client {
             persist: persist.to_string(),
             mux,
         })
+    }
+
+    /// The `Host` alias this transport talks to.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The auth mode this transport was built with.
+    pub fn mode(&self) -> AuthMode {
+        self.mode
     }
 
     /// Does this machine's ssh multiplex connections (ControlMaster)?
@@ -606,11 +587,11 @@ impl Client {
     /// default shell receives it verbatim. Only for lines already safe in
     /// every shell (e.g. the OS marker); `exec_login` POSIX-quotes and would
     /// feed cmd.exe literal single quotes.
-    pub fn exec_raw_line(&self, line: &str) -> Result<Output> {
+    pub fn exec_raw_line(&self, line: &str) -> Result<ExecOutput> {
         self.run_remote_line(line)
     }
 
-    fn run_remote_line(&self, line: &str) -> Result<Output> {
+    fn run_remote_line(&self, line: &str) -> Result<ExecOutput> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
@@ -621,16 +602,16 @@ impl Client {
     }
 
     /// Login-shell so nvm / Homebrew / ~/.local/bin are visible.
-    pub fn exec_login(&self, script: &str) -> Result<Output> {
+    pub fn exec_login(&self, script: &str) -> Result<ExecOutput> {
         self.run_remote(&bash_login_command(script))
     }
 
-    pub fn exec_login_stdin(&self, bash_lc: &str, stdin: &[u8]) -> Result<Output> {
+    pub fn exec_login_stdin(&self, bash_lc: &str, stdin: &[u8]) -> Result<ExecOutput> {
         self.exec_stdio(&bash_login_command(bash_lc), stdin)
     }
 
     /// Run a caller-built remote command line, piping `stdin` into it.
-    pub fn exec_stdio(&self, remote: &str, stdin: &[u8]) -> Result<Output> {
+    pub fn exec_stdio(&self, remote: &str, stdin: &[u8]) -> Result<ExecOutput> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
@@ -650,12 +631,12 @@ impl Client {
     /// only launches `powershell -File -` and the script rides stdin, so
     /// nothing needs cmd quoting and command-line length limits do not apply.
     /// Dynamic values travel as base64 `$args`.
-    pub fn exec_win(&self, script: &str, args_b64: &[&str]) -> Result<Output> {
+    pub fn exec_win(&self, script: &str, args_b64: &[&str]) -> Result<ExecOutput> {
         let line = ps_stdin_command(args_b64);
         self.exec_stdio(&line, script.as_bytes())
     }
 
-    fn run_remote(&self, remote: &str) -> Result<Output> {
+    fn run_remote(&self, remote: &str) -> Result<ExecOutput> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
@@ -665,17 +646,17 @@ impl Client {
         self.run_cmd(cmd, &line, EXEC_TIMEOUT)
     }
 
-    fn run_cmd(&self, mut cmd: Command, line: &str, timeout: Duration) -> Result<Output> {
+    fn run_cmd(&self, mut cmd: Command, line: &str, timeout: Duration) -> Result<ExecOutput> {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         let child = cmd.spawn().map_err(|e| self.spawn_error(line, e))?;
         self.wait_child(child, line, timeout)
     }
 
-    fn wait_child(&self, child: Child, line: &str, timeout: Duration) -> Result<Output> {
+    fn wait_child(&self, child: Child, line: &str, timeout: Duration) -> Result<ExecOutput> {
         match wait_child_timeout(child, timeout) {
             Ok(output) => Ok(output),
-            Err(WaitError::Timeout) => Err(anyhow::Error::new(SshError {
+            Err(WaitError::Timeout) => Err(anyhow::Error::new(TransportError {
                 host: self.host.clone(),
                 mode: self.mode,
                 command: line.to_string(),
@@ -693,7 +674,7 @@ impl Client {
     }
 
     fn spawn_error(&self, line: &str, e: std::io::Error) -> anyhow::Error {
-        anyhow::Error::new(SshError {
+        anyhow::Error::new(TransportError {
             host: self.host.clone(),
             mode: self.mode,
             command: line.to_string(),
@@ -705,19 +686,9 @@ impl Client {
         })
     }
 
-    pub fn output_text(output: &Output) -> String {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.success() {
-            stdout.into_owned()
-        } else {
-            format!("{stdout}{stderr}")
-        }
-    }
-
     /// Structured failure for a non-interactive run.
-    pub fn error_for(&self, output: &Output) -> SshError {
-        let raw = Self::output_text(output);
+    pub fn error_for(&self, output: &ExecOutput) -> TransportError {
+        let raw = output.text();
         let auth_failure = is_auth_failure(&raw);
         // `PreferredAuthentications=none` makes the server list what it accepts.
         // Only worth an extra round trip when credentials are the problem.
@@ -730,20 +701,20 @@ impl Client {
             && (self.mode == AuthMode::Password
                 || offers_password(&methods)
                 || raw.to_ascii_lowercase().contains("password"));
-        SshError {
+        TransportError {
             host: self.host.clone(),
             mode: self.mode,
             command: self.command_line(self.flavor(), "-"),
             raw,
-            status: output.status.code(),
+            status: output.code,
             timed_out: false,
             needs_auth,
             methods,
         }
     }
 
-    pub fn require_ok(&self, output: &Output) -> Result<()> {
-        if output.status.success() {
+    pub fn require_ok(&self, output: &ExecOutput) -> Result<()> {
+        if output.success() {
             return Ok(());
         }
         Err(anyhow::Error::new(self.error_for(output)))
@@ -758,7 +729,7 @@ impl Client {
         cmd.stdin(Stdio::null());
         let line = self.command_line(Flavor::Enumerate, "true");
         let out = self.run_cmd(cmd, &line, EXEC_TIMEOUT).ok()?;
-        parse_auth_methods(&Self::output_text(&out))
+        parse_auth_methods(&out.text())
     }
 
     /// Is a multiplexed ControlMaster already authenticated for this host?
@@ -777,6 +748,86 @@ impl Client {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         matches!(cmd.output(), Ok(o) if o.status.success())
+    }
+}
+
+impl OpenSshTransport {
+    /// Hand the local tty to an interactive `ssh -tt` run of `remote_line`;
+    /// blocks until it exits. The **caller** owns raw-mode / alternate-screen
+    /// state (restore before, re-init after): this only spawns and waits.
+    pub fn attach_stdio(&self, remote_line: &str) -> Result<i32> {
+        let flavor = interactive_flavor(self.mode);
+        let mut cmd = self.command_flavor(flavor);
+        cmd.arg("-tt");
+        cmd.arg("--");
+        cmd.arg(remote_line);
+        cmd.stdin(Stdio::inherit());
+        cmd.stdout(Stdio::inherit());
+        cmd.stderr(Stdio::inherit());
+        let status = cmd.status()?;
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+/// Which interactive bundle fits this host: password hosts should not burn
+/// their `MaxAuthTries` budget on keys they do not own.
+fn interactive_flavor(mode: AuthMode) -> Flavor {
+    match mode {
+        AuthMode::Password => Flavor::InteractivePassword,
+        AuthMode::Auto | AuthMode::Key => Flavor::InteractiveKey,
+    }
+}
+
+/// The trait seam: everything FarAgent's logic needs from one connection.
+/// Every method lands on the system-OpenSSH child process today; a mobile
+/// build adds an in-process implementation (russh) behind `open()`.
+impl Transport for OpenSshTransport {
+    fn host(&self) -> &str {
+        OpenSshTransport::host(self)
+    }
+
+    fn mode(&self) -> AuthMode {
+        OpenSshTransport::mode(self)
+    }
+
+    fn exec_raw_line(&self, line: &str) -> Result<ExecOutput> {
+        OpenSshTransport::exec_raw_line(self, line)
+    }
+
+    fn exec_login(&self, script: &str) -> Result<ExecOutput> {
+        OpenSshTransport::exec_login(self, script)
+    }
+
+    fn exec_login_stdin(&self, script: &str, stdin: &[u8]) -> Result<ExecOutput> {
+        OpenSshTransport::exec_login_stdin(self, script, stdin)
+    }
+
+    fn exec_win(&self, script: &str, args_b64: &[&str]) -> Result<ExecOutput> {
+        OpenSshTransport::exec_win(self, script, args_b64)
+    }
+
+    fn attach_stdio(&self, remote_line: &str) -> Result<i32> {
+        OpenSshTransport::attach_stdio(self, remote_line)
+    }
+
+    fn error_for(&self, out: &ExecOutput) -> TransportError {
+        OpenSshTransport::error_for(self, out)
+    }
+
+    fn require_ok(&self, out: &ExecOutput) -> Result<()> {
+        OpenSshTransport::require_ok(self, out)
+    }
+
+    fn server_auth_methods(&self) -> Option<String> {
+        OpenSshTransport::server_auth_methods(self)
+    }
+
+    fn muxed(&self) -> bool {
+        OpenSshTransport::muxed(self)
+    }
+
+    fn master_alive(&self) -> bool {
+        OpenSshTransport::master_alive(self)
     }
 }
 
@@ -810,7 +861,7 @@ enum WaitError {
 fn wait_child_timeout(
     mut child: Child,
     timeout: Duration,
-) -> std::result::Result<Output, WaitError> {
+) -> std::result::Result<ExecOutput, WaitError> {
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_h = thread::spawn(move || {
@@ -845,8 +896,8 @@ fn wait_child_timeout(
     };
     let stdout = stdout_h.join().unwrap_or_default();
     let stderr = stderr_h.join().unwrap_or_default();
-    Ok(Output {
-        status,
+    Ok(ExecOutput {
+        code: status.code(),
         stdout,
         stderr,
     })
@@ -1055,7 +1106,7 @@ Host ignored
 
     #[test]
     fn ssh_error_display_keeps_raw_text() {
-        let err = SshError {
+        let err = TransportError {
             host: "devbox".into(),
             mode: AuthMode::Key,
             command: "ssh devbox -- true".into(),

@@ -1,6 +1,6 @@
 use crate::agents::{self, AgentKind};
 use crate::remote::{self, DiskFile, HostOs, ListDump, StartOutcome};
-use crate::ssh::Client;
+use crate::ssh::{run_login, run_win_login, run_win_login_args, OpenSshTransport};
 use crate::text::LocalizedText;
 use crate::win;
 use anyhow::Result;
@@ -78,29 +78,7 @@ pub fn agent_not_installed(name: &str) -> LocalizedText<String> {
 pub const NOT_INSTALLED: LocalizedText<&'static str> =
     LocalizedText::new("未安装", "not installed");
 
-pub fn run_login(client: &Client, script: &str) -> Result<String> {
-    let output = client.exec_login(script)?;
-    if !output.status.success() {
-        client.require_ok(&output)?;
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// PowerShell twin of [`run_login`] for Windows remotes.
-pub fn run_win_login(client: &Client, script: &str) -> Result<String> {
-    run_win_login_args(client, script, &[])
-}
-
-/// [`run_win_login`] with base64 `$args` for the script.
-pub fn run_win_login_args(client: &Client, script: &str, args_b64: &[&str]) -> Result<String> {
-    let output = client.exec_win(script, args_b64)?;
-    if !output.status.success() {
-        client.require_ok(&output)?;
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
+pub fn ensure_tmux_conf(client: &OpenSshTransport) -> Result<()> {
     let write = client.exec_login_stdin(
         remote::write_tmux_conf_script(),
         remote::TMUX_CONF.as_bytes(),
@@ -110,7 +88,7 @@ pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
 }
 
 pub fn list_sessions(host: &str, agent: AgentKind, os: HostOs) -> Result<Vec<SessionSummary>> {
-    let client = Client::new(host)?;
+    let client = OpenSshTransport::connect(host)?;
     match os {
         HostOs::Posix => {
             let _ = ensure_tmux_conf(&client);
@@ -136,7 +114,7 @@ pub fn ensure_tmux_session(
     session_id: Option<&str>,
     create_cwd: bool,
 ) -> Result<String> {
-    let client = Client::new(host)?;
+    let client = OpenSshTransport::connect(host)?;
     ensure_tmux_conf(&client)?;
     let sid = session_id
         .map(|s| s.to_string())
@@ -164,7 +142,7 @@ pub fn ensure_win_session(
     session_id: Option<&str>,
     create_cwd: bool,
 ) -> Result<String> {
-    let client = Client::new(host)?;
+    let client = OpenSshTransport::connect(host)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);

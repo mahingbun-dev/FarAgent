@@ -1,4 +1,3 @@
-mod askpass;
 mod chrome;
 mod diagnose;
 mod doctor;
@@ -6,13 +5,14 @@ mod install;
 mod probe;
 mod pty;
 mod runtime;
-mod ssh;
 mod tui;
 
-// Moved into faragent-core / faragent-remote; aliased at the crate root so
-// every existing `crate::agents::…` / `crate::remote::…` path keeps working.
+// Moved into faragent-core / faragent-remote / faragent-transport; aliased at
+// the crate root so every existing `crate::ssh::…` path keeps working.
 pub use faragent_core::{agents, config, text};
 pub use faragent_remote::{remote, win};
+pub use faragent_transport as ssh;
+pub use faragent_transport::askpass;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -116,7 +116,7 @@ fn probe_json(host: &str) -> Result<()> {
 
 fn sessions_json(host: &str, agent: &str) -> Result<()> {
     let kind = agents::AgentKind::parse(agent)?;
-    let os = probe::host_os(host)?;
+    let os = ssh::host_os(host)?;
     let rows = runtime::list_sessions(host, kind, os)?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
@@ -142,10 +142,10 @@ fn auth(host: &str, mode: Option<&str>) -> Result<()> {
 fn login(host: &str) -> Result<()> {
     let lang = lang();
     let mode = config::auth_for(host);
-    let client = ssh::Client::new(host)?;
+    let client = ssh::OpenSshTransport::connect(host)?;
     let code = pty::interactive_connect(host, mode, lang)?;
     let out = client.exec_raw_line(ssh::REMOTE_PING)?;
-    if out.status.success() {
+    if out.success() {
         println!("{}", ssh::login_ok(host).pick(lang));
         return Ok(());
     }

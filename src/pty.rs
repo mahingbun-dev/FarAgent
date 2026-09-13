@@ -1,6 +1,6 @@
 //! Hand the local tty to `ssh -tt` and restore the manager TUI afterwards.
 
-use crate::ssh::{self, AuthMode, Client, Flavor};
+use crate::ssh::{self, AuthMode, Flavor, OpenSshTransport};
 use crate::text::Lang;
 use anyhow::Result;
 use crossterm::{
@@ -38,14 +38,14 @@ pub fn run_remote_script(host: &str, script: &str) -> Result<i32> {
 /// `bash -lc '…'`, Windows callers a `powershell -EncodedCommand …` launcher.
 pub fn run_remote_line(host: &str, remote: &str) -> Result<i32> {
     restore_tty()?;
-    let client = Client::new(host)?;
-    let flavor = interactive_flavor(client.mode);
+    let client = OpenSshTransport::connect(host)?;
+    let flavor = interactive_flavor(client.mode());
     let mut cmd = Command::new("ssh");
     for arg in client.args(flavor) {
         cmd.arg(arg);
     }
     cmd.arg("-tt");
-    cmd.arg(&client.host);
+    cmd.arg(client.host());
     cmd.arg("--");
     cmd.arg(remote);
     crate::askpass::apply(&mut cmd, host);
@@ -74,14 +74,14 @@ pub fn interactive_flavor(mode: AuthMode) -> Flavor {
 pub fn interactive_connect(host: &str, mode: AuthMode, lang: Lang) -> Result<i32> {
     restore_tty()?;
     println!("faragent: {}", ssh::interactive_banner(host).pick(lang));
-    let client = Client::with_mode(host, mode)?;
+    let client = OpenSshTransport::with_mode(host, mode)?;
     let flavor = interactive_flavor(mode);
     let mut cmd = Command::new("ssh");
     for arg in client.args(flavor) {
         cmd.arg(arg);
     }
     cmd.arg("-tt");
-    cmd.arg(&client.host);
+    cmd.arg(client.host());
     cmd.arg("--");
     cmd.arg(ssh::REMOTE_PING);
     cmd.stdin(Stdio::inherit());

@@ -5,7 +5,7 @@
 //! commands that fix it — instead of making the user go read a wiki first.
 
 use crate::remote::HostOs;
-use crate::ssh::{self, AuthMode, SshError};
+use crate::ssh::{self, AuthMode, TransportError};
 use crate::text::{Lang, Lines, LocalizedText};
 
 /// Every failure we know how to explain.
@@ -199,7 +199,7 @@ pub struct Diagnosis {
 }
 
 impl Diagnosis {
-    pub fn of(err: &SshError) -> Self {
+    pub fn of(err: &TransportError) -> Self {
         let facts = Facts::for_host(&err.host).with(err.methods.clone(), err.mode);
         Self::build(
             &err.raw,
@@ -904,7 +904,7 @@ pub fn classify(raw: &str) -> Problem {
 
 /// Structured report for CLI callers (`doctor`, `probe`, `login`, `sessions`).
 pub fn render_error(err: &anyhow::Error, host: &str, lang: Lang) -> String {
-    match err.downcast_ref::<SshError>() {
+    match err.downcast_ref::<TransportError>() {
         Some(se) => Diagnosis::of(se).plain(lang),
         None => Diagnosis::of_message(host, &format!("{err:#}")).plain(lang),
     }
@@ -914,7 +914,7 @@ pub fn render_error(err: &anyhow::Error, host: &str, lang: Lang) -> String {
 /// footer line" (missing tmux, missing cwd, install-plan failures, ...).
 /// The returned report carries both languages; the UI picks at render time.
 pub fn diagnosis_of(err: &anyhow::Error, host: &str) -> Option<Diagnosis> {
-    if let Some(se) = err.downcast_ref::<SshError>() {
+    if let Some(se) = err.downcast_ref::<TransportError>() {
         return Some(Diagnosis::of(se));
     }
     let text = format!("{err:#}");
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn diagnosis_keeps_raw_output_and_renders_plain_text() {
-        let err = SshError {
+        let err = TransportError {
             host: "devbox".into(),
             mode: AuthMode::Auto,
             command: "ssh -o BatchMode=yes devbox -- true".into(),

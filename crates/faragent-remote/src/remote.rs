@@ -14,27 +14,6 @@ pub const LEGACY_TMUX_SOCKET: &str = "farssh";
 
 pub use faragent_core::vocab::HostOs;
 
-/// One round trip every candidate remote shell answers: cmd.exe expands
-/// `%OS%`, PowerShell expands `"$env:OS"`, POSIX shells leave both literal.
-pub fn os_marker_command() -> &'static str {
-    r#"echo FARAGENT_OS_V1 %OS% "$env:OS""#
-}
-
-/// `Some(Windows)` when the marker reported `Windows_NT`, `Some(Posix)` when
-/// the marker ran but stayed literal. `None` means the marker never appeared
-/// (connection failure, exotic shell) — the caller must not cache that.
-pub fn parse_os_marker(text: &str) -> Option<HostOs> {
-    let lower = text.to_ascii_lowercase();
-    if !lower.contains("faragent_os_v1") {
-        return None;
-    }
-    if lower.contains("windows_nt") {
-        Some(HostOs::Windows)
-    } else {
-        Some(HostOs::Posix)
-    }
-}
-
 /// The one command the "create the missing directory" confirmation runs on
 /// the remote, per dialect.
 pub fn new_dir_command(dir: &str, os: HostOs) -> String {
@@ -807,40 +786,6 @@ agent	pi			missing
         // A probe from before the os line existed still parses.
         let old = parse_probe("FARAGENT_PROBE_V1\nhome\t/home/me\n").unwrap();
         assert_eq!(old.os, HostOs::Posix);
-    }
-
-    #[test]
-    fn os_marker_three_shells() {
-        // cmd.exe expands %OS%.
-        assert_eq!(
-            parse_os_marker("FARAGENT_OS_V1 Windows_NT \"$env:OS\""),
-            Some(HostOs::Windows)
-        );
-        // A PowerShell default shell expands $env:OS.
-        assert_eq!(
-            parse_os_marker("FARAGENT_OS_V1 %OS% Windows_NT"),
-            Some(HostOs::Windows)
-        );
-        // POSIX shells leave both forms literal.
-        assert_eq!(
-            parse_os_marker("FARAGENT_OS_V1 %OS% :OS"),
-            Some(HostOs::Posix)
-        );
-        // The marker never ran (connection failure): nothing to cache.
-        assert_eq!(
-            parse_os_marker("ssh: connect to host port 22: timed out"),
-            None
-        );
-    }
-
-    #[test]
-    fn os_marker_command_is_safe_in_every_shell() {
-        let cmd = os_marker_command();
-        assert!(cmd.contains("FARAGENT_OS_V1"));
-        assert!(cmd.contains("%OS%"));
-        assert!(cmd.contains("$env:OS"));
-        // No single quotes: cmd.exe would print them verbatim.
-        assert!(!cmd.contains('\''));
     }
 
     #[test]

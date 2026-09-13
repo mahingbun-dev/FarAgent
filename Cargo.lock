@@ -281,14 +281,13 @@ dependencies = [
  "dirs",
  "faragent-core",
  "faragent-remote",
+ "faragent-transport",
  "pretty_assertions",
  "ratatui",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
- "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -313,6 +312,19 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "faragent-transport"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "faragent-core",
+ "pretty_assertions",
+ "tempfile",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

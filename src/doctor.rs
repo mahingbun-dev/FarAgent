@@ -2,7 +2,7 @@ use crate::diagnose::Diagnosis;
 use crate::install;
 use crate::probe;
 use crate::runtime;
-use crate::ssh::{self, Client};
+use crate::ssh::{self, OpenSshTransport};
 use crate::text::Lang;
 use anyhow::Result;
 
@@ -44,14 +44,14 @@ pub fn run(host: Option<&str>) -> Result<()> {
     };
 
     println!("\n== remote {host} ==");
-    let client = Client::new(host)?;
+    let client = OpenSshTransport::connect(host)?;
     println!(
         "auth mode: {} ({})",
-        client.mode.code(),
-        ssh::auth_mode_label(client.mode).pick(lang())
+        client.mode().code(),
+        ssh::auth_mode_label(client.mode()).pick(lang())
     );
     let ping = client.exec_raw_line(ssh::REMOTE_PING)?;
-    if ping.status.success() {
+    if ping.success() {
         println!("ssh: ok");
         println!(
             "multiplex: {}",
