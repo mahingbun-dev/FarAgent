@@ -1,7 +1,5 @@
-mod agents;
 mod askpass;
 mod chrome;
-mod config;
 mod diagnose;
 mod doctor;
 mod install;
@@ -10,9 +8,12 @@ mod pty;
 mod remote;
 mod runtime;
 mod ssh;
-mod text;
 mod tui;
 mod win;
+
+// Moved into faragent-core; aliased at the crate root so every existing
+// `crate::agents::…` / `crate::config::…` / `crate::text::…` path keeps working.
+pub use faragent_core::{agents, config, text};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};

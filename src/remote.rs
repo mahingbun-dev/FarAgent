@@ -5,39 +5,14 @@ use crate::ssh;
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 pub const TMUX_SOCKET: &str = "faragent";
 /// Pre-rename isolated tmux server; list/attach still query it.
 pub const LEGACY_TMUX_SOCKET: &str = "farssh";
 
-/// Which dialect the remote speaks. Posix = bash + tmux (Linux, macOS, WSL);
-/// Windows = cmd.exe default shell + PowerShell payloads, no tmux.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostOs {
-    #[default]
-    Posix,
-    Windows,
-}
-
-impl HostOs {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "posix" | "linux" | "darwin" | "macos" | "unix" | "wsl" => Some(Self::Posix),
-            "windows" | "win" | "win32" => Some(Self::Windows),
-            _ => None,
-        }
-    }
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Posix => "posix",
-            Self::Windows => "windows",
-        }
-    }
-}
+pub use faragent_core::vocab::HostOs;
 
 /// One round trip every candidate remote shell answers: cmd.exe expands
 /// `%OS%`, PowerShell expands `"$env:OS"`, POSIX shells leave both literal.

@@ -1,0 +1,19 @@
+[package]
+name = "faragent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent vocabulary, local config and path plumbing (no processes, no UI)"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

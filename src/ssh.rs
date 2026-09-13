@@ -2,7 +2,9 @@
 
 use crate::text::LocalizedText;
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use faragent_core::paths::faragent_home;
+pub use faragent_core::shell::shell_single_quote;
+pub use faragent_core::vocab::AuthMode;
 use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
@@ -26,44 +28,6 @@ pub const KEY_PERSIST: &str = "600";
 /// so the user is not asked again for every probe. The password itself is only
 /// ever typed into OpenSSH and is never stored by FarAgent.
 pub const PASSWORD_PERSIST: &str = "4h";
-
-/// How FarAgent is allowed to authenticate to a host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AuthMode {
-    /// Key first (BatchMode). If the server only offers password, say so and
-    /// offer an interactive login instead of guessing.
-    #[default]
-    Auto,
-    /// Key / ssh-agent only. Never prompts, fails fast.
-    Key,
-    /// Password / keyboard-interactive. Prompts once through OpenSSH, then
-    /// multiplexes every later command over the ControlMaster socket.
-    Password,
-}
-
-impl AuthMode {
-    pub const ALL: [AuthMode; 3] = [Self::Auto, Self::Key, Self::Password];
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(Self::Auto),
-            "key" | "keys" | "publickey" | "pubkey" => Some(Self::Key),
-            "password" | "passwd" | "pw" | "interactive" | "keyboard-interactive" => {
-                Some(Self::Password)
-            }
-            _ => None,
-        }
-    }
-
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Key => "key",
-            Self::Password => "password",
-        }
-    }
-}
 
 // Auth wording travels with the transport: it takes `AuthMode`/host as input
 // and is rendered by the TUI, the CLI and (later) the app alike.
@@ -532,25 +496,6 @@ fn expand_tilde(token: &str) -> Result<String> {
     Ok(token.to_string())
 }
 
-pub const APP_HOME_DIR: &str = ".faragent";
-pub const LEGACY_APP_HOME_DIR: &str = ".farssh";
-
-/// Local config / ControlMaster dir. Renames `~/.farssh` once if the new dir is absent.
-pub fn faragent_home() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot resolve home directory"))?;
-    migrate_app_home(&home)
-}
-
-pub fn migrate_app_home(home: &Path) -> Result<PathBuf> {
-    let dest = home.join(APP_HOME_DIR);
-    let src = home.join(LEGACY_APP_HOME_DIR);
-    if !dest.exists() && src.exists() {
-        fs::rename(&src, &dest)
-            .with_context(|| format!("rename {} -> {}", src.display(), dest.display()))?;
-    }
-    Ok(dest)
-}
-
 pub fn control_dir() -> Result<PathBuf> {
     let dir = faragent_home()?.join("cm");
     fs::create_dir_all(&dir).ok();
@@ -835,18 +780,6 @@ impl Client {
     }
 }
 
-pub fn shell_single_quote(s: &str) -> String {
-    if s.is_empty() {
-        return "''".into();
-    }
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-_./:@%=+,".contains(c))
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\"'\"'"))
-}
-
 /// Single remote argv. OpenSSH joins extra args with spaces and does **not**
 /// re-quote, so `ssh host -- bash -lc 'printf hi'` must be one string
 /// or the remote shell runs `bash -lc printf` and drops `hi`.
@@ -973,13 +906,6 @@ Host ignored
     }
 
     #[test]
-    fn shell_quote_safe_and_unsafe() {
-        assert_eq!(shell_single_quote("abc"), "abc");
-        assert_eq!(shell_single_quote("a b"), "'a b'");
-        assert_eq!(shell_single_quote("a'b"), "'a'\"'\"'b'");
-    }
-
-    #[test]
     fn bash_login_command_is_one_ssh_argv() {
         let cmd = bash_login_command(r#"printf 'FARAGENT_PROBE_V1\n'"#);
         assert!(cmd.starts_with("bash -lc "));
@@ -989,35 +915,6 @@ Host ignored
         );
         assert!(cmd.contains("FARAGENT_PROBE_V1"));
         assert_ne!(cmd, r#"bash -lc printf 'FARAGENT_PROBE_V1\n'"#);
-    }
-
-    #[test]
-    fn migrate_renames_legacy_home() {
-        let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join(".farssh");
-        std::fs::create_dir(&old).unwrap();
-        std::fs::write(old.join("config.json"), "{}\n").unwrap();
-        let dest = migrate_app_home(tmp.path()).unwrap();
-        assert_eq!(dest, tmp.path().join(".faragent"));
-        assert!(dest.join("config.json").is_file());
-        assert!(!old.exists());
-    }
-
-    #[test]
-    fn migrate_leaves_existing_new_home() {
-        let tmp = tempfile::tempdir().unwrap();
-        let old = tmp.path().join(".farssh");
-        let new = tmp.path().join(".faragent");
-        std::fs::create_dir(&old).unwrap();
-        std::fs::create_dir(&new).unwrap();
-        std::fs::write(old.join("config.json"), "old").unwrap();
-        std::fs::write(new.join("config.json"), "new").unwrap();
-        migrate_app_home(tmp.path()).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(new.join("config.json")).unwrap(),
-            "new"
-        );
-        assert!(old.exists());
     }
 
     #[test]

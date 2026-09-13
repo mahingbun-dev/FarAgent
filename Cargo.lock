@@ -280,6 +280,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "faragent-core",
  "pretty_assertions",
  "ratatui",
  "serde",
@@ -288,6 +289,18 @@ dependencies = [
  "thiserror",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "faragent-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
