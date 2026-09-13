@@ -808,7 +808,7 @@ fn begin_agent_action(
     match action {
         install::Action::Uninstall if !found => {
             app.error = Some(app.lang.no_need_uninstall(&app.agent().to_string()));
-            return Ok(());
+            Ok(())
         }
         install::Action::Upgrade if !found => open_confirm(app, terminal, install::Action::Install),
         other => open_confirm(app, terminal, other),

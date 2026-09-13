@@ -1,3 +1,5 @@
+# Release：推送 v* tag 时跨平台构建二进制并创建 GitHub Release
+# 发版：git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 name: Release
 
 on:
@@ -5,36 +7,66 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: write   # 创建 Release 并上传产物
 
 jobs:
   build:
-    name: ${{ matrix.artifact }}
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: faragent-linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            archive: faragent-linux-x86_64.tar.gz
           - os: macos-latest
-            artifact: faragent-macos-aarch64
+            target: aarch64-apple-darwin
+            archive: faragent-macos-arm64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin   # arm64 runner 交叉编译 x86_64（macos-13 Intel runner 已退役）
+            archive: faragent-macos-x86_64.tar.gz
           - os: windows-latest
-            artifact: faragent-windows-x86_64
+            target: x86_64-pc-windows-msvc
+            archive: faragent-windows-x86_64.zip
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build
-        run: cargo build --locked --release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
       - name: Package (unix)
         if: runner.os != 'Windows'
-        run: tar czf ${{ matrix.artifact }}.tar.gz -C target/release faragent
+        run: tar czf ${{ matrix.archive }} -C target/${{ matrix.target }}/release faragent
+
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/release/faragent.exe -DestinationPath ${{ matrix.artifact }}.zip
-      - uses: softprops/action-gh-release@v2
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/faragent.exe -DestinationPath ${{ matrix.archive }}
+
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.zip
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" dist/* --clobber

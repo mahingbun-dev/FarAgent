@@ -157,15 +157,9 @@ mod tests {
         assert!(suffix.chars().all(|c| c.is_ascii_alphanumeric()));
         assert_eq!(suffix.len(), 12);
         assert_eq!(short_id(id), suffix);
-        assert_eq!(
-            tmux_id_from_name(AgentKind::Grok, &name).as_deref(),
-            Some(suffix)
-        );
+        assert_eq!(tmux_id_from_name(AgentKind::Grok, &name), Some(suffix));
         let legacy = legacy_tmux_name(AgentKind::Grok, id);
-        assert_eq!(
-            tmux_id_from_name(AgentKind::Grok, &legacy).as_deref(),
-            Some(suffix)
-        );
+        assert_eq!(tmux_id_from_name(AgentKind::Grok, &legacy), Some(suffix));
         assert!(tmux_id_from_name(AgentKind::Claude, &name).is_none());
     }
 
