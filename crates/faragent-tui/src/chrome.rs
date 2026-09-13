@@ -7,8 +7,9 @@
 //! Defined as an extension trait so call sites read `lang.hosts_title()`
 //! while the methods can live next to the UI that renders them.
 
-use crate::remote::HostOs;
-use crate::text::Lang;
+use faragent_core::text::Lang;
+use faragent_core::vocab::HostOs;
+use faragent_remote::remote::new_dir_command;
 
 pub trait Chrome {
     fn hosts_title(self) -> &'static str;
@@ -122,7 +123,7 @@ impl Chrome for Lang {
     }
 
     fn new_dir_lines(self, dir: &str, os: HostOs) -> Vec<String> {
-        let cmd = crate::remote::new_dir_command(dir, os);
+        let cmd = new_dir_command(dir, os);
         match self {
             Self::Zh => vec![
                 "这是会话的工作目录：agent 读写代码的根目录，不是文件夹浏览器。".into(),

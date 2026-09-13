@@ -1,0 +1,19 @@
+[package]
+name = "faragent-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent terminal UI: the host/agent/session picker and local-tty attach"
+
+[dependencies]
+faragent-core = { path = "../faragent-core" }
+faragent-install = { path = "../faragent-install" }
+faragent-remote = { path = "../faragent-remote" }
+faragent-service = { path = "../faragent-service" }
+faragent-transport = { path = "../faragent-transport" }
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true

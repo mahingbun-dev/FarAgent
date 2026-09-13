@@ -277,13 +277,12 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
- "crossterm",
  "faragent-core",
  "faragent-install",
  "faragent-remote",
  "faragent-service",
  "faragent-transport",
- "ratatui",
+ "faragent-tui",
  "serde_json",
 ]
 
@@ -350,6 +349,20 @@ dependencies = [
  "tempfile",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "faragent-tui"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "faragent-core",
+ "faragent-install",
+ "faragent-remote",
+ "faragent-service",
+ "faragent-transport",
+ "ratatui",
 ]
 
 [[package]]

@@ -43,8 +43,7 @@ faragent-install = { path = "crates/faragent-install" }
 faragent-remote = { path = "crates/faragent-remote" }
 faragent-service = { path = "crates/faragent-service" }
 faragent-transport = { path = "crates/faragent-transport" }
+faragent-tui = { path = "crates/faragent-tui" }
 anyhow.workspace = true
 clap.workspace = true
-crossterm.workspace = true
-ratatui.workspace = true
 serde_json.workspace = true

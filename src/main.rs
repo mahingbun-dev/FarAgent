@@ -1,9 +1,5 @@
-mod chrome;
-mod pty;
-mod tui;
-
-// Moved into faragent-core / faragent-remote / faragent-transport; aliased at
-// the crate root so every existing `crate::ssh::…` path keeps working.
+// Every module now lives in a workspace crate; aliased at the crate root so
+// the CLI code below keeps its `crate::tui::…` / `crate::ssh::…` paths.
 pub use faragent_core::{agents, config, text};
 pub use faragent_install as install;
 pub use faragent_remote::{remote, win};
@@ -11,6 +7,7 @@ pub use faragent_service::sessions as runtime;
 pub use faragent_service::{diagnose, doctor, probe};
 pub use faragent_transport as ssh;
 pub use faragent_transport::askpass;
+pub use faragent_tui::{chrome, pty, tui};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};

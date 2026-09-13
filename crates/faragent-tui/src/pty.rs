@@ -1,31 +1,33 @@
 //! Hand the local tty to `ssh -tt` and restore the manager TUI afterwards.
 
-use crate::ssh::{self, AuthMode, Flavor, OpenSshTransport};
-use crate::text::Lang;
 use anyhow::Result;
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
+use faragent_core::text::Lang;
+use faragent_remote::remote::attach_script;
+use faragent_remote::win;
+use faragent_transport::{self as ssh, askpass, AuthMode, Flavor, OpenSshTransport};
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
 /// Drop ratatui/crossterm, attach to a remote tmux session, then return.
 pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
-    run_remote_script(host, &crate::remote::attach_script(tmux_name))
+    run_remote_script(host, &attach_script(tmux_name))
 }
 
 /// Foreground agent launch on a Windows remote (no tmux): quitting the agent
 /// — or losing ssh — ends the session; resume brings the conversation back.
 pub fn attach_win(host: &str, cwd: &str, argv: &[String]) -> Result<i32> {
-    run_remote_line(host, &crate::win::attach_launcher(cwd, argv))
+    run_remote_line(host, &win::attach_launcher(cwd, argv))
 }
 
 /// Hands the tty to a PowerShell script (install/upgrade/uninstall plans).
 /// No stdin payload: the script rides an EncodedCommand and plans are short
 /// by construction, so the command-line stays well under cmd.exe's limit.
 pub fn run_remote_ps(host: &str, script: &str) -> Result<i32> {
-    run_remote_line(host, &crate::win::encoded_command(script))
+    run_remote_line(host, &win::encoded_command(script))
 }
 
 /// Hand the local tty to `ssh -tt` running a login-shell script. No exec timeout:
@@ -48,7 +50,7 @@ pub fn run_remote_line(host: &str, remote: &str) -> Result<i32> {
     cmd.arg(client.host());
     cmd.arg("--");
     cmd.arg(remote);
-    crate::askpass::apply(&mut cmd, host);
+    askpass::apply(&mut cmd, host);
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());

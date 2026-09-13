@@ -1,16 +1,16 @@
-use crate::agents::AgentKind;
-use crate::askpass;
 use crate::chrome::Chrome;
-use crate::config;
-use crate::diagnose::{self, Diagnosis};
-use crate::install::{self, Plan};
-use crate::probe::{self, Probe};
 use crate::pty;
-use crate::runtime::{self, SessionSummary};
-use crate::ssh::{self, AuthMode, SshHost};
-use crate::text::Lang;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use faragent_core::agents::AgentKind;
+use faragent_core::config;
+use faragent_core::text::Lang;
+use faragent_core::vocab::HostOs;
+use faragent_install::{self as install, Plan};
+use faragent_service::diagnose::{self, Diagnosis};
+use faragent_service::probe::{self, Probe};
+use faragent_service::sessions::{self as runtime, SessionSummary};
+use faragent_transport::{self as ssh, askpass, AuthMode, SshHost};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -359,19 +359,18 @@ fn handle_new_dir_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
 
 /// Can sessions be started on this host? On POSIX that needs tmux (it carries
 /// the session); Windows remotes run the agent in the foreground instead.
-fn sessions_supported(os: crate::remote::HostOs, tmux: bool) -> bool {
-    os == crate::remote::HostOs::Windows || tmux
+fn sessions_supported(os: HostOs, tmux: bool) -> bool {
+    os == HostOs::Windows || tmux
 }
 
 /// The probed dialect, defaulting to POSIX before any probe has run.
-fn probe_os(app: &App) -> crate::remote::HostOs {
+fn probe_os(app: &App) -> HostOs {
     app.probe.as_ref().map(|p| p.os).unwrap_or_default()
 }
 
 /// `~` / `~/x` (or `~\x`) against the **remote** home, in the remote's own
 /// separator style. Anything else is left alone.
-fn expand_home(typed: &str, home: &str, os: crate::remote::HostOs) -> String {
-    use crate::remote::HostOs;
+fn expand_home(typed: &str, home: &str, os: HostOs) -> String {
     if typed == "~" {
         return home.to_string();
     }
@@ -858,8 +857,8 @@ fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     app.status = install::running_remote().pick(app.lang).into();
     ratatui::restore();
     let code = match probe_os(app) {
-        crate::remote::HostOs::Posix => pty::run_remote_script(&host, &plan.script),
-        crate::remote::HostOs::Windows => pty::run_remote_ps(&host, &plan.script),
+        HostOs::Posix => pty::run_remote_script(&host, &plan.script),
+        HostOs::Windows => pty::run_remote_ps(&host, &plan.script),
     };
     *terminal = ratatui::init();
     app.screen = Screen::Agents;
@@ -930,7 +929,7 @@ fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> 
         let tmux = sess
             .tmux
             .clone()
-            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
+            .unwrap_or_else(|| faragent_core::agents::tmux_name(agent, &sess.id));
         return drop_into_tmux(app, terminal, &host, &tmux);
     }
     // A Windows remote cannot prove liveness, only suggest it: ask first.
@@ -990,7 +989,6 @@ fn start_session(
     session_id: Option<&str>,
     create_cwd: bool,
 ) -> Result<()> {
-    use crate::remote::HostOs;
     let os = probe_os(app);
     let result = match os {
         HostOs::Posix => runtime::ensure_tmux_session(
@@ -1503,7 +1501,6 @@ mod tests {
 
     #[test]
     fn tilde_expands_against_the_remote_home_only_as_a_prefix() {
-        use crate::remote::HostOs;
         let os = HostOs::Posix;
         assert_eq!(expand_home("~", "/home/me", os), "/home/me");
         assert_eq!(
@@ -1522,7 +1519,6 @@ mod tests {
 
     #[test]
     fn tilde_expands_windows_style_home() {
-        use crate::remote::HostOs;
         let os = HostOs::Windows;
         let home = "C:\\Users\\me";
         assert_eq!(expand_home("~", home, os), home);
@@ -1545,7 +1541,6 @@ mod tests {
 
     #[test]
     fn windows_remotes_do_not_need_tmux_for_sessions() {
-        use crate::remote::HostOs;
         assert!(sessions_supported(HostOs::Windows, false));
         assert!(sessions_supported(HostOs::Posix, true));
         assert!(!sessions_supported(HostOs::Posix, false));
@@ -1553,7 +1548,6 @@ mod tests {
 
     #[test]
     fn new_dir_command_index_matches_the_command_line() {
-        use crate::remote::HostOs;
         for lang in Lang::ALL {
             for os in [HostOs::Posix, HostOs::Windows] {
                 let dir = "C:\\tmp\\x";
@@ -1561,7 +1555,7 @@ mod tests {
                 let idx = lang.new_dir_cmd_index();
                 assert_eq!(
                     lines[idx],
-                    crate::remote::new_dir_command(dir, os),
+                    faragent_remote::remote::new_dir_command(dir, os),
                     "{lang:?} {os:?}"
                 );
             }
@@ -1595,7 +1589,7 @@ mod tests {
 
     #[test]
     fn password_prompt_only_without_mux_on_credential_problems() {
-        use crate::diagnose::Problem;
+        use faragent_service::diagnose::Problem;
         assert!(should_prompt_password(false, Some(Problem::NeedsPassword)));
         assert!(should_prompt_password(false, Some(Problem::PasswordDenied)));
         // Host keys and passphrases keep the interactive OpenSSH path.
