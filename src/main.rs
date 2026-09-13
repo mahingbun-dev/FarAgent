@@ -1,22 +1,23 @@
 mod agents;
 mod askpass;
+mod chrome;
 mod config;
 mod diagnose;
 mod doctor;
-mod i18n;
 mod install;
 mod probe;
 mod pty;
 mod remote;
 mod runtime;
 mod ssh;
+mod text;
 mod tui;
 mod win;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use i18n::Lang;
 use ssh::AuthMode;
+use text::Lang;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,7 +90,7 @@ fn main() -> Result<()> {
 }
 
 fn lang() -> Lang {
-    config::language().unwrap_or(Lang::Zh)
+    config::language_or_default()
 }
 
 /// On failure print the same report the TUI shows (raw output + cause + fixes)
@@ -97,7 +98,7 @@ fn lang() -> Lang {
 fn report(host: &str, result: Result<()>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
-        Err(e) => match diagnose::diagnosis_of(&e, host, lang()) {
+        Err(e) => match diagnose::diagnosis_of(&e, host) {
             Some(d) => {
                 print!("{}", d.plain(lang()));
                 std::process::exit(1);
@@ -124,13 +125,16 @@ fn sessions_json(host: &str, agent: &str) -> Result<()> {
 fn auth(host: &str, mode: Option<&str>) -> Result<()> {
     let lang = lang();
     let Some(mode) = mode else {
-        println!("{}", lang.auth_saved(host, config::auth_for(host)));
+        println!(
+            "{}",
+            ssh::auth_saved(host, config::auth_for(host)).pick(lang)
+        );
         return Ok(());
     };
     let parsed = AuthMode::parse(mode)
         .ok_or_else(|| anyhow!("unknown auth mode '{mode}': use auto | key | password"))?;
     config::set_auth(host, parsed)?;
-    println!("{}", lang.auth_saved(host, parsed));
+    println!("{}", ssh::auth_saved(host, parsed).pick(lang));
     Ok(())
 }
 
@@ -142,10 +146,10 @@ fn login(host: &str) -> Result<()> {
     let code = pty::interactive_connect(host, mode, lang)?;
     let out = client.exec_raw_line(ssh::REMOTE_PING)?;
     if out.status.success() {
-        println!("{}", lang.login_ok(host));
+        println!("{}", ssh::login_ok(host).pick(lang));
         return Ok(());
     }
-    let mut d = diagnose::Diagnosis::of(&client.error_for(&out), lang);
+    let mut d = diagnose::Diagnosis::of(&client.error_for(&out));
     if code != 0
         && matches!(
             d.problem,
@@ -154,7 +158,7 @@ fn login(host: &str) -> Result<()> {
     {
         // The user just tried; the actionable advice is about the credential,
         // not about enabling password mode.
-        d = d.relabel(diagnose::Problem::PasswordDenied, lang);
+        d = d.relabel(diagnose::Problem::PasswordDenied);
     }
     print!("{}", d.plain(lang));
     std::process::exit(if code == 0 { 1 } else { code });

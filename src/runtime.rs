@@ -1,6 +1,7 @@
 use crate::agents::{self, AgentKind};
 use crate::remote::{self, DiskFile, HostOs, ListDump, StartOutcome};
 use crate::ssh::Client;
+use crate::text::LocalizedText;
 use crate::win;
 use anyhow::Result;
 use serde::Deserialize;
@@ -40,6 +41,42 @@ impl SessionSummary {
         format!("[{mark}]  {title}  ({cwd})")
     }
 }
+
+/// Row marks in the session list. `live` = a tmux session is still running
+/// (attach only, never resume); `running` = a Windows process may still hold
+/// the session (a confirmation asks first).
+pub const MARK_LIVE: &str = "live";
+pub const MARK_IDLE: &str = "idle";
+pub const MARK_RUNNING: &str = "running";
+
+// Guards and wording around starting a session; both languages at once.
+
+#[allow(dead_code)]
+pub const TMUX_MISSING: LocalizedText<&'static str> = LocalizedText::new(
+    "远程未安装 tmux。回车可按官方/系统包管理器安装。",
+    "tmux is not installed on the remote. Enter to install it.",
+);
+
+pub const TMUX_MISSING_SHORT: LocalizedText<&'static str> = LocalizedText::new(
+    "远程未安装 tmux",
+    "tmux is not installed on the remote host",
+);
+
+pub fn agent_missing(name: &str) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!("远程未安装 {name}"),
+        format!("{name} is not installed on the remote host"),
+    )
+}
+
+#[allow(dead_code)]
+pub fn agent_not_installed(name: &str) -> LocalizedText<String> {
+    LocalizedText::new(format!("{name} 未安装"), format!("{name} is not installed"))
+}
+
+#[allow(dead_code)]
+pub const NOT_INSTALLED: LocalizedText<&'static str> =
+    LocalizedText::new("未安装", "not installed");
 
 pub fn run_login(client: &Client, script: &str) -> Result<String> {
     let output = client.exec_login(script)?;

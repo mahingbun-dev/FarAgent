@@ -1,8 +1,8 @@
 //! Local client config: `~/.faragent/config.json`.
 
-use crate::i18n::Lang;
 use crate::remote::HostOs;
 use crate::ssh::{self, AuthMode};
+use crate::text::Lang;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -56,6 +56,12 @@ pub fn save(cfg: &Config) -> Result<()> {
 
 pub fn language() -> Option<Lang> {
     load().language.as_deref().and_then(Lang::parse)
+}
+
+/// The configured language, or the single first-run default (Zh) — the one
+/// place every non-TUI surface (CLI, doctor, app) resolves it.
+pub fn language_or_default() -> Lang {
+    language().unwrap_or(Lang::Zh)
 }
 
 pub fn set_language(lang: Lang) -> Result<()> {

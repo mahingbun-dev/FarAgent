@@ -4,6 +4,7 @@
 use crate::agents::AgentKind;
 use crate::remote::HostOs;
 use crate::ssh::{self, Client};
+use crate::text::LocalizedText;
 use crate::win;
 use anyhow::{anyhow, Result};
 
@@ -789,6 +790,127 @@ fn after_magic<'a>(text: &'a str, magic: &str) -> Result<&'a str> {
             text.chars().take(240).collect::<String>()
         ))
     }
+}
+
+// Install-flow wording travels with the plans it describes. A UI picks the
+// language at render time; the plan itself is language-free.
+// (Step titles and script echoes stay English by design — they name the
+// commands that will actually run on the remote.)
+
+pub fn confirm_title(action: Action, host: &str, agent: &str) -> LocalizedText<String> {
+    match action {
+        Action::Install => LocalizedText::new(
+            format!("FarAgent · {host} · 安装 {agent}"),
+            format!("FarAgent · {host} · install {agent}"),
+        ),
+        Action::Upgrade => LocalizedText::new(
+            format!("FarAgent · {host} · 升级 {agent}"),
+            format!("FarAgent · {host} · upgrade {agent}"),
+        ),
+        Action::Uninstall => LocalizedText::new(
+            format!("FarAgent · {host} · 卸载 {agent}"),
+            format!("FarAgent · {host} · uninstall {agent}"),
+        ),
+    }
+}
+
+pub fn confirm_list_title() -> LocalizedText<&'static str> {
+    LocalizedText::new(
+        "将在远程执行的命令（确认后直播输出）",
+        "commands that will run on the remote (live after confirm)",
+    )
+}
+
+pub fn planning() -> LocalizedText<&'static str> {
+    LocalizedText::new("正在生成安装计划…", "building install plan…")
+}
+
+pub fn plan_failed(err: &str) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!("无法生成安装计划: {err}"),
+        format!("could not build install plan: {err}"),
+    )
+}
+
+pub fn no_need_uninstall(name: &str) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!("{name} 未安装，无需卸载"),
+        format!("{name} is not installed; nothing to uninstall"),
+    )
+}
+
+pub fn step_sudo() -> LocalizedText<&'static str> {
+    LocalizedText::new("需要 sudo", "needs sudo")
+}
+
+pub fn warning(w: Warning) -> LocalizedText<String> {
+    match w {
+        Warning::LiveTmux => LocalizedText::new(
+            "警告：该助手还有 live tmux 会话。卸载可能打断正在跑的 TUI，仍可继续。".into(),
+            "Warning: this agent still has a live tmux session. Uninstall may interrupt it.".into(),
+        ),
+        Warning::TmuxSkippedNoPkg => LocalizedText::new(
+            "未找到 brew/apt/dnf/yum/pacman/apk，跳过代装 tmux。可复制下方命令自行安装。".into(),
+            "No brew/apt/dnf/yum/pacman/apk; skipping tmux. Copy a command below to install it yourself.".into(),
+        ),
+        Warning::NeedsSudo => LocalizedText::new(
+            "有步骤需要 sudo。执行时若提示密码，在直播终端里输入（本机不保存）。".into(),
+            "A step needs sudo. Type the password in the live terminal if asked (not stored locally).".into(),
+        ),
+    }
+}
+
+pub fn blocked(b: Blocked) -> LocalizedText<String> {
+    match b {
+        Blocked::NoCurlNoPkg => LocalizedText::new(
+            "远程没有 curl，也没有可识别的包管理器。请先自行安装 curl，命令见下方。".into(),
+            "Remote has no curl and no known package manager. Install curl yourself (commands below).".into(),
+        ),
+        Blocked::TmuxOnlyNoPkg => LocalizedText::new(
+            "远程没有 tmux，也没有 brew/apt/dnf/yum/pacman/apk。请自行安装 tmux。".into(),
+            "Remote has no tmux and no brew/apt/dnf/yum/pacman/apk. Install tmux yourself.".into(),
+        ),
+        Blocked::NotInstalled => LocalizedText::new(
+            "未安装，无需卸载。".into(),
+            "Not installed; nothing to uninstall.".into(),
+        ),
+        Blocked::NothingToDo => LocalizedText::new("没有需要执行的步骤。".into(), "Nothing to do.".into()),
+    }
+}
+
+pub fn suggested_title() -> LocalizedText<&'static str> {
+    LocalizedText::new(
+        "可复制命令（FarAgent 不会执行这些）：",
+        "Copy-paste (FarAgent will not run these):",
+    )
+}
+
+pub fn running_remote() -> LocalizedText<&'static str> {
+    LocalizedText::new(
+        "正在远程执行（直播输出，完成后按回车返回）…",
+        "running on the remote (live output; Enter when done to return)…",
+    )
+}
+
+pub fn remote_ok() -> LocalizedText<&'static str> {
+    LocalizedText::new(
+        "远程命令成功 · 已重新探测",
+        "remote command succeeded · re-probed",
+    )
+}
+
+pub fn remote_failed(code: i32) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!("远程命令失败（退出码 {code}）。错误见刚才的直播输出。"),
+        format!("remote command failed (exit {code}). See the live output."),
+    )
+}
+
+pub fn plan_blocked_enter() -> LocalizedText<&'static str> {
+    LocalizedText::new(
+        "当前计划无法执行。Esc 返回。",
+        "This plan cannot run. Esc to go back.",
+    )
 }
 
 #[cfg(test)]

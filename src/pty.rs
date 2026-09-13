@@ -1,7 +1,7 @@
 //! Hand the local tty to `ssh -tt` and restore the manager TUI afterwards.
 
-use crate::i18n::Lang;
 use crate::ssh::{self, AuthMode, Client, Flavor};
+use crate::text::Lang;
 use anyhow::Result;
 use crossterm::{
     execute,
@@ -84,7 +84,7 @@ pub fn interactive_flavor(mode: AuthMode) -> Flavor {
 /// again. FarAgent itself never reads or stores the password.
 pub fn interactive_connect(host: &str, mode: AuthMode, lang: Lang) -> Result<i32> {
     restore_tty()?;
-    println!("faragent: {}", lang.interactive_banner(host));
+    println!("faragent: {}", ssh::interactive_banner(host).pick(lang));
     let client = Client::with_mode(host, mode)?;
     let flavor = interactive_flavor(mode);
     let mut cmd = Command::new("ssh");

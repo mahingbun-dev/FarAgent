@@ -60,6 +60,15 @@ pub fn parse_os_marker(text: &str) -> Option<HostOs> {
     }
 }
 
+/// The one command the "create the missing directory" confirmation runs on
+/// the remote, per dialect.
+pub fn new_dir_command(dir: &str, os: HostOs) -> String {
+    match os {
+        HostOs::Posix => format!("mkdir -p {dir}"),
+        HostOs::Windows => format!("New-Item -ItemType Directory -Force -LiteralPath '{dir}'"),
+    }
+}
+
 pub const TMUX_CONF: &str = r#"# Managed by faragent. Applies only to sessions started with -f this file.
 set -g prefix C-g
 unbind C-b

@@ -1,9 +1,9 @@
 use crate::diagnose::Diagnosis;
-use crate::i18n::Lang;
 use crate::install;
 use crate::probe;
 use crate::runtime;
 use crate::ssh::{self, Client};
+use crate::text::Lang;
 use anyhow::Result;
 
 pub fn run(host: Option<&str>) -> Result<()> {
@@ -24,7 +24,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
         println!(
             "  - {}{}",
             h.label(),
-            lang().auth_tag(crate::config::auth_for(&h.alias))
+            ssh::auth_tag(crate::config::auth_for(&h.alias)).pick(lang())
         );
     }
     if hosts.is_empty() {
@@ -48,7 +48,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
     println!(
         "auth mode: {} ({})",
         client.mode.code(),
-        lang().auth_mode_label(client.mode)
+        ssh::auth_mode_label(client.mode).pick(lang())
     );
     let ping = client.exec_raw_line(ssh::REMOTE_PING)?;
     if ping.status.success() {
@@ -65,7 +65,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
         );
     } else {
         let err = client.error_for(&ping);
-        println!("{}", Diagnosis::of(&err, lang()).plain(lang()));
+        println!("{}", Diagnosis::of(&err).plain(lang()));
         return Ok(());
     }
 
@@ -86,7 +86,9 @@ pub fn run(host: Option<&str>) -> Result<()> {
                 }
             );
             for kind in crate::agents::AgentKind::ALL {
-                println!("  {}", probe::format_agent_line(kind, &p));
+                // Agent lines keep their long-standing English form (the rest
+                // of this section is localized); do not change output here.
+                println!("  {}", probe::format_agent_line(kind, &p).pick(Lang::En));
                 let found = p.agent(kind).map(|a| a.found) == Some(true);
                 if !found {
                     println!(
@@ -145,9 +147,9 @@ fn which_in(dirs: &[std::path::PathBuf], bin: &str, exts: &[&str]) -> Option<Str
     })
 }
 
-/// doctor speaks the language the user picked in the TUI.
+/// doctor speaks the language the user picked in the TUI (Zh on first run).
 fn lang() -> Lang {
-    crate::config::language().unwrap_or(Lang::Zh)
+    crate::config::language_or_default()
 }
 
 #[cfg(test)]

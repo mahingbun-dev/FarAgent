@@ -1,5 +1,6 @@
 //! Drive the system OpenSSH client. Never reimplements the wire protocol.
 
+use crate::text::LocalizedText;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -62,6 +63,77 @@ impl AuthMode {
             Self::Password => "password",
         }
     }
+}
+
+// Auth wording travels with the transport: it takes `AuthMode`/host as input
+// and is rendered by the TUI, the CLI and (later) the app alike.
+
+pub fn auth_tag(mode: AuthMode) -> LocalizedText<&'static str> {
+    match mode {
+        AuthMode::Password => LocalizedText::new("  [密码登录]", "  [password]"),
+        AuthMode::Key => LocalizedText::new("  [仅密钥]", "  [key only]"),
+        _ => LocalizedText::new("", ""),
+    }
+}
+
+pub fn auth_mode_label(mode: AuthMode) -> LocalizedText<&'static str> {
+    match mode {
+        AuthMode::Auto => LocalizedText::new(
+            "自动：先试密钥，只有服务端要求密码时才提示",
+            "auto: try keys first, offer a password prompt only if the server asks for one",
+        ),
+        AuthMode::Key => LocalizedText::new(
+            "仅密钥：BatchMode，绝不弹密码",
+            "key only: BatchMode, never prompts",
+        ),
+        AuthMode::Password => LocalizedText::new(
+            "密码 / 键盘交互：登录一次后复用连接",
+            "password / keyboard-interactive: log in once, then reuse the connection",
+        ),
+    }
+}
+
+pub fn auth_saved(host: &str, mode: AuthMode) -> LocalizedText<String> {
+    let label = auth_mode_label(mode);
+    LocalizedText::new(
+        format!("{host} 的登录方式：{}（{}）", mode.code(), label.zh),
+        format!("{host} auth mode: {} ({})", mode.code(), label.en),
+    )
+}
+
+/// Printed on the real terminal right before `ssh -tt` takes it over.
+pub fn interactive_banner(host: &str) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!(
+            "正在交互式登录 {host}。如果提示密码，请输入远程账号的密码 —— 密码只交给系统 ssh，FarAgent 不读取也不保存。提示主机指纹时请核对后再回答 yes。成功后会复用这条连接，接下来一段时间不必再输。"
+        ),
+        format!(
+            "interactive login to {host}. Type the remote account password if asked - it goes straight to OpenSSH; FarAgent never reads or stores it. Verify the host key fingerprint before answering yes. A successful login is reused, so you will not be asked again for a while."
+        ),
+    )
+}
+
+pub fn login_ok(host: &str) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!(
+            "已登录 {host}，多路复用连接保持中。接下来 `faragent` 与 `faragent doctor --host {host}` 不必再要密码。"
+        ),
+        format!(
+            "logged in to {host}; the multiplexed connection stays open, so `faragent` and `faragent doctor --host {host}` will not ask again."
+        ),
+    )
+}
+
+/// Shown in the TUI when the interactive attempt came back non-zero.
+pub fn auth_failed(code: i32) -> LocalizedText<String> {
+    LocalizedText::new(
+        format!(
+            "交互式登录没有成功（ssh 退出码 {code}）；失败原因就在刚才的终端输出里。按 r 重新探测，或再按 a 试一次。"
+        ),
+        format!(
+            "the interactive login did not succeed (ssh exit {code}); the reason is in the terminal output above. Press r to re-probe, or a to try again."
+        ),
+    )
 }
 
 /// Which bundle of `-o` options we hand to OpenSSH.

@@ -1,9 +1,9 @@
 use crate::agents::AgentKind;
 use crate::config;
-use crate::i18n::Lang;
 use crate::remote::{self, HostOs};
 use crate::runtime;
 use crate::ssh::Client;
+use crate::text::{Lang, LocalizedText};
 use crate::win;
 use anyhow::Result;
 
@@ -59,21 +59,37 @@ fn try_probe(client: &Client, os: HostOs) -> Result<Probe> {
     remote::parse_probe(&text)
 }
 
-pub fn format_agent_line(kind: AgentKind, probe: &Probe) -> String {
-    format_agent_line_lang(kind, probe, Lang::En)
+// Agent-line wording: rendered by the TUI and by `doctor`.
+
+pub const UNKNOWN_VERSION: LocalizedText<&'static str> =
+    LocalizedText::new("版本未知", "unknown version");
+pub const AUTH_OK: LocalizedText<&'static str> = LocalizedText::new("已登录", "auth ok");
+pub const AUTH_UNKNOWN: LocalizedText<&'static str> =
+    LocalizedText::new("登录状态未知", "auth unknown");
+pub const NOT_INSTALLED_HINT: LocalizedText<&'static str> =
+    LocalizedText::new("未安装 · 回车安装", "not installed · enter to install");
+
+pub fn format_agent_line(kind: AgentKind, probe: &Probe) -> LocalizedText<String> {
+    LocalizedText::new(
+        format_agent_line_lang(kind, probe, Lang::Zh),
+        format_agent_line_lang(kind, probe, Lang::En),
+    )
 }
 
-pub fn format_agent_line_lang(kind: AgentKind, probe: &Probe, lang: Lang) -> String {
+fn format_agent_line_lang(kind: AgentKind, probe: &Probe, lang: Lang) -> String {
     match probe.agent(kind) {
         Some(a) if a.found => {
-            let ver = a.version.as_deref().unwrap_or(lang.unknown_version());
+            let ver = a
+                .version
+                .clone()
+                .unwrap_or_else(|| UNKNOWN_VERSION.pick(lang).to_string());
             let auth = if a.auth_hint == "ok" {
-                lang.auth_ok()
+                AUTH_OK.pick(lang)
             } else {
-                lang.auth_unknown()
+                AUTH_UNKNOWN.pick(lang)
             };
             format!("{}  {}  ({})", kind.title(), ver, auth)
         }
-        _ => format!("{}  {}", kind.title(), lang.not_installed_hint()),
+        _ => format!("{}  {}", kind.title(), NOT_INSTALLED_HINT.pick(lang)),
     }
 }

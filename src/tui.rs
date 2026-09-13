@@ -1,13 +1,14 @@
 use crate::agents::AgentKind;
 use crate::askpass;
+use crate::chrome::Chrome;
 use crate::config;
 use crate::diagnose::{self, Diagnosis};
-use crate::i18n::Lang;
 use crate::install::{self, Plan};
 use crate::probe::{self, Probe};
 use crate::pty;
 use crate::runtime::{self, SessionSummary};
 use crate::ssh::{self, AuthMode, SshHost};
+use crate::text::Lang;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -433,11 +434,11 @@ fn begin_new(app: &mut App) {
         return;
     };
     if !sessions_supported(probe.os, probe.tmux.found) {
-        app.error = Some(app.lang.tmux_missing_short().into());
+        app.error = Some(runtime::TMUX_MISSING_SHORT.pick(app.lang).into());
         return;
     }
     if probe.agent(app.agent()).map(|a| a.found) != Some(true) {
-        app.error = Some(app.lang.agent_missing(&app.agent().to_string()));
+        app.error = Some(runtime::agent_missing(&app.agent().to_string()).pick(app.lang));
         return;
     }
     app.cwd_input = app
@@ -478,7 +479,7 @@ fn cycle_auth(app: &mut App) -> Result<()> {
     let next = next_auth(app.auth_of(app.host_idx));
     config::set_auth(&host, next)?;
     app.auth = auth_modes(&app.hosts);
-    app.status = app.lang.auth_saved(&host, next);
+    app.status = ssh::auth_saved(&host, next).pick(app.lang);
     Ok(())
 }
 
@@ -571,7 +572,7 @@ fn probe_selected_host(app: &mut App, terminal: &mut DefaultTerminal) -> Result<
 /// red footer message.
 fn report_error(app: &mut App, retry: Retry, from: Screen, e: &anyhow::Error) {
     let host = app.host().map(|h| h.alias.clone()).unwrap_or_default();
-    match diagnose::diagnosis_of(e, &host, app.lang) {
+    match diagnose::diagnosis_of(e, &host) {
         Some(diag) => {
             app.status = if diag.timed_out {
                 app.lang.problem_status_timeout().to_string()
@@ -698,7 +699,7 @@ fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     app.auth = auth_modes(&app.hosts);
     match code {
         Ok(0) => retry(app, terminal)?,
-        Ok(c) => app.status = app.lang.auth_failed(c),
+        Ok(c) => app.status = ssh::auth_failed(c).pick(app.lang),
         Err(e) => app.error = Some(e.to_string()),
     }
     Ok(())
@@ -807,7 +808,7 @@ fn begin_agent_action(
         == Some(true);
     match action {
         install::Action::Uninstall if !found => {
-            app.error = Some(app.lang.no_need_uninstall(&app.agent().to_string()));
+            app.error = Some(install::no_need_uninstall(&app.agent().to_string()).pick(app.lang));
             Ok(())
         }
         install::Action::Upgrade if !found => open_confirm(app, terminal, install::Action::Install),
@@ -824,7 +825,7 @@ fn open_confirm(
         return Ok(());
     };
     let agent = app.agent();
-    app.status = app.lang.planning().into();
+    app.status = install::planning().pick(app.lang).into();
     app.error = None;
     terminal.draw(|f| draw(f, app))?;
     match install::preflight_host(&host, agent) {
@@ -836,7 +837,7 @@ fn open_confirm(
             app.status = app.lang.confirm_keys_hint(can).into();
         }
         Err(e) => {
-            app.error = Some(app.lang.plan_failed(&e.to_string()));
+            app.error = Some(install::plan_failed(&e.to_string()).pick(app.lang));
             report_error(app, Retry::Reload, Screen::Agents, &e);
         }
     }
@@ -848,13 +849,13 @@ fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
         return Ok(());
     };
     if !plan.can_run() {
-        app.error = Some(app.lang.plan_blocked_enter().into());
+        app.error = Some(install::plan_blocked_enter().pick(app.lang).into());
         return Ok(());
     }
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
-    app.status = app.lang.running_remote().into();
+    app.status = install::running_remote().pick(app.lang).into();
     ratatui::restore();
     let code = match probe_os(app) {
         crate::remote::HostOs::Posix => pty::run_remote_script(&host, &plan.script),
@@ -865,11 +866,11 @@ fn execute_plan(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     app.plan = None;
     match code {
         Ok(0) => {
-            app.status = app.lang.remote_ok().into();
+            app.status = install::remote_ok().pick(app.lang).into();
             app.error = None;
         }
         Ok(c) => {
-            let msg = app.lang.remote_failed(c);
+            let msg = install::remote_failed(c).pick(app.lang);
             app.status = msg.clone();
             app.error = Some(msg);
         }
@@ -1092,13 +1093,13 @@ fn drop_into_tmux(
     Ok(())
 }
 
-fn session_line(lang: Lang, s: &SessionSummary) -> String {
+fn session_line(s: &SessionSummary) -> String {
     let mark = if s.live {
-        lang.live()
+        runtime::MARK_LIVE
     } else if s.running {
-        lang.running()
+        runtime::MARK_RUNNING
     } else {
-        lang.idle()
+        runtime::MARK_IDLE
     };
     let title = s
         .title
@@ -1145,15 +1146,16 @@ fn draw(frame: &mut Frame, app: &App) {
                 .as_ref()
                 .map(|p| p.agent.title())
                 .unwrap_or_else(|| app.agent().title());
-            app.lang.confirm_title(
+            install::confirm_title(
                 action,
                 app.host().map(|h| h.alias.as_str()).unwrap_or("?"),
                 agent,
             )
+            .pick(app.lang)
         }
-        Screen::Problem => app
-            .lang
-            .problem_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
+        Screen::Problem => {
+            diagnose::title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")).pick(app.lang)
+        }
         Screen::Password => app.lang.password_title().into(),
         Screen::RunningConfirm => app
             .lang
@@ -1187,7 +1189,13 @@ fn draw(frame: &mut Frame, app: &App) {
             &app.hosts
                 .iter()
                 .enumerate()
-                .map(|(i, h)| format!("{}{}", h.label(), app.lang.auth_tag(app.auth_of(i))))
+                .map(|(i, h)| {
+                    format!(
+                        "{}{}",
+                        h.label(),
+                        ssh::auth_tag(app.auth_of(i)).pick(app.lang)
+                    )
+                })
                 .collect::<Vec<_>>(),
             app.host_idx,
         ),
@@ -1196,7 +1204,7 @@ fn draw(frame: &mut Frame, app: &App) {
             let lines: Vec<String> = AgentKind::ALL
                 .iter()
                 .map(|k| match probe {
-                    Some(p) => probe::format_agent_line_lang(*k, p, app.lang),
+                    Some(p) => probe::format_agent_line(*k, p).pick(app.lang),
                     None => k.title().to_string(),
                 })
                 .collect();
@@ -1212,10 +1220,7 @@ fn draw(frame: &mut Frame, app: &App) {
             let lines: Vec<String> = if app.sessions.is_empty() {
                 vec![app.lang.no_sessions().into()]
             } else {
-                app.sessions
-                    .iter()
-                    .map(|s| session_line(app.lang, s))
-                    .collect()
+                app.sessions.iter().map(session_line).collect()
             };
             let idx = if app.sessions.is_empty() {
                 0
@@ -1332,18 +1337,18 @@ fn draw_new_dir(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     match &app.plan {
-        None => lines.push(Line::from(app.lang.planning())),
+        None => lines.push(Line::from(install::planning().pick(app.lang))),
         Some(plan) => {
             if let Some(b) = plan.blocked {
                 lines.push(Line::from(Span::styled(
-                    app.lang.blocked(b),
+                    install::blocked(b).pick(app.lang),
                     Style::default().fg(Color::Red),
                 )));
                 lines.push(Line::from(""));
             }
             for w in &plan.warnings {
                 lines.push(Line::from(Span::styled(
-                    app.lang.warning(*w),
+                    install::warning(*w).pick(app.lang),
                     Style::default().fg(Color::Yellow),
                 )));
             }
@@ -1352,7 +1357,7 @@ fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             }
             for (i, step) in plan.steps.iter().enumerate() {
                 let sudo = if step.sudo {
-                    format!("  ({})", app.lang.step_sudo())
+                    format!("  ({})", install::step_sudo().pick(app.lang))
                 } else {
                     String::new()
                 };
@@ -1368,7 +1373,7 @@ fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             if !plan.suggested.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    app.lang.suggested_title(),
+                    install::suggested_title().pick(app.lang),
                     Style::default().fg(Color::Yellow),
                 )));
                 for cmd in &plan.suggested {
@@ -1379,7 +1384,7 @@ fn draw_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     }
     let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::default()
-            .title(app.lang.confirm_list_title())
+            .title(install::confirm_list_title().pick(app.lang))
             .borders(Borders::ALL),
     );
     frame.render_widget(p, area);
@@ -1394,7 +1399,7 @@ fn draw_problem(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            diag.summary.clone(),
+            diag.summary.pick(lang),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1404,7 +1409,10 @@ fn draw_problem(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let raw = diag.raw.trim();
     if !raw.is_empty() {
-        lines.push(Line::from(Span::styled(lang.problem_raw(), bold)));
+        lines.push(Line::from(Span::styled(
+            diagnose::raw_label().pick(lang),
+            bold,
+        )));
         for line in raw.lines() {
             lines.push(Line::from(Span::styled(
                 format!("  {line}"),
@@ -1416,19 +1424,26 @@ fn draw_problem(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     if !diag.command.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("{}: {}", lang.problem_command(), diag.command),
+            format!("{}: {}", diagnose::command_label().pick(lang), diag.command),
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(Span::styled(lang.problem_fixes(), bold)));
-    for (i, step) in diag.steps.iter().enumerate() {
+    lines.push(Line::from(Span::styled(
+        diagnose::fixes_label().pick(lang),
+        bold,
+    )));
+    for (i, step) in diag.steps.pick(lang).iter().enumerate() {
         lines.push(Line::from(format!("  {}. {step}", i + 1)));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("{}: {}", lang.problem_docs(), lang.ssh_doc()),
+        format!(
+            "{}: {}",
+            diagnose::docs_label().pick(lang),
+            diagnose::ssh_doc().pick(lang)
+        ),
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -1439,7 +1454,7 @@ fn draw_problem(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .scroll((scroll, 0))
         .block(
             Block::default()
-                .title(lang.problem_list_title(diag.problem.slug()))
+                .title(diagnose::list_title(diag.problem.slug()).pick(lang))
                 .borders(Borders::ALL),
         );
     frame.render_widget(p, area);
@@ -1544,7 +1559,11 @@ mod tests {
                 let dir = "C:\\tmp\\x";
                 let lines = lang.new_dir_lines(dir, os);
                 let idx = lang.new_dir_cmd_index();
-                assert_eq!(lines[idx], lang.new_dir_command(dir, os), "{lang:?} {os:?}");
+                assert_eq!(
+                    lines[idx],
+                    crate::remote::new_dir_command(dir, os),
+                    "{lang:?} {os:?}"
+                );
             }
         }
     }
@@ -1561,10 +1580,10 @@ mod tests {
             running,
             tmux: None,
         };
-        assert!(session_line(Lang::En, &mk(true, false)).starts_with("[live]"));
-        assert!(session_line(Lang::En, &mk(false, true)).starts_with("[running]"));
-        assert!(session_line(Lang::En, &mk(false, false)).starts_with("[idle]"));
-        assert!(session_line(Lang::En, &mk(true, false)).contains("(c)"));
+        assert!(session_line(&mk(true, false)).starts_with("[live]"));
+        assert!(session_line(&mk(false, true)).starts_with("[running]"));
+        assert!(session_line(&mk(false, false)).starts_with("[idle]"));
+        assert!(session_line(&mk(true, false)).contains("(c)"));
     }
 
     #[test]
