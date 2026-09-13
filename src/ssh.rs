@@ -537,9 +537,17 @@ impl Client {
     }
 
     /// Bundle used for non-interactive commands (probe, sessions, exec).
+    ///
+    /// With a password held in memory (askpass), ssh must be allowed to try
+    /// password auth — `BatchMode=yes` would suppress it entirely. Without
+    /// one, the batch flavors stay: a password host fails fast and steers
+    /// the user to the password prompt.
     pub fn flavor(&self) -> Flavor {
+        let held = crate::askpass::active_for(&self.host);
         match self.mode {
             AuthMode::Key => Flavor::Key,
+            AuthMode::Auto if held => Flavor::InteractiveKey,
+            AuthMode::Password if held => Flavor::InteractivePassword,
             AuthMode::Auto | AuthMode::Password => Flavor::BatchPassword,
         }
     }
@@ -559,6 +567,7 @@ impl Client {
             cmd.arg(arg);
         }
         cmd.arg(&self.host);
+        crate::askpass::apply(&mut cmd, &self.host);
         cmd
     }
 

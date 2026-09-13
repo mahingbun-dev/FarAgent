@@ -1,4 +1,5 @@
 mod agents;
+mod askpass;
 mod config;
 mod diagnose;
 mod doctor;
@@ -66,9 +67,18 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // OpenSSH invokes us as `faragent "<prompt>"` when acting as askpass.
+    if askpass::is_child() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        std::process::exit(askpass::run_child(&args));
+    }
     let cli = Cli::parse();
     match cli.command {
-        None | Some(Command::Tui) => tui::run(),
+        None | Some(Command::Tui) => {
+            let result = tui::run();
+            askpass::clear();
+            result
+        }
         Some(Command::Doctor { host }) => doctor::run(host.as_deref()),
         Some(Command::Probe { host }) => report(&host, probe_json(&host)),
         Some(Command::Sessions { host, agent }) => report(&host, sessions_json(&host, &agent)),

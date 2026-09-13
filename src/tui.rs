@@ -1,4 +1,5 @@
 use crate::agents::AgentKind;
+use crate::askpass;
 use crate::config;
 use crate::diagnose::{self, Diagnosis};
 use crate::i18n::Lang;
@@ -31,6 +32,9 @@ enum Screen {
     Confirm,
     /// A connection problem: raw ssh output + cause + fixes.
     Problem,
+    /// Password for a host whose ssh cannot multiplex (Win32 OpenSSH). The
+    /// value is held in process memory only and fed to ssh via askpass.
+    Password,
 }
 
 /// What to re-run when the user retries from the problem screen.
@@ -73,6 +77,8 @@ struct App {
     diag_scroll: u16,
     retry: Retry,
     problem_from: Screen,
+    /// Masked input on `Screen::Password`; moved into `askpass` on Enter.
+    password_input: String,
     quit: bool,
 }
 
@@ -111,6 +117,7 @@ impl App {
             diag_scroll: 0,
             retry: Retry::Probe,
             problem_from: Screen::Hosts,
+            password_input: String::new(),
             quit: false,
         }
     }
@@ -166,7 +173,11 @@ impl App {
                 let n = self.sessions.len() as i32;
                 self.session_idx = (self.session_idx as i32 + delta).rem_euclid(n) as usize;
             }
-            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
+            Screen::NewCwd
+            | Screen::NewDirConfirm
+            | Screen::Confirm
+            | Screen::Problem
+            | Screen::Password => {}
         }
     }
 }
@@ -217,6 +228,9 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::Problem) {
         return handle_problem_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::Password) {
+        return handle_password_key(app, key, terminal);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
             Screen::Language | Screen::Hosts => app.quit = true,
@@ -230,7 +244,11 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
                 app.screen = Screen::Agents;
                 app.status = app.lang.select_agent().into();
             }
-            Screen::NewCwd | Screen::NewDirConfirm | Screen::Confirm | Screen::Problem => {}
+            Screen::NewCwd
+            | Screen::NewDirConfirm
+            | Screen::Confirm
+            | Screen::Problem
+            | Screen::Password => {}
         },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),
@@ -338,6 +356,12 @@ fn expand_home(typed: &str, home: &str) -> String {
     }
 }
 
+/// One `*` per character (not per byte) — the password itself never reaches
+/// the screen buffer.
+fn mask(input: &str) -> String {
+    "*".repeat(input.chars().count())
+}
+
 fn begin_language(app: &mut App) {
     app.lang_idx = Lang::ALL.iter().position(|l| *l == app.lang).unwrap_or(0);
     app.screen = Screen::Language;
@@ -398,7 +422,7 @@ fn refresh(app: &mut App) -> Result<()> {
             app.status = app.lang.host_count(app.hosts.len());
         }
         Screen::Agents | Screen::Sessions | Screen::NewCwd => reload_probe_and_sessions(app)?,
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
+        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm | Screen::Password => {}
     }
     app.clamp();
     Ok(())
@@ -443,7 +467,7 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             app.session_idx = 0;
             app.status = app.lang.sessions_status().into();
         }
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm => {}
+        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm | Screen::Password => {}
         Screen::Sessions => {
             if app.sessions.is_empty() {
                 begin_new(app);
@@ -461,6 +485,18 @@ fn probe_selected_host(app: &mut App, terminal: &mut DefaultTerminal) -> Result<
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
+    // Password host on a machine without multiplexing (Win32 OpenSSH): ask
+    // for the password up front instead of running a probe that cannot
+    // authenticate. Auto hosts reach the same prompt via the problem screen.
+    if app.auth_of(app.host_idx) == AuthMode::Password
+        && !ssh::mux_capable()
+        && !askpass::active_for(&host)
+    {
+        app.retry = Retry::Probe;
+        app.problem_from = Screen::Hosts;
+        begin_password(app, &host);
+        return Ok(());
+    }
     app.status = app.lang.probing(&host);
     app.error = None;
     app.diag = None;
@@ -590,12 +626,21 @@ fn retry(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     }
 }
 
-/// One interactive `ssh` on the real terminal: host key prompt, password, or
-/// key passphrase. The password goes straight into OpenSSH; nothing is stored.
+/// `a` on the problem screen. On machines whose ssh cannot multiplex
+/// (Win32 OpenSSH), a credential problem opens the in-memory password
+/// prompt — ssh then reads the secret via askpass instead of prompting per
+/// command. Host-key and passphrase problems keep the interactive path
+/// (`faragent login`), which is also how first-connect fingerprints get
+/// confirmed.
 fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
+    let problem = app.diag.as_ref().map(|d| d.problem);
+    if should_prompt_password(ssh::mux_capable(), problem) {
+        begin_password(app, &host);
+        return Ok(());
+    }
     let mode = app.auth_of(app.host_idx);
     ratatui::restore();
     let code = pty::interactive_connect(&host, mode, app.lang);
@@ -605,6 +650,66 @@ fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
         Ok(0) => retry(app, terminal)?,
         Ok(c) => app.status = app.lang.auth_failed(c),
         Err(e) => app.error = Some(e.to_string()),
+    }
+    Ok(())
+}
+
+/// Only credential problems on a machine without connection multiplexing
+/// warrant the in-memory prompt; everything else stays with OpenSSH's own
+/// interactive handling.
+fn should_prompt_password(mux: bool, problem: Option<diagnose::Problem>) -> bool {
+    !mux && matches!(
+        problem,
+        Some(diagnose::Problem::NeedsPassword | diagnose::Problem::PasswordDenied)
+    )
+}
+
+fn begin_password(app: &mut App, host: &str) {
+    app.password_input.clear();
+    app.error = None;
+    app.screen = Screen::Password;
+    app.status = app.lang.password_prompt(host);
+}
+
+/// Keys on the in-memory password screen. The input is rendered as `*` only;
+/// on Enter it moves into `askpass` (zeroized when faragent exits).
+fn handle_password_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.password_input.clear();
+            app.error = None;
+            app.screen = app.problem_from.clone();
+            app.status = match app.screen {
+                Screen::Sessions => app.lang.sessions_status().into(),
+                Screen::Agents => app.lang.select_agent().into(),
+                _ => app.lang.status_ready().into(),
+            };
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.password_input.clear();
+        }
+        KeyCode::Backspace => {
+            app.password_input.pop();
+        }
+        KeyCode::Enter => {
+            let Some(host) = app.host().map(|h| h.alias.clone()) else {
+                return Ok(());
+            };
+            if app.password_input.is_empty() {
+                app.error = Some(app.lang.password_required().into());
+                return Ok(());
+            }
+            let password = std::mem::take(&mut app.password_input);
+            askpass::install_session(&host, password);
+            app.error = None;
+            app.status = app.lang.password_stored(&host);
+            retry(app, terminal)?;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.password_input.push(c);
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -908,6 +1013,7 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Problem => app
             .lang
             .problem_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
+        Screen::Password => app.lang.password_title().into(),
     };
     let header = Paragraph::new(title).block(
         Block::default()
@@ -991,6 +1097,14 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::NewDirConfirm => draw_new_dir(frame, chunks[1], app),
         Screen::Confirm => draw_confirm(frame, chunks[1], app),
         Screen::Problem => draw_problem(frame, chunks[1], app),
+        Screen::Password => {
+            let p = Paragraph::new(format!("> {}_", mask(&app.password_input))).block(
+                Block::default()
+                    .title(app.host().map(|h| h.alias.as_str()).unwrap_or("?"))
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(p, chunks[1]);
+        }
     }
 
     let mut footer_lines = vec![Line::from(app.status.clone())];
@@ -1003,6 +1117,7 @@ fn draw(frame: &mut Frame, app: &App) {
             .lang
             .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
         Screen::Problem => app.lang.problem_keys_hint(),
+        Screen::Password => app.lang.password_keys_hint(),
         _ => app.lang.keys_hint(),
     };
     footer_lines.push(Line::from(Span::styled(
@@ -1210,5 +1325,28 @@ mod tests {
         // Mid-path tildes are literal, and a user named `~bob` is not a home ref.
         assert_eq!(expand_home("/srv/~weird", "/home/me"), "/srv/~weird");
         assert_eq!(expand_home("~bob/app", "/home/me"), "~bob/app");
+    }
+
+    #[test]
+    fn mask_counts_characters_not_bytes() {
+        assert_eq!(mask(""), "");
+        assert_eq!(mask("abc"), "***");
+        assert_eq!(mask("密码"), "**");
+    }
+
+    #[test]
+    fn password_prompt_only_without_mux_on_credential_problems() {
+        use crate::diagnose::Problem;
+        assert!(should_prompt_password(false, Some(Problem::NeedsPassword)));
+        assert!(should_prompt_password(false, Some(Problem::PasswordDenied)));
+        // Host keys and passphrases keep the interactive OpenSSH path.
+        assert!(!should_prompt_password(
+            false,
+            Some(Problem::HostKeyUnknown)
+        ));
+        assert!(!should_prompt_password(false, Some(Problem::KeyPassphrase)));
+        // With multiplexing, `faragent login` covers password hosts.
+        assert!(!should_prompt_password(true, Some(Problem::NeedsPassword)));
+        assert!(!should_prompt_password(false, None));
     }
 }

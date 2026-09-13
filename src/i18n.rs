@@ -738,6 +738,47 @@ impl Lang {
         }
     }
 
+    /// Title of the in-memory password prompt (used when this machine's ssh
+    /// cannot multiplex, e.g. Win32 OpenSSH).
+    pub fn password_title(self) -> &'static str {
+        match self {
+            Self::Zh => "FarAgent · 密码",
+            Self::En => "FarAgent · password",
+        }
+    }
+
+    pub fn password_prompt(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!(
+                "输入 {host} 的登录密码。只保存在本次运行的进程内存里，不写盘、退出即清除；ssh 经 SSH_ASKPASS 读取，不再逐条命令提示。"
+            ),
+            Self::En => format!(
+                "Password for {host}. Kept in this process only - never written to disk, gone when faragent exits. ssh reads it through SSH_ASKPASS."
+            ),
+        }
+    }
+
+    pub fn password_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "回车 确认 · Esc 取消 · 输入不显示",
+            Self::En => "enter confirm · esc cancel · input is hidden",
+        }
+    }
+
+    pub fn password_required(self) -> &'static str {
+        match self {
+            Self::Zh => "密码不能为空",
+            Self::En => "password must not be empty",
+        }
+    }
+
+    pub fn password_stored(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!("{host} 的密码已记住（仅本次运行）"),
+            Self::En => format!("password remembered for {host} (this run only)"),
+        }
+    }
+
     pub fn problem_summary(self, p: crate::diagnose::Problem) -> &'static str {
         use crate::diagnose::Problem as P;
         match (self, p) {

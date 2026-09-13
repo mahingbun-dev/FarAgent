@@ -46,6 +46,7 @@ pub fn run_remote_line(host: &str, remote: &str) -> Result<i32> {
     cmd.arg(&client.host);
     cmd.arg("--");
     cmd.arg(remote);
+    crate::askpass::apply(&mut cmd, host);
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
