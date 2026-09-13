@@ -11,10 +11,11 @@ farssh/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          clap：tui / doctor / probe / sessions
-│   ├── tui.rs           ratatui 选择器（主机 → agent → 会话）
+│   ├── tui.rs           ratatui 选择器（主机 → agent → 确认 → 会话）
 │   ├── ssh.rs           解析 ~/.ssh/config，调用系统 ssh
 │   ├── probe.rs         远程探测 JSON
-│   ├── runtime.rs       安装助手、列/建 tmux 会话
+│   ├── install.rs       官方安装/升级/卸载计划 + preflight
+│   ├── runtime.rs       列/建 tmux 会话
 │   ├── pty.rs           放下 TUI，ssh -tt，再恢复
 │   ├── agents.rs        agent id、tmux 名、resume 参数（文档和测试）
 │   ├── doctor.rs        给人看的诊断
@@ -58,6 +59,7 @@ farssh/
 | `list` | `find` 会话文件 + `tmux list-sessions`；JSON/JSONL 在本机解析 |
 | `start` | `tmux has-session` / `new-session -d` |
 | `ensure` | 写 `tmux.conf` |
+| `preflight` / `install` | 检测 curl/node/tmux/包管理器；确认后用 `ssh -tt` 跑官方安装器 |
 
 全部经 `ssh … bash -lc`，PATH 和交互式 SSH 一致。
 
@@ -78,9 +80,10 @@ farssh-<agent>-<shortid>
 | `ssh.rs` | 通配 Host 跳过；遇到 `Match` 停止；`base_args` 含 BatchMode |
 | `agents.rs` | resume 参数表与 `remote.rs` start_script 对齐 |
 | `remote.rs` | 探测/列表/启动文本协议；JSONL 元数据；脚本里不能有 python |
+| `install.rs` | 官方 URL 常量；plan_for 夹具；`bash_login_command` 必须把 `|` 引起来 |
 | `tui.rs` | live 只 attach；idle 才 `ensure_tmux_session(..., Some(id))` |
 
-PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc 'exec tmux -L farssh attach …'`。detach 后选择器重新 `ratatui::init()`。
+PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc '…'`（attach tmux 或跑安装脚本）。结束后选择器重新 `ratatui::init()`。
 
 ## 本地开发
 

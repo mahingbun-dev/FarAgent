@@ -1,3 +1,4 @@
+use crate::install;
 use crate::probe;
 use crate::runtime;
 use crate::ssh::{self, Client};
@@ -53,11 +54,17 @@ pub fn run(host: Option<&str>) -> Result<()> {
                         p.tmux.version.as_deref().unwrap_or("")
                     )
                 } else {
-                    "NOT INSTALLED (farssh will not install it)".into()
+                    "NOT INSTALLED (TUI Enter can install via brew/apt/dnf/yum/pacman/apk; sudo allowed)".into()
                 }
             );
             for kind in crate::agents::AgentKind::ALL {
                 println!("  {}", probe::format_agent_line(kind, &p));
+                let found = p.agent(kind).map(|a| a.found) == Some(true);
+                if !found {
+                    println!("      install: {}", install::agent_install_command(kind));
+                } else {
+                    println!("      upgrade: {}", install::agent_upgrade_command(kind));
+                }
             }
             println!("PATH (login shell): {}", p.path);
             if p.tmux.found {
@@ -71,7 +78,15 @@ pub fn run(host: Option<&str>) -> Result<()> {
             println!("  - Coding is the native agent TUI inside tmux socket 'farssh'.");
             println!("  - Detach with C-g d (prefix C-g). This does not kill the agent.");
             println!("  - Do not resume a live session; attach the existing tmux session.");
-            println!("  - Remote needs bash + tmux + agents. No python3.");
+            println!("  - Remote needs bash. tmux + agents can be installed from the TUI.");
+            println!(
+                "  - Agent installers are official curl|bash into the user directory (no sudo)."
+            );
+            println!(
+                "  - tmux/curl may use sudo + the system package manager. Node for Pi uses nvm."
+            );
+            println!("  - doctor never runs those commands; the TUI confirm screen does.");
+            println!("  - No python3. No farssh binary on the target.");
         }
         Err(e) => println!("probe: {e}"),
     }

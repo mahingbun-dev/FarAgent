@@ -31,4 +31,4 @@ The manager UI can evolve; remote execution and credentials stay on the host.
 
 ## Still out of scope until separately planned
 
-Password / OTP SSH, ProxyJump, an OpenClaw-style gateway, auto-installing tmux or agents, copying API keys to the laptop.
+Password / OTP SSH, ProxyJump, an OpenClaw-style gateway, compiling tmux from source, Entware/synopkg, copying API keys to the laptop.

@@ -59,11 +59,12 @@ flowchart LR
 
 ## 功能
 
-- **四家 agent，一个选择器** — Claude Code、Codex、Grok Build、Pi；未安装显示 `not installed`，已安装显示版本。
+- **四家 agent，一个选择器** — Claude Code、Codex、Grok Build、Pi；未安装显示「未安装 · 回车安装」。
 - **原生 vibe coding** — 不是自研聊天界面。slash、diff、权限提示都是该 agent 自己的。
 - **会话列表** — 磁盘上的 idle 记录，加上 **live** 的 tmux 窗格。
 - **安全重连** — live 只 attach，避免两个 Codex 同时改同一仓库（[openai/codex#30424](https://github.com/openai/codex/issues/30424)）。
-- **远程仍是你的** — 不在主机上装软件，不把 API key 拷到本机，不对外监听端口；流量走 SSH。
+- **远程仍是你的** — 官方安装器在你确认命令之后跑在那台机器上；API key 留在远程；不对外监听；流量走 SSH。
+- **安装 / 升级 / 卸载** — 确认屏列出每条命令，然后 `ssh -tt` 直播过程。agent：官方 `curl | bash`，用户目录，不用 sudo。tmux/curl 可用 sudo + brew/apt/dnf/yum/pacman/apk。
 - **Doctor** — `farssh doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
 
 ```
@@ -82,7 +83,7 @@ flowchart LR
 
 **本机：** macOS 或 Linux，OpenSSH，对该 Host **密钥免密**（BatchMode，不能弹密码）。
 
-**远程：** `sshd`、`bash`、`tmux`，以及至少一个已登录的 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
+**远程：** `sshd` 和 `bash`。缺 tmux 或缺 agent 可从 TUI 代装。请在那台机器上登录一次 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarSSH.git
@@ -124,7 +125,7 @@ farssh                 # TUI：主机 → agent → 会话
 
 v0.1 适合已经习惯 SSH 的人。接下来要做：**Windows 原生（不使用 WSL）**，以及 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
 
-当前计划之外：密码 SSH、ProxyJump、代装 tmux 或 agent。
+当前计划之外：密码 SSH、ProxyJump。
 
 ## 许可证
 

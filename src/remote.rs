@@ -262,7 +262,7 @@ pub fn start_script(
         r#"
 printf 'FARSSH_START_V1\n'
 if ! command -v tmux >/dev/null 2>&1; then
-  printf 'err\ttmux_missing\tInstall tmux on the remote host; farssh will not install it.\n'
+  printf 'err\ttmux_missing\ttmux is not on PATH; install it from the FarSSH agent list.\n'
   exit 0
 fi
 if ! command -v {agent_q} >/dev/null 2>&1; then

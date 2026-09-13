@@ -13,6 +13,7 @@ Contents:
 - [SSH config](#ssh-config)
 - [Language](#language)
 - [Everyday flow](#everyday-flow)
+- [Install, upgrade, uninstall](#install-upgrade-uninstall)
 - [CLI (no TUI)](#cli-no-tui)
 - [Agents](#agents)
 - [Detach, disconnect, come back](#detach-disconnect-come-back)
@@ -33,15 +34,15 @@ Contents:
 | --- | --- |
 | `sshd` | Normal SSH server |
 | `bash` | Login shell; farssh probes with `bash -lc` |
-| `tmux` | farssh will **not** install it |
-| At least one agent | `claude`, `codex`, `grok`, or `pi` on the **login-shell** PATH |
+| `tmux` | Required to attach. If missing, FarSSH can install it (brew, or sudo + apt/dnf/yum/pacman/apk) |
+| At least one agent | `claude`, `codex`, `grok`, or `pi` on the **login-shell** PATH. Missing agents can be installed from the TUI |
 | Agent already authenticated | farssh does not complete OAuth for you |
 
 **Windows remotes (v0.1):** SSH into **WSL2** (`sshd` inside the distro). Native Win32 OpenSSH is on the [roadmap](roadmap.md).
 
-Install the agents with their official installers on the remote, then log in once there (`claude`, `codex login`, `grok login --device-auth`, `pi` `/login`, etc.).
+You can install agents from the TUI (official `curl | bash` into the user directory, no sudo) or run those installers yourself on the remote, then log in once there (`claude`, `codex login`, `grok login --device-auth`, `pi` `/login`, etc.).
 
-Nothing is installed on the remote except `~/.farssh/tmux.conf` the first time you start a session. Probe and session listing run in Rust on the laptop; the remote only needs bash and tmux. No python3, no farssh binary on the target.
+The laptop never copies API keys. Probe and session listing run in Rust locally; the remote runs bash, tmux, and the official installers you confirm. First session start still writes `~/.farssh/tmux.conf`. No python3, no farssh binary on the target.
 
 There are three ways to run the laptop side: **hack on the source**, **use a release binary here**, or **copy that binary to another computer**. The remote machine that holds your agents does not need Rust or this repository.
 
@@ -284,7 +285,8 @@ farssh
 | --- | --- |
 | **Language** | First run (or `L`): 中文 / English |
 | **Hosts** | Choose a `Host`. Enter runs a probe. |
-| **Agents** | Installed agents show a version; others say not installed. Enter opens sessions. |
+| **Agents** | Installed agents show a version. Missing ones say **not installed · enter to install**. |
+| **Confirm** | Exact commands for install / upgrade / uninstall. Enter runs them live over SSH PTY. |
 | **Sessions** | `[live]` is a tmux pane still running. `[idle]` is a transcript on disk. |
 | **New cwd** | `n` — type a remote directory that already exists, Enter to start. |
 
@@ -293,7 +295,9 @@ Keys (manager TUI):
 | Key | Action |
 | --- | --- |
 | `j` / `k` or arrows | Move |
-| Enter | Probe / open / attach or resume |
+| Enter | Probe / open / attach, or **install** if the agent or tmux is missing |
+| `U` | Upgrade the selected agent (agent list) |
+| `X` | Uninstall the selected agent CLI (keeps `~/.claude` and similar config) |
 | `n` | New session (remote cwd) |
 | `r` | Refresh |
 | `L` | Change UI language |
@@ -321,6 +325,35 @@ Prefix is **`Ctrl-g`**, not tmux’s usual `Ctrl-b`, so it fights less with agen
 2. Press `n`.
 3. Confirm a directory that **already exists** on the remote (`test -d`). farssh does not create project folders.
 4. Enter — a new tmux session starts `claude` / `codex` / `grok` / `pi` with a login shell.
+
+## Install, upgrade, uninstall
+
+From the **agent list** on a probed host:
+
+| Situation | What happens |
+| --- | --- |
+| Agent not installed | Enter opens a confirm screen, then live-installs that agent |
+| Agent installed, tmux missing | Enter plans a tmux install only |
+| Agent + tmux present | Enter opens sessions as before |
+| `U` | Upgrade that agent (or install if missing) |
+| `X` | Uninstall that agent's CLI only |
+
+The confirm screen lists every command that will run. Enter hands your tty to `ssh -tt` so you see the installer (and can type a sudo password). After the remote command exits, FarSSH returns to the agent list and probes again. It does **not** log you in and does **not** start a session.
+
+Commands FarSSH will run (hardcoded; the remote never supplies the script):
+
+| Software | Install | Notes |
+| --- | --- | --- |
+| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | Upgrade: `claude update` (falls back to the installer) |
+| Codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | Upgrade re-runs the installer |
+| Grok Build | `curl -fsSL https://x.ai/cli/install.sh \| bash` | Upgrade: `grok update` |
+| Pi | `curl -fsSL https://pi.dev/install.sh \| sh` | If Node is missing, nvm + Node LTS first |
+| tmux / curl | `brew install …` or `sudo apt-get` / `dnf` / `yum` / `pacman` / `apk` | Only these package managers. No synopkg/Entware guess |
+| Node (Pi) | nvm official script, then `nvm install --lts` | User directory, no sudo |
+
+Uninstall removes the CLI (`claude uninstall` / `rm` of the binary / `npm uninstall -g` / `brew uninstall`) and **keeps** `~/.claude`, `~/.codex`, `~/.grok`, `~/.pi` and API keys. A live tmux session is a warning, not a block.
+
+If the host has no curl and no known package manager, the confirm screen is blocked and shows copy-paste commands. Agent install can still proceed without tmux; attaching a session still needs tmux.
 
 ## CLI (no TUI)
 
@@ -368,7 +401,8 @@ Resize the window: OpenSSH sends `SIGWINCH`; the agent TUI should relayout.
 - Remote helper lives in `~/.farssh/` on the **remote** account you SSH as.
 - tmux listens on a private socket (`-L farssh`), not a TCP port.
 - No API keys are written to the laptop.
-- farssh never `apt`/`brew` installs software on the host.
+- Agent installers are the official `curl | bash` URLs, shown on a confirm screen, user directory, no sudo.
+- tmux and curl may use `sudo` plus brew/apt/dnf/yum/pacman/apk. FarSSH does not guess NAS package managers.
 
 Treat SSH access as full access to that user’s agents and repos — because it is.
 
@@ -379,7 +413,7 @@ Treat SSH access as full access to that user’s agents and repos — because it
 | Host list empty | Add a non-wildcard `Host` to `~/.ssh/config` |
 | `Permission denied` / hangs on password | Set up keys; BatchMode cannot prompt |
 | Agent `not installed` but works in SSH | Login PATH: nvm, Homebrew, `~/.local/bin`. `farssh doctor --host X` prints `PATH` |
-| `tmux_missing` | Install tmux on the remote yourself |
+| `tmux_missing` | Enter on the agent list to install tmux, or copy the commands from the confirm screen |
 | `cwd_missing` | Directory must exist; farssh will not `mkdir` a project |
 | Probe stuck then a red error | The red footer is the real reason; fix SSH and press Enter to retry |
 | Probe missing `FARSSH_PROBE` / bash error | Remote needs bash; try `ssh host -- bash -lc 'echo ok'` |
@@ -390,7 +424,7 @@ Treat SSH access as full access to that user’s agents and repos — because it
 
 ## What v0.1 does not do
 
-Password SSH, OTP, `ProxyJump`, installing tmux/agents for you, session delete/rename/fork, copying remote credentials to the laptop.
+Password SSH, OTP, `ProxyJump`, session delete/rename/fork, copying remote credentials to the laptop, compiling tmux from source, Entware/synopkg.
 
 Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap.md).
 

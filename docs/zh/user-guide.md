@@ -13,6 +13,7 @@
 - [配置 SSH](#配置-ssh)
 - [界面语言](#界面语言)
 - [日常用法](#日常用法)
+- [安装、升级、卸载](#安装升级卸载)
 - [不用 TUI 的命令](#不用-tui-的命令)
 - [四家 agent](#四家-agent)
 - [断开与重连](#断开与重连)
@@ -33,15 +34,15 @@
 | --- | --- |
 | `sshd` | 普通 SSH 服务 |
 | `bash` | 登录壳；farssh 用 `bash -lc` 探测 |
-| `tmux` | farssh **不会替你安装** |
-| 至少一个 agent | 登录壳 PATH 上能找到 `claude` / `codex` / `grok` / `pi` |
+| `tmux` | attach 需要。缺失时 FarSSH 可用 brew，或 sudo + apt/dnf/yum/pacman/apk 代装 |
+| 至少一个 agent | 登录壳 PATH 上能找到 `claude` / `codex` / `grok` / `pi`。未安装可从 TUI 代装 |
 | agent 已登录 | farssh 不代做 OAuth |
 
 **Windows 远程（v0.1）：** SSH 进 **WSL2** 里的 sshd。原生 Win32 OpenSSH 见 [后续计划](roadmap.md)。
 
-请用各家官方方式在远程安装并登录 agent（例如远程执行 `grok login --device-auth`）。
+可在 TUI 里用官方 `curl | bash` 装到用户目录（agent 不用 sudo），也可自己在远程安装，然后在那台机器上登录（例如 `grok login --device-auth`）。
 
-远程不会被安装任何系统软件，也不需要 python3 或 farssh 二进制。第一次启动会话时会在远程用户目录写下 `~/.farssh/tmux.conf`。探测和列会话都在本机 Rust 里完成，远程只跑 bash / tmux。
+本机不拷 API key。探测和列会话在本机 Rust 里完成；远程跑 bash、tmux，以及你确认过的官方安装器。第一次启动会话仍会写入 `~/.farssh/tmux.conf`。不需要 python3，也不需要把 farssh 二进制放到远程。
 
 下面三种用法对应三种身份：**改代码**、**本机当成品用**、**拷到另一台电脑用**。远程那台装 agent 的机器不需要 Rust，也不需要这份源码。
 
@@ -284,7 +285,8 @@ farssh
 | --- | --- |
 | **语言** | 仅首次（或按 `L`）：选中文 / English |
 | **Hosts** | 选 Host，回车探测 |
-| **Agents** | 已安装的显示版本，否则「未安装」 |
+| **Agents** | 已安装显示版本；未安装显示「未安装 · 回车安装」 |
+| **确认屏** | 列出安装/升级/卸载的完整命令。回车后 SSH PTY 直播 |
 | **Sessions** | `[live]` 是还在跑的 tmux；`[idle]` 是磁盘上的历史会话 |
 | **New cwd** | 按 `n`，输入远程已存在的目录，回车开新会话 |
 
@@ -293,7 +295,9 @@ farssh
 | 键 | 作用 |
 | --- | --- |
 | `j` / `k` 或方向键 | 移动 |
-| Enter | 探测 / 进入 / attach 或 resume |
+| Enter | 探测 / 进入 / attach；agent 或 tmux 缺失时进入 **安装** |
+| `U` | 升级当前 agent（助手列表） |
+| `X` | 卸载当前 agent 的 CLI（保留 `~/.claude` 等配置） |
 | `n` | 新建会话 |
 | `r` | 刷新 |
 | `L` | 重新选择界面语言 |
@@ -321,6 +325,35 @@ tmux 前缀是 **`Ctrl-g`**，不是默认的 `Ctrl-b`，减少和 agent 抢键�
 2. 按 `n`
 3. 输入远程 **已经存在** 的目录（不会替你 `mkdir` 项目）
 4. 回车，登录壳里启动 `claude` / `codex` / `grok` / `pi`
+
+## 安装、升级、卸载
+
+在已探测主机的 **助手列表**：
+
+| 情况 | 行为 |
+| --- | --- |
+| agent 未安装 | 回车打开确认屏，直播安装该 agent |
+| agent 已装、缺 tmux | 回车只规划安装 tmux |
+| agent 和 tmux 都在 | 回车进入会话列表（和以前一样） |
+| `U` | 升级该 agent（未安装则改为安装） |
+| `X` | 只卸载该 agent 的 CLI |
+
+确认屏列出将要执行的每条命令。回车把本机 tty 交给 `ssh -tt`，你能看到安装器输出，需要时输入 sudo 密码。远程命令结束后回到助手列表并重新探测。 **不代登录，不自动开会话。**
+
+FarSSH 会跑的命令写死在本机（远程不能指定脚本）：
+
+| 软件 | 安装 | 说明 |
+| --- | --- | --- |
+| Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash` | 升级：`claude update`（失败则重跑安装器） |
+| Codex | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | 升级即重跑安装器 |
+| Grok Build | `curl -fsSL https://x.ai/cli/install.sh \| bash` | 升级：`grok update` |
+| Pi | `curl -fsSL https://pi.dev/install.sh \| sh` | 没有 Node 时先装 nvm + LTS |
+| tmux / curl | `brew install …` 或 `sudo apt-get` / `dnf` / `yum` / `pacman` / `apk` | 只认这些包管理器，不猜 synopkg/Entware |
+| Node（Pi） | nvm 官方脚本，然后 `nvm install --lts` | 用户目录，不用 sudo |
+
+卸载只删 CLI（`claude uninstall` / 删二进制 / `npm uninstall -g` / `brew uninstall`），**保留** `~/.claude`、`~/.codex`、`~/.grok`、`~/.pi` 和密钥。若还有 live tmux，确认屏会警告，但仍允许继续。
+
+没有 curl 也没有已知包管理器时，确认屏不可执行，并给出可复制命令。没有 tmux 仍可装 agent；要进会话则必须先有 tmux。
 
 ## 不用 TUI 的命令
 
@@ -366,7 +399,8 @@ farssh sessions --host home-mac --agent grok
 - 远程助手写在你 SSH 的那个用户的 `~/.farssh/`
 - tmux 用私有 socket（`-L farssh`），不监听 TCP
 - 不把 API key 写到笔记本
-- 不在远程用包管理器装软件
+- agent 安装器是官方 `curl | bash`，确认屏展示，装到用户目录，不用 sudo
+- tmux / curl 可以用 sudo + brew/apt/dnf/yum/pacman/apk。不猜 NAS 包管理器
 
 能 SSH 进这台机器，就等于能用这个用户的 agent 和代码。按这个标准保护 SSH。
 
@@ -377,7 +411,7 @@ farssh sessions --host home-mac --agent grok
 | Host 列表是空的 | 在 `~/.ssh/config` 加非通配 `Host` |
 | `Permission denied` / 卡在密码 | 配好密钥；BatchMode 不会出密码框 |
 | 显示未安装但 SSH 里能跑 | 检查登录 PATH；看 `farssh doctor --host X` |
-| `tmux_missing` | 自己在远程安装 tmux |
+| `tmux_missing` | 在助手列表回车代装 tmux，或从确认屏复制命令 |
 | `cwd_missing` | 目录必须已存在 |
 | 探测失败停在「正在探测」且底部有红字 | 红字才是原因；修 SSH 后回车重试 |
 | 探测失败提到 bash / FARSSH_PROBE | 远程需要 bash；`ssh host -- bash -lc 'echo ok'` |
@@ -388,7 +422,7 @@ farssh sessions --host home-mac --agent grok
 
 ## v0.1 明确不做
 
-密码 SSH、OTP、ProxyJump、代装 tmux/agent、删除/重命名/fork 会话、把远程密钥拷到本机。
+密码 SSH、OTP、ProxyJump、删除/重命名/fork 会话、把远程密钥拷到本机、源码编译 tmux、Entware/synopkg。
 
 Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](roadmap.md)。
 

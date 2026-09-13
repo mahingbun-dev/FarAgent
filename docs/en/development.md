@@ -11,10 +11,11 @@ farssh/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          CLI (clap): tui / doctor / probe / sessions
-│   ├── tui.rs           ratatui picker (hosts → agents → sessions)
+│   ├── tui.rs           ratatui picker (hosts → agents → confirm → sessions)
 │   ├── ssh.rs           Parse ~/.ssh/config; exec system `ssh`
 │   ├── probe.rs         Deserialize remote probe JSON
-│   ├── runtime.rs       Install helper, list/start tmux sessions
+│   ├── install.rs       Official install/upgrade/uninstall plans + preflight
+│   ├── runtime.rs       List/start tmux sessions
 │   ├── pty.rs           Drop the TUI, `ssh -tt`, restore
 │   ├── agents.rs        Agent ids, tmux names, resume argv (docs + tests)
 │   ├── doctor.rs        Human-readable diagnostics
@@ -58,6 +59,7 @@ Logic lives in `src/remote.rs` on the **laptop**. The SSH target only runs `bash
 | `list` | `find` session files + `tmux list-sessions`; JSON/JSONL parsed here |
 | `start` | `tmux has-session` / `new-session -d` |
 | `ensure` | write `tmux.conf` |
+| `preflight` / `install` | detect curl/node/tmux/pkg manager; run confirmed official installers over `ssh -tt` |
 
 Login shell: every remote invocation is `ssh … bash -lc '…'` so nvm/Homebrew PATH matches an interactive SSH.
 
@@ -78,9 +80,10 @@ farssh-<agent>-<shortid>
 | `ssh.rs` | Wildcard Hosts skipped; `Match` stops parsing; BatchMode in `base_args` |
 | `agents.rs` | Resume argv table must stay aligned with `remote.rs` start_script |
 | `remote.rs` | Probe/list/start text protocol; JSONL meta; no `python` in scripts |
+| `install.rs` | Official URL constants; plan_for fixtures; `bash_login_command` keeps `|` quoted |
 | `tui.rs` | Live row → attach only; idle → `ensure_tmux_session(..., Some(id))` |
 
-PTY attach: `ratatui::restore()`, then `ssh -tt bash -lc 'exec tmux -L farssh attach -t …'`. Detach ends ssh; the picker calls `ratatui::init()` again.
+PTY: `ratatui::restore()`, then `ssh -tt bash -lc '…'` (tmux attach or a confirmed install script). When ssh exits the picker calls `ratatui::init()` again.
 
 ## Develop
 

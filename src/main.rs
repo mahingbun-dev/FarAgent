@@ -2,6 +2,7 @@ mod agents;
 mod config;
 mod doctor;
 mod i18n;
+mod install;
 mod probe;
 mod pty;
 mod remote;

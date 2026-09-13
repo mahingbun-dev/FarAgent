@@ -11,10 +11,16 @@ use std::process::{Command, Stdio};
 
 /// Drop ratatui/crossterm, attach to a remote tmux session, then return.
 pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
-    restore_tty()?;
-    let client = Client::new(host)?;
     let name_q = ssh::shell_single_quote(tmux_name);
     let script = format!("exec tmux -L farssh -f \"$HOME/.farssh/tmux.conf\" attach -t {name_q}");
+    run_remote_script(host, &script)
+}
+
+/// Hand the local tty to `ssh -tt` running a login-shell script. No exec timeout:
+/// installers and sudo password prompts can take minutes.
+pub fn run_remote_script(host: &str, script: &str) -> Result<i32> {
+    restore_tty()?;
+    let client = Client::new(host)?;
     let mut cmd = Command::new("ssh");
     for arg in ssh::base_args(&ssh::control_path()?) {
         cmd.arg(arg);
@@ -22,7 +28,7 @@ pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
     cmd.arg("-tt");
     cmd.arg(&client.host);
     cmd.arg("--");
-    cmd.arg(ssh::bash_login_command(&script));
+    cmd.arg(ssh::bash_login_command(script));
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());

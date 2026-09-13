@@ -7,14 +7,16 @@
 ## What we assume
 
 - You already trust `ssh <host>` as that user.
-- Authentication is **keys / ssh-agent only** (`BatchMode`). The tool will not prompt for a password.
-- Remote commands (`bash -lc`, tmux socket `farssh`) run as the SSH user, not root.
+- Authentication is **keys / ssh-agent only** (`BatchMode`). SSH itself will not prompt for a password.
+- Remote commands (`bash -lc`, tmux socket `farssh`) run as the SSH user. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarSSH does not store it).
 
 ## What we do not do
 
 - Copy API keys, `auth.json`, or cookies to the laptop
 - Listen on `0.0.0.0` or publish a gateway
-- Install packages on the remote
+- Copy unofficial install scripts from the remote (installer URLs are hardcoded)
+- Run `sudo` except for tmux/curl via brew/apt/dnf/yum/pacman/apk after an on-screen confirm
+- Delete agent config/keys (`~/.claude`, `~/.codex`, `~/.grok`, `~/.pi`) on uninstall
 - Bypass macOS TCC; if `sshd` cannot read `Documents`, grant Full Disk Access to it yourself
 
 ## Report a vulnerability

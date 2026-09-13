@@ -28,6 +28,6 @@ pub fn format_agent_line_lang(kind: AgentKind, probe: &Probe, lang: Lang) -> Str
             };
             format!("{}  {}  ({})", kind.title(), ver, auth)
         }
-        _ => format!("{}  {}", kind.title(), lang.not_installed()),
+        _ => format!("{}  {}", kind.title(), lang.not_installed_hint()),
     }
 }

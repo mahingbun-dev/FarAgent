@@ -59,11 +59,12 @@ flowchart LR
 
 ## Features
 
-- **Four agents, one picker** — Claude Code, Codex, Grok Build, Pi; missing ones show as `not installed` plus version when present.
+- **Four agents, one picker** — Claude Code, Codex, Grok Build, Pi; missing ones show as `not installed · enter to install`.
 - **Native vibe coding** — not a reimplemented chat UI. Slash commands, diffs, and permission prompts are the agent’s own.
 - **Session list** — idle transcripts from disk plus **live** tmux panes.
 - **Safe reconnect** — live sessions only attach, so you do not get two Codex agents rewriting the same tree ([openai/codex#30424](https://github.com/openai/codex/issues/30424)).
-- **Remote stays yours** — no package installs on the host, no API keys copied locally, protocol servers bind nowhere; traffic is SSH.
+- **Remote stays yours** — official installers run on the host after you confirm the commands; API keys stay remote; protocol servers bind nowhere; traffic is SSH.
+- **Install / upgrade / uninstall** — confirm screen lists every command, then `ssh -tt` streams the process. Agent CLIs: official `curl | bash`, user directory, no sudo. tmux/curl may use sudo + brew/apt/dnf/yum/pacman/apk.
 - **Doctor** — `farssh doctor --host devbox` prints PATH, tmux, and agent versions.
 
 ```
@@ -82,7 +83,7 @@ flowchart LR
 
 **Laptop:** macOS or Linux, OpenSSH, key-based login to the host (`BatchMode`, no password prompt).
 
-**Remote:** `sshd`, `bash`, `tmux`, and at least one agent already logged in. No python3. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
+**Remote:** `sshd` and `bash`. `tmux` and agents can be installed from the TUI if missing. Log in to an agent once on that machine. No python3. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarSSH.git
@@ -124,7 +125,7 @@ Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release b
 
 v0.1 is usable if you already live in SSH. Next: **native Windows (no WSL)** and a **styled app frontend**. Details: [Roadmap](docs/en/roadmap.md).
 
-Not in the current plan: password SSH, ProxyJump, auto-installing tmux or agents.
+Not in the current plan: password SSH, ProxyJump.
 
 ## License
 
