@@ -13,14 +13,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "6"
-hex = "0.4"
 ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 

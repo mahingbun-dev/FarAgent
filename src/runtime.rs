@@ -1,14 +1,10 @@
 use crate::agents::{self, AgentKind};
+use crate::remote::{self, DiskFile, ListDump, StartOutcome};
 use crate::ssh::Client;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::Path;
-
-pub const REMOTE_PY: &str = include_str!("remote.py");
-
-const WRITE_HELPER: &str = r#"python3 -c "import pathlib,sys; d=pathlib.Path.home()/'.farssh'; d.mkdir(parents=True, exist_ok=True); (d/'remote.py').write_bytes(sys.stdin.buffer.read())""#;
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct SessionSummary {
@@ -27,6 +23,7 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
+    #[allow(dead_code)]
     pub fn label(&self) -> String {
         let mark = if self.live { "live" } else { "idle" };
         let title = self
@@ -39,97 +36,29 @@ impl SessionSummary {
     }
 }
 
-pub fn helper_hash() -> String {
-    let mut h = Sha256::new();
-    h.update(REMOTE_PY.as_bytes());
-    hex::encode(h.finalize())
-}
-
-fn hash_check_script() -> &'static str {
-    r#"python3 - <<'PY'
-import pathlib, hashlib
-p = pathlib.Path.home() / ".farssh" / "remote.py"
-print("missing" if not p.exists() else hashlib.sha256(p.read_bytes()).hexdigest())
-PY"#
-}
-
-pub fn ensure_helper(client: &Client) -> Result<()> {
-    let hash = helper_hash();
-    let out = client.exec_login(hash_check_script())?;
-    let remote_hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if remote_hash == hash {
-        let _ = remote_json(client, &["ensure"]);
-        return Ok(());
-    }
-    let write = client.exec_login_stdin(WRITE_HELPER, REMOTE_PY.as_bytes())?;
-    if !write.status.success() {
-        let msg = Client::output_text(&write);
-        if msg.contains("python3") && (msg.contains("not found") || msg.contains("No such")) {
-            return Err(anyhow!(
-                "python3 is required on the remote host to probe agents and sessions"
-            ));
-        }
-        Client::require_ok(&write)?;
-    }
-    let verify = client.exec_login(hash_check_script())?;
-    Client::require_ok(&verify)?;
-    let got = String::from_utf8_lossy(&verify.stdout).trim().to_string();
-    if got != hash {
-        return Err(anyhow!(
-            "failed to install ~/.farssh/remote.py (got {got})"
-        ));
-    }
-    let _ = remote_json(client, &["ensure"])?;
-    Ok(())
-}
-
-pub fn remote_json(client: &Client, args: &[&str]) -> Result<Value> {
-    let mut script = String::from("python3 \"$HOME/.farssh/remote.py\"");
-    for a in args {
-        script.push(' ');
-        script.push_str(&crate::ssh::shell_single_quote(a));
-    }
-    let output = client.exec_login(&script)?;
+pub fn run_login(client: &Client, script: &str) -> Result<String> {
+    let output = client.exec_login(script)?;
     if !output.status.success() {
         Client::require_ok(&output)?;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|l| l.starts_with('{'))
-        .ok_or_else(|| {
-            anyhow!(
-                "remote helper did not print JSON: {}",
-                stdout.trim().chars().take(400).collect::<String>()
-            )
-        })?;
-    serde_json::from_str(line).context("parse remote JSON")
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
+    let write = client.exec_login_stdin(
+        remote::write_tmux_conf_script(),
+        remote::TMUX_CONF.as_bytes(),
+    )?;
+    Client::require_ok(&write)?;
+    Ok(())
 }
 
 pub fn list_sessions(host: &str, agent: AgentKind) -> Result<Vec<SessionSummary>> {
     let client = Client::new(host)?;
-    ensure_helper(&client)?;
-    let value = remote_json(&client, &["list", "--agent", agent.slug()])?;
-    if value.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-        return Err(anyhow!("list failed: {value}"));
-    }
-    let sessions = value
-        .get("sessions")
-        .cloned()
-        .unwrap_or(Value::Array(vec![]));
-    serde_json::from_value(sessions).context("session list shape")
-}
-
-#[derive(Debug, Deserialize)]
-struct StartResult {
-    pub ok: bool,
-    #[serde(default)]
-    pub tmux: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub hint: Option<String>,
+    let _ = ensure_tmux_conf(&client);
+    let text = run_login(&client, &remote::list_script(agent))?;
+    let dump = remote::parse_list(&text)?;
+    Ok(merge_sessions(agent, dump))
 }
 
 /// Create a detached tmux session if needed. If it already exists, only attach later.
@@ -140,62 +69,154 @@ pub fn ensure_tmux_session(
     session_id: Option<&str>,
 ) -> Result<String> {
     let client = Client::new(host)?;
-    ensure_helper(&client)?;
+    ensure_tmux_conf(&client)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
-    let cwd_s = cwd.to_string_lossy().into_owned();
-    let mut args = vec![
-        "start".to_string(),
-        "--agent".into(),
-        agent.slug().into(),
-        "--cwd".into(),
-        cwd_s,
-        "--tmux".into(),
-        name.clone(),
-    ];
-    if let Some(id) = session_id {
-        args.push("--session-id".into());
-        args.push(id.to_string());
+    let cwd_s = cwd.to_string_lossy();
+    let script = remote::start_script(agent, cwd_s.as_ref(), session_id, &name);
+    let text = run_login(&client, &script)?;
+    match remote::parse_start(&text)? {
+        StartOutcome::Ok { tmux } => Ok(tmux),
+        StartOutcome::Err { error, hint } => Err(anyhow!("{error}: {hint}")),
     }
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let value = remote_json(&client, &arg_refs)?;
-    let result: StartResult = serde_json::from_value(value).context("start result")?;
-    if !result.ok {
-        let err = result.error.unwrap_or_else(|| "start_failed".into());
-        let hint = result.hint.unwrap_or_default();
-        return Err(anyhow!("{err}: {hint}"));
+}
+
+fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
+    let prefix = format!("farssh-{}-", agent.slug());
+    let live_tmux: HashSet<String> = dump
+        .tmux
+        .iter()
+        .map(|(n, _)| n.clone())
+        .filter(|n| n.starts_with(&prefix))
+        .collect();
+    let tmux_cwd: std::collections::HashMap<String, String> = dump
+        .tmux
+        .into_iter()
+        .filter(|(n, _)| n.starts_with(&prefix))
+        .collect();
+
+    let mut rows: Vec<SessionSummary> = dump
+        .files
+        .iter()
+        .filter(|f| f.agent == agent.slug())
+        .map(|f| row_from_file(agent, f))
+        .collect();
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for row in &mut rows {
+        if let Some(name) = &row.tmux {
+            row.live = live_tmux.contains(name);
+            seen.insert(name.clone());
+        }
     }
-    Ok(result.tmux.unwrap_or(name))
+
+    for (name, cwd) in &tmux_cwd {
+        if seen.contains(name) {
+            continue;
+        }
+        let id = name[prefix.len()..].to_string();
+        rows.push(SessionSummary {
+            id,
+            agent: agent.slug().into(),
+            title: Some("(live)".into()),
+            cwd: (!cwd.is_empty()).then(|| cwd.clone()),
+            mtime: 0.0,
+            live: true,
+            tmux: Some(name.clone()),
+        });
+    }
+
+    rows.sort_by(|a, b| {
+        b.live.cmp(&a.live).then(
+            b.mtime
+                .partial_cmp(&a.mtime)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    rows
+}
+
+fn row_from_file(agent: AgentKind, f: &DiskFile) -> SessionSummary {
+    let sid = match agent {
+        AgentKind::Codex => remote::find_uuid(&f.id).unwrap_or_else(|| f.id.clone()),
+        _ => f.id.clone(),
+    };
+    let (title, cwd) = match agent {
+        AgentKind::Grok => {
+            let (t, c) = remote::grok_summary_meta(&f.body, &f.cwd_hint);
+            (t.or_else(|| Some(sid.clone())), c)
+        }
+        AgentKind::Claude => {
+            let m = remote::jsonl_meta(&f.body, 80);
+            (
+                m.title.or_else(|| Some(sid.clone())),
+                m.cwd.or_else(|| remote::claude_guess_cwd(&f.cwd_hint)),
+            )
+        }
+        AgentKind::Codex => {
+            let m = remote::jsonl_meta(&f.body, 120);
+            (m.title.or_else(|| Some(sid.clone())), m.cwd)
+        }
+        AgentKind::Pi => {
+            let m = remote::jsonl_meta(&f.body, 80);
+            let hint = if f.cwd_hint == sid {
+                None
+            } else {
+                Some(remote::percent_decode(&f.cwd_hint)).filter(|s| !s.is_empty())
+            };
+            (m.title.or_else(|| Some(sid.clone())), m.cwd.or(hint))
+        }
+    };
+    SessionSummary {
+        id: sid.clone(),
+        agent: agent.slug().into(),
+        title,
+        cwd,
+        mtime: f.mtime,
+        live: false,
+        tmux: Some(agents::tmux_name(agent, &sid)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::DiskFile;
 
     #[test]
-    fn helper_hash_is_stable_sha256() {
-        let h = helper_hash();
-        assert_eq!(h.len(), 64);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    fn merge_marks_live_tmux_and_disk() {
+        let dump = ListDump {
+            tmux: vec![
+                ("farssh-grok-abc123abc123".into(), "/tmp/p".into()),
+                ("other".into(), "/x".into()),
+            ],
+            files: vec![DiskFile {
+                agent: "grok".into(),
+                id: "abc123abc123".into(),
+                mtime: 10.0,
+                cwd_hint: "%2Ftmp%2Fp".into(),
+                body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+            }],
+        };
+        let rows = merge_sessions(AgentKind::Grok, dump);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].live);
+        assert_eq!(rows[0].title.as_deref(), Some("hello"));
+        assert_eq!(rows[0].cwd.as_deref(), Some("/tmp/p"));
     }
 
     #[test]
-    fn remote_py_is_embedded() {
-        assert!(REMOTE_PY.contains("TMUX_SOCKET = \"farssh\""));
-        assert!(REMOTE_PY.contains("def probe"));
-        assert!(REMOTE_PY.contains("\"codex\", \"resume\""));
-    }
-
-    #[test]
-    fn remote_py_syntax() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/remote.py");
-        let status = std::process::Command::new("python3")
-            .args(["-m", "py_compile"])
-            .arg(&path)
-            .status()
-            .expect("python3");
-        assert!(status.success());
+    fn live_only_tmux_becomes_row() {
+        let dump = ListDump {
+            tmux: vec![("farssh-pi-newsession01".into(), "/work".into())],
+            files: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Pi, dump);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].live);
+        assert_eq!(rows[0].cwd.as_deref(), Some("/work"));
+        assert_eq!(rows[0].title.as_deref(), Some("(live)"));
     }
 }

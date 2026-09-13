@@ -11,6 +11,7 @@
 - [打包二进制并在本机使用](#打包二进制并在本机使用)
 - [把成品迁到另一台电脑](#把成品迁到另一台电脑)
 - [配置 SSH](#配置-ssh)
+- [界面语言](#界面语言)
 - [日常用法](#日常用法)
 - [不用 TUI 的命令](#不用-tui-的命令)
 - [四家 agent](#四家-agent)
@@ -31,8 +32,8 @@
 | 需要 | 说明 |
 | --- | --- |
 | `sshd` | 普通 SSH 服务 |
+| `bash` | 登录壳；farssh 用 `bash -lc` 探测 |
 | `tmux` | farssh **不会替你安装** |
-| `python3` | 探测和列会话 |
 | 至少一个 agent | 登录壳 PATH 上能找到 `claude` / `codex` / `grok` / `pi` |
 | agent 已登录 | farssh 不代做 OAuth |
 
@@ -40,7 +41,7 @@
 
 请用各家官方方式在远程安装并登录 agent（例如远程执行 `grok login --device-auth`）。
 
-远程不会被安装任何系统软件。第一次探测时会在远程用户目录写下 `~/.farssh/`（tmux 配置和 `remote.py` 助手）。
+远程不会被安装任何系统软件，也不需要 python3 或 farssh 二进制。第一次启动会话时会在远程用户目录写下 `~/.farssh/tmux.conf`。探测和列会话都在本机 Rust 里完成，远程只跑 bash / tmux。
 
 下面三种用法对应三种身份：**改代码**、**本机当成品用**、**拷到另一台电脑用**。远程那台装 agent 的机器不需要 Rust，也不需要这份源码。
 
@@ -91,7 +92,7 @@ cargo run -- sessions --host home-mac --agent grok
 RUST_BACKTRACE=1 cargo run -- doctor --host home-mac
 ```
 
-改 `src/` 或 `src/remote.py` 后重新 `cargo build` 或 `cargo run` 即可。`remote.py` 嵌在二进制里，下次探测远程时若 hash 变了会自动覆盖远程的 `~/.farssh/remote.py`。
+改 `src/` 后重新 `cargo build` 或 `cargo run` 即可。本机用 `bash -lc` 跟远程说话，没有要同步的助手脚本。
 
 开发版带调试符号，比发布版慢，日常当产品用请走下一节的 **release** 包。
 
@@ -227,7 +228,7 @@ farssh doctor --host home-mac
 farssh
 ```
 
-第一次从新电脑探测某台远程时，仍会在 **远程** 写入 `~/.farssh/`（若以前用过 farssh，助手会按 hash 更新）。本机会创建 `~/.farssh/cm/` 存放 SSH ControlMaster 套接字，这是空目录，不用从旧电脑拷。
+第一次从新电脑开会话时，仍会在 **远程** 写入 `~/.farssh/tmux.conf`。本机会创建 `~/.farssh/cm/` 存放 SSH ControlMaster 套接字，这是空目录，不用从旧电脑拷。
 
 ### 4. 迁完后怎么用
 
@@ -261,6 +262,18 @@ farssh doctor --host home-mac
 
 若 SSH 进去能跑 `grok`，但 doctor 显示未安装：多半是登录壳 PATH（nvm、Homebrew、`~/.local/bin`）。farssh 一律用 `bash -lc` 探测。
 
+## 界面语言
+
+第一次打开 TUI 会先问 **中文** 还是 **English**。选定后写入本机 `~/.farssh/config.json`，以后不再询问。
+
+```json
+{
+  "language": "zh"
+}
+```
+
+`zh` 或 `en`。换语言：主机列表按 `L`，或直接改这个文件。这只影响本机界面，不影响远程 agent。
+
 ## 日常用法
 
 ```bash
@@ -269,8 +282,9 @@ farssh
 
 | 界面 | 做什么 |
 | --- | --- |
+| **语言** | 仅首次（或按 `L`）：选中文 / English |
 | **Hosts** | 选 Host，回车探测 |
-| **Agents** | 已安装的显示版本，否则 `not installed` |
+| **Agents** | 已安装的显示版本，否则「未安装」 |
 | **Sessions** | `[live]` 是还在跑的 tmux；`[idle]` 是磁盘上的历史会话 |
 | **New cwd** | 按 `n`，输入远程已存在的目录，回车开新会话 |
 
@@ -282,6 +296,7 @@ farssh
 | Enter | 探测 / 进入 / attach 或 resume |
 | `n` | 新建会话 |
 | `r` | 刷新 |
+| `L` | 重新选择界面语言 |
 | `?` | 短帮助 |
 | `q` 或 Esc | 返回 / 退出 |
 | `Ctrl-c` | 退出 |
@@ -364,7 +379,8 @@ farssh sessions --host home-mac --agent grok
 | 显示未安装但 SSH 里能跑 | 检查登录 PATH；看 `farssh doctor --host X` |
 | `tmux_missing` | 自己在远程安装 tmux |
 | `cwd_missing` | 目录必须已存在 |
-| 探测失败提到 python3 | 远程安装 Python 3 |
+| 探测失败停在「正在探测」且底部有红字 | 红字才是原因；修 SSH 后回车重试 |
+| 探测失败提到 bash / FARSSH_PROBE | 远程需要 bash；`ssh host -- bash -lc 'echo ok'` |
 | 花屏 | 换 truecolor 终端；缩放后重新 attach |
 | 两个 agent 改同一仓库 | live 时不要手动 resume |
 | macOS 远程读不了文稿/桌面 | 给 sshd 完全磁盘访问权限（TCC） |

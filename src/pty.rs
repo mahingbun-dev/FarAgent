@@ -14,8 +14,7 @@ pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
     restore_tty()?;
     let client = Client::new(host)?;
     let name_q = ssh::shell_single_quote(tmux_name);
-    let script =
-        format!("exec tmux -L farssh -f \"$HOME/.farssh/tmux.conf\" attach -t {name_q}");
+    let script = format!("exec tmux -L farssh -f \"$HOME/.farssh/tmux.conf\" attach -t {name_q}");
     let mut cmd = Command::new("ssh");
     for arg in ssh::base_args(&ssh::control_path()?) {
         cmd.arg(arg);
@@ -23,9 +22,7 @@ pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
     cmd.arg("-tt");
     cmd.arg(&client.host);
     cmd.arg("--");
-    cmd.arg("bash");
-    cmd.arg("-lc");
-    cmd.arg(script);
+    cmd.arg(ssh::bash_login_command(&script));
     cmd.stdin(Stdio::inherit());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());

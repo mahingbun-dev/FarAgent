@@ -11,6 +11,7 @@ Contents:
 - [Using a packaged binary on this machine](#using-a-packaged-binary-on-this-machine)
 - [Moving the binary to another computer](#moving-the-binary-to-another-computer)
 - [SSH config](#ssh-config)
+- [Language](#language)
 - [Everyday flow](#everyday-flow)
 - [CLI (no TUI)](#cli-no-tui)
 - [Agents](#agents)
@@ -31,8 +32,8 @@ Contents:
 | Need | Notes |
 | --- | --- |
 | `sshd` | Normal SSH server |
+| `bash` | Login shell; farssh probes with `bash -lc` |
 | `tmux` | farssh will **not** install it |
-| `python3` | Probe and session listing |
 | At least one agent | `claude`, `codex`, `grok`, or `pi` on the **login-shell** PATH |
 | Agent already authenticated | farssh does not complete OAuth for you |
 
@@ -40,7 +41,7 @@ Contents:
 
 Install the agents with their official installers on the remote, then log in once there (`claude`, `codex login`, `grok login --device-auth`, `pi` `/login`, etc.).
 
-Nothing is installed on the remote except a helper script under `~/.farssh/` the first time you probe (tmux config + `remote.py`). No apt/brew packages.
+Nothing is installed on the remote except `~/.farssh/tmux.conf` the first time you start a session. Probe and session listing run in Rust on the laptop; the remote only needs bash and tmux. No python3, no farssh binary on the target.
 
 There are three ways to run the laptop side: **hack on the source**, **use a release binary here**, or **copy that binary to another computer**. The remote machine that holds your agents does not need Rust or this repository.
 
@@ -91,7 +92,7 @@ For panics:
 RUST_BACKTRACE=1 cargo run -- doctor --host home-mac
 ```
 
-After changing `src/` or `src/remote.py`, `cargo build` or `cargo run` is enough. `remote.py` is embedded; the next probe updates `~/.farssh/remote.py` on the remote if the hash changed.
+After changing `src/`, `cargo build` or `cargo run` is enough. The laptop talks to the remote with `bash -lc`; there is no helper script to refresh.
 
 The debug build is slower. For daily use, pack a **release** binary as in the next section.
 
@@ -227,7 +228,7 @@ farssh doctor --host home-mac
 farssh
 ```
 
-The first probe from the new laptop still writes `~/.farssh/` **on the remote** (or refreshes `remote.py` by hash). Locally, `~/.farssh/cm/` is created for SSH ControlMaster sockets; you do not copy that directory from the old laptop.
+The first session from the new laptop still writes `~/.farssh/tmux.conf` **on the remote**. Locally, `~/.farssh/cm/` is created for SSH ControlMaster sockets; you do not copy that directory from the old laptop.
 
 ### 4. After the move
 
@@ -261,6 +262,18 @@ farssh doctor --host home-mac
 
 If `doctor` says an agent is missing but you can run it after `ssh -t host`, the login shell PATH is the usual culprit (nvm, Homebrew, `~/.local/bin`). farssh always probes with `bash -lc`.
 
+## Language
+
+The first TUI launch asks **中文** or **English**. The choice is written to `~/.farssh/config.json` on this machine and is not asked again.
+
+```json
+{
+  "language": "en"
+}
+```
+
+Values: `zh` or `en`. Change later with `L` on the host list, or by editing that file. This only affects the local UI, not remote agents.
+
 ## Everyday flow
 
 ```bash
@@ -269,8 +282,9 @@ farssh
 
 | Screen | What you do |
 | --- | --- |
+| **Language** | First run (or `L`): 中文 / English |
 | **Hosts** | Choose a `Host`. Enter runs a probe. |
-| **Agents** | Installed agents show a version; others say `not installed`. Enter opens sessions. |
+| **Agents** | Installed agents show a version; others say not installed. Enter opens sessions. |
 | **Sessions** | `[live]` is a tmux pane still running. `[idle]` is a transcript on disk. |
 | **New cwd** | `n` — type a remote directory that already exists, Enter to start. |
 
@@ -282,6 +296,7 @@ Keys (manager TUI):
 | Enter | Probe / open / attach or resume |
 | `n` | New session (remote cwd) |
 | `r` | Refresh |
+| `L` | Change UI language |
 | `?` | Short help |
 | `q` or Esc | Back / quit |
 | `Ctrl-c` | Quit |
@@ -366,7 +381,8 @@ Treat SSH access as full access to that user’s agents and repos — because it
 | Agent `not installed` but works in SSH | Login PATH: nvm, Homebrew, `~/.local/bin`. `farssh doctor --host X` prints `PATH` |
 | `tmux_missing` | Install tmux on the remote yourself |
 | `cwd_missing` | Directory must exist; farssh will not `mkdir` a project |
-| Probe JSON missing / `python3` error | Install Python 3 on the remote |
+| Probe stuck then a red error | The red footer is the real reason; fix SSH and press Enter to retry |
+| Probe missing `FARSSH_PROBE` / bash error | Remote needs bash; try `ssh host -- bash -lc 'echo ok'` |
 | Garbled TUI | Truecolor terminal; detach and reattach after resize |
 | Two agents on one repo | You resumed a **live** session by hand. Use attach only |
 | macOS remote cannot read Desktop/Documents | Grant Full Disk Access to `sshd` (TCC). farssh cannot bypass this |

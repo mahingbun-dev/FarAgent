@@ -8,7 +8,7 @@
 
 - You already trust `ssh <host>` as that user.
 - Authentication is **keys / ssh-agent only** (`BatchMode`). The tool will not prompt for a password.
-- The remote helper (`~/.farssh/remote.py`, tmux socket `farssh`) runs as the SSH user, not root.
+- Remote commands (`bash -lc`, tmux socket `farssh`) run as the SSH user, not root.
 
 ## What we do not do
 

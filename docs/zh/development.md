@@ -18,7 +18,7 @@ farssh/
 │   ├── pty.rs           放下 TUI，ssh -tt，再恢复
 │   ├── agents.rs        agent id、tmux 名、resume 参数（文档和测试）
 │   ├── doctor.rs        给人看的诊断
-│   └── remote.py        在 SSH 对端用 python3 执行
+│   └── remote.rs        探测/列会话/启动（逻辑在本机）
 ├── docs/                全部产品文档
 │   ├── README.md        文档中心
 │   ├── assets/          图片
@@ -34,8 +34,8 @@ farssh/
 ```
 本机                            SSH                         远程用户
 ┌─────────────────────┐         ControlMaster         ┌──────────────────────────┐
-│ ratatui 选择器      │--------- exec bash -lc ------►│ python3 ~/.farssh/   │
-│                     │                               │   remote.py probe|list   │
+│ ratatui 选择器      │--------- exec bash -lc ------►│ bash: which/find/tmux│
+│ （Rust 解析 JSONL）  │                               │   + tmux -L farssh     │
 │ 恢复 tty            │========= ssh -tt ===========►│ tmux -L farssh      │
 │                     │         PTY + SIGWINCH        │   farssh-<agent>-<shortid>  │
 └─────────────────────┘                               │   exec 原生 TUI          │
@@ -48,18 +48,16 @@ farssh/
 
 **tmux 隔离：** `-L farssh`，不占用用户默认 server。配置在 `~/.farssh/tmux.conf`（前缀 `C-g`、鼠标、truecolor）。该 socket 上已有 server 时 `-f` 会被忽略；第一次 `new-session` 会带上我们的配置文件。
 
-## 远程助手
+## 远程侧（不用 python3）
 
-`src/remote.py` 通过 `include_str!` 打进二进制。探测时对本机嵌入脚本做 SHA-256，和远程 `~/.farssh/remote.py` 比较；不一致就用 python3 从 stdin 写过去，不用包管理器。
+逻辑在本机 `src/remote.rs`。SSH 对端只跑 `bash -lc`（which、find、tmux），第一次开会话时用 stdin 写入 `~/.farssh/tmux.conf`。**不会**上传 farssh 二进制：macOS 编出来的文件没法在 Linux 上跑。
 
-| 命令 | 作用 |
+| 本机解析 | 远程 bash |
 | --- | --- |
-| `probe` | tmux + 四家 agent：是否存在、版本、路径、auth_hint |
-| `list --agent <id>` | 磁盘会话 + live tmux 名 |
-| `start --agent --cwd --tmux [--session-id]` | 已有 session 则 exists，否则 `new-session -d` |
-| `has --tmux` | 是否 live |
-| `ensure` | 创建 `~/.farssh` 并写 tmux.conf |
-| `doctor` | 探测 + 说明 |
+| `probe` | `command -v`、`--version`、auth 文件 `-s` |
+| `list` | `find` 会话文件 + `tmux list-sessions`；JSON/JSONL 在本机解析 |
+| `start` | `tmux has-session` / `new-session -d` |
+| `ensure` | 写 `tmux.conf` |
 
 全部经 `ssh … bash -lc`，PATH 和交互式 SSH 一致。
 
@@ -69,7 +67,7 @@ farssh/
 farssh-<agent>-<shortid>
 ```
 
-`shortid` 是厂商 session id 去掉非字母数字后的最后 12 位（Rust `agents::short_id` 与 `remote.py` 同一规则）。新建会话用随机 12 位，启动命令 **不带** resume。
+`shortid` 是厂商 session id 去掉非字母数字后的最后 12 位（`agents::short_id`）。新建会话用随机 12 位，启动命令 **不带** resume。
 
 **不变量：** `tmux has-session` 为真时，`start` 不得再拉起一个 agent 进程。
 
@@ -78,8 +76,8 @@ farssh-<agent>-<shortid>
 | 文件 | 约定 |
 | --- | --- |
 | `ssh.rs` | 通配 Host 跳过；遇到 `Match` 停止；`base_args` 含 BatchMode |
-| `agents.rs` | resume 参数表与 `remote.py` 对齐 |
-| `runtime.rs` | helper hash；对 `remote.py` 做 `py_compile` |
+| `agents.rs` | resume 参数表与 `remote.rs` start_script 对齐 |
+| `remote.rs` | 探测/列表/启动文本协议；JSONL 元数据；脚本里不能有 python |
 | `tui.rs` | live 只 attach；idle 才 `ensure_tmux_session(..., Some(id))` |
 
 PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc 'exec tmux -L farssh attach …'`。detach 后选择器重新 `ratatui::init()`。
@@ -96,13 +94,13 @@ cargo build
 
 CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。真机路径见用户手册里的验收清单。
 
-不要提交 `target/`、`__pycache__/`，也不要提交远程 `~/.farssh` 的转储。
+不要提交 `target/`，也不要提交远程 `~/.farssh` 的转储。
 
 ## 增加一家 agent
 
 1. `src/agents.rs` 的 `AgentKind`（`slug`、`title`、`resume_argv`）
-2. `src/remote.py` 的 `AGENTS`、`agent_argv` 和磁盘扫描
-3. resume argv 测试；如有特征字符串，补 `REMOTE_PY.contains`
+2. `src/remote.rs` 的 `list_script` / `row_from_file` 磁盘扫描
+3. resume argv 测试，以及 probe/list 解析测试
 4. 更新中英用户手册表格
 
 需要能按 id resume、家目录里有会话文件、并且有交互式 TUI。没有原生 TUI 的不要接到 attach 路径上。
@@ -124,7 +122,7 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 
 ## 发布
 
-v0.1 只提供源码（`cargo install --path .`）。以后可以用 `cargo dist` 或 GitHub Actions 出 macOS/Linux 二进制。助手脚本用 hash 更新：旧远程会在下次探测时被覆盖。
+v0.1 只提供源码（`cargo install --path .`）。以后可以用 `cargo dist` 或 GitHub Actions 出 macOS/Linux 二进制。远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
 
 ## 许可证
 
