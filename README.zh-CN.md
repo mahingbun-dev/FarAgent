@@ -93,6 +93,7 @@ cargo install --path .
 
 ```ssh-config
 # ~/.ssh/config  — 选择器会忽略 Host * 这类通配
+# HostName：局域网 IP、公网 IP、域名，或 Tailscale 的 100.x / MagicDNS
 Host home-mac
     HostName 192.168.1.8
     User you
@@ -107,7 +108,7 @@ faragent                 # TUI：主机 → agent → 会话
 
 在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。
 
-完整步骤见 [用户手册](docs/zh/user-guide.md)（开发者模式、打包二进制、迁到另一台电脑）。
+完整步骤见 [用户手册](docs/zh/user-guide.md)（开发者模式、打包二进制、迁到另一台电脑）。家里机器在 NAT 后面：见 [SSH 连接](docs/zh/ssh-access.md)（局域网、公网 IP、域名、Tailscale）。
 
 ## 文档
 
@@ -116,6 +117,7 @@ faragent                 # TUI：主机 → agent → 会话
 | 文档中心 | [docs/](docs/README.md) | [docs/zh/](docs/zh/README.md) |
 | 产品介绍 | [README](README.md) | [README.zh-CN.md](README.zh-CN.md) |
 | 使用说明 | [User guide](docs/en/user-guide.md) | [用户手册](docs/zh/user-guide.md) |
+| SSH（局域网 / 公网 / 域名 / Tailscale） | [SSH access](docs/en/ssh-access.md) | [SSH 连接](docs/zh/ssh-access.md) |
 | 架构与开发 | [Development](docs/en/development.md) | [开发者文档](docs/zh/development.md) |
 | 参与贡献 | [Contributing](docs/en/contributing.md) | [参与贡献](docs/zh/contributing.md) |
 | 安全 | [Security](docs/en/security.md) | [安全说明](docs/zh/security.md) |

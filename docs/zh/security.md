@@ -2,7 +2,7 @@
 
 [English](../en/security.md) · **中文**
 
-`faragent` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
+`faragent` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。不要把家里的 `sshd` 无必要地暴露在公网；出门连家用机器见 [SSH 连接 · Tailscale](ssh-access.md#用-tailscale-做内网穿透推荐)。
 
 ## 我们假定
 

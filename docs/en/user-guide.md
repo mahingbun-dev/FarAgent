@@ -11,6 +11,7 @@ Contents:
 - [Using a packaged binary on this machine](#using-a-packaged-binary-on-this-machine)
 - [Moving the binary to another computer](#moving-the-binary-to-another-computer)
 - [SSH config](#ssh-config)
+- [SSH access (LAN / public IP / domain / Tailscale)](ssh-access.md)
 - [Language](#language)
 - [Everyday flow](#everyday-flow)
 - [Install, upgrade, uninstall](#install-upgrade-uninstall)
@@ -27,6 +28,7 @@ Contents:
 - OpenSSH (`ssh`)
 - A concrete `Host` entry in `~/.ssh/config` (see below)
 - Key or `ssh-agent` login — **BatchMode**. Password, OTP, and jump hosts are out of scope for v0.1
+- The laptop must actually reach the remote: same LAN, a public IP/domain, or [Tailscale](ssh-access.md) (recommended behind home NAT / from a café)
 
 ### On the remote machine
 
@@ -239,6 +241,8 @@ Same as a packaged install: `faragent` for the TUI, or `faragent doctor --host �
 
 The picker reads **non-pattern** `Host` names. `Host *`, `Host *.github.com`, and `?` globs are skipped.
 
+`HostName` may be a LAN IP, a public IP, a DNS name, or a Tailscale `100.x` / MagicDNS name. FarAgent does not punch NAT: if system OpenSSH can log in with **keys and no prompt**, the TUI can too. Step-by-step (home NAT, CGNAT, Tailscale tutorial): **[SSH access: LAN, public IP, domain, Tailscale](ssh-access.md)**.
+
 ```ssh-config
 Host home-mac
     HostName 192.168.1.8
@@ -412,6 +416,7 @@ Treat SSH access as full access to that user’s agents and repos — because it
 | --- | --- |
 | Host list empty | Add a non-wildcard `Host` to `~/.ssh/config` |
 | `Permission denied` / hangs on password | Set up keys; BatchMode cannot prompt |
+| Café cannot reach home `192.168.x` | That is a LAN address. Use [Tailscale](ssh-access.md#tailscale-for-nat-traversal-recommended) or a public IP / domain |
 | Agent `not installed` but works in SSH | Login PATH: nvm, Homebrew, `~/.local/bin`. `faragent doctor --host X` prints `PATH` |
 | `tmux_missing` | Enter on the agent list to install tmux, or copy the commands from the confirm screen |
 | `cwd_missing` | Directory must exist; faragent will not `mkdir` a project |
@@ -430,6 +435,7 @@ Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap
 
 ## See also
 
+- [SSH access: LAN, public IP, domain, Tailscale](ssh-access.md)
 - [Development](development.md) — architecture and contributing
 - [Roadmap](roadmap.md) — native Windows and app frontend
 

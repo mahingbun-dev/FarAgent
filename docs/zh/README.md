@@ -8,6 +8,7 @@
 | --- | --- |
 | 产品介绍 | [README.zh-CN.md](../../README.zh-CN.md) |
 | 用户手册 | [user-guide.md](user-guide.md) |
+| SSH 连接（局域网 / 公网 / 域名 / Tailscale） | [ssh-access.md](ssh-access.md) |
 | 开发者文档 | [development.md](development.md) |
 | 参与贡献 | [contributing.md](contributing.md) |
 | 安全说明 | [security.md](security.md) |

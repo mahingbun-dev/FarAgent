@@ -2,7 +2,7 @@
 
 **English** · [中文](../zh/security.md)
 
-`faragent` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
+`faragent` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos. Do not expose home `sshd` to the public internet unless you must; reaching a NAT’d machine is covered in [SSH access · Tailscale](ssh-access.md#tailscale-for-nat-traversal-recommended).
 
 ## What we assume
 
