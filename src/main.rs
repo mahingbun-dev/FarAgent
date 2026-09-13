@@ -1,7 +1,6 @@
 mod chrome;
 mod diagnose;
 mod doctor;
-mod install;
 mod probe;
 mod pty;
 mod runtime;
@@ -10,6 +9,7 @@ mod tui;
 // Moved into faragent-core / faragent-remote / faragent-transport; aliased at
 // the crate root so every existing `crate::ssh::…` path keeps working.
 pub use faragent_core::{agents, config, text};
+pub use faragent_install as install;
 pub use faragent_remote::{remote, win};
 pub use faragent_transport as ssh;
 pub use faragent_transport::askpass;

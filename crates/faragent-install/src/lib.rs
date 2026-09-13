@@ -1,12 +1,13 @@
 //! Build a remote install / upgrade / uninstall plan on the laptop.
 //! Official URLs are hardcoded here. The remote never supplies the script.
 
-use crate::agents::AgentKind;
-use crate::remote::HostOs;
-use crate::ssh::{self, OpenSshTransport};
-use crate::text::LocalizedText;
-use crate::win;
 use anyhow::{anyhow, Result};
+use faragent_core::agents::AgentKind;
+use faragent_core::shell::shell_single_quote;
+use faragent_core::text::LocalizedText;
+use faragent_core::vocab::HostOs;
+use faragent_remote::win;
+use faragent_transport::{host_os, OpenSshTransport};
 
 pub const CLAUDE_INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
 pub const CODEX_INSTALL: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
@@ -340,7 +341,7 @@ pub fn parse_preflight(text: &str) -> Result<Preflight> {
 
 pub fn preflight_host(host: &str, agent: AgentKind) -> Result<Preflight> {
     let client = OpenSshTransport::connect(host)?;
-    let os = crate::ssh::host_os(host)?;
+    let os = host_os(host)?;
     let output = match os {
         HostOs::Posix => client.exec_login(&preflight_script(agent, os))?,
         HostOs::Windows => client.exec_win(&win::preflight_script(agent), &[])?,
@@ -586,7 +587,7 @@ fn native_uninstall_command(agent: AgentKind, path: &str) -> String {
     let extra = if path.is_empty() {
         String::new()
     } else {
-        format!("rm -f {}; ", ssh::shell_single_quote(path))
+        format!("rm -f {}; ", shell_single_quote(path))
     };
     match agent {
         AgentKind::Claude => format!(
@@ -764,7 +765,7 @@ echo "faragent: remote $(hostname 2>/dev/null || true)  action below"
     for (i, step) in steps.iter().enumerate() {
         let n = i + 1;
         let title = step.title.replace('\'', "");
-        let echoed = ssh::shell_single_quote(&format!("+ {}", step.command));
+        let echoed = shell_single_quote(&format!("+ {}", step.command));
         s.push_str(&format!(
             "\necho\necho '========== [{n}] {title} =========='\nprintf '%s\\n' {echoed}\n{}\n",
             step.command
@@ -916,6 +917,7 @@ pub fn plan_blocked_enter() -> LocalizedText<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faragent_transport::bash_login_command;
     use pretty_assertions::assert_eq;
 
     fn pf(curl: bool, tmux: bool, pkg: Option<PkgManager>, agent_path: Option<&str>) -> Preflight {
@@ -1206,7 +1208,7 @@ live\t0
             AgentKind::Claude,
             &pf(true, true, None, None),
         );
-        let cmd = ssh::bash_login_command(&plan.script);
+        let cmd = bash_login_command(&plan.script);
         assert!(cmd.starts_with("bash -lc "));
         assert!(cmd.contains("install.sh"));
         assert!(cmd.contains("'"), "script with | must be quoted: {cmd}");

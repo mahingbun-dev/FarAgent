@@ -39,6 +39,7 @@ path = "src/main.rs"
 
 [dependencies]
 faragent-core = { path = "crates/faragent-core" }
+faragent-install = { path = "crates/faragent-install" }
 faragent-remote = { path = "crates/faragent-remote" }
 faragent-transport = { path = "crates/faragent-transport" }
 anyhow.workspace = true

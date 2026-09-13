@@ -280,6 +280,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "faragent-core",
+ "faragent-install",
  "faragent-remote",
  "faragent-transport",
  "pretty_assertions",
@@ -300,6 +301,17 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "faragent-install"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "faragent-core",
+ "faragent-remote",
+ "faragent-transport",
+ "pretty_assertions",
 ]
 
 [[package]]
