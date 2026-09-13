@@ -1,11 +1,9 @@
-# CI：格式 + lint + 测试 + 构建
-# 放入 .github/workflows/ci.yml
+# CI：main 有新提交时运行 格式检查 + lint + 测试 + release 构建
+# 仅在 main 收到提交（含 PR 合并）时触发；PR 事件不触发，需要时可手动 dispatch
 name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -27,7 +25,6 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      # 若首轮因既存 warning 失败：去掉 -D warnings，或先修掉 warning
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
