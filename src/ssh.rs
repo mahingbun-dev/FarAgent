@@ -860,10 +860,12 @@ Host work laptop
         assert_eq!(hosts[0].user.as_deref(), Some("sunny"));
         assert_eq!(hosts[0].port_or_22(), 22);
         assert_eq!(hosts[0].target(), "10.0.0.2");
+        // `~` expands against the real home; separators follow the platform.
         assert!(hosts[0]
             .identity
             .as_deref()
             .unwrap()
+            .replace('\\', "/")
             .ends_with("/.ssh/id_ed25519"));
         // `Host work laptop` shares one HostName, and the wildcard block's
         // `User git` must not leak into it.
