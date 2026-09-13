@@ -1,6 +1,7 @@
 use crate::agents::{self, AgentKind};
-use crate::remote::{self, DiskFile, ListDump, StartOutcome};
+use crate::remote::{self, DiskFile, HostOs, ListDump, StartOutcome};
 use crate::ssh::Client;
+use crate::win;
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -18,6 +19,10 @@ pub struct SessionSummary {
     pub mtime: f64,
     #[serde(default)]
     pub live: bool,
+    /// A process that may still hold this session (Windows remotes, where
+    /// there is no tmux to tell `live` apart). Drives a confirm dialog.
+    #[serde(default)]
+    pub running: bool,
     #[serde(default)]
     pub tmux: Option<String>,
 }
@@ -44,6 +49,20 @@ pub fn run_login(client: &Client, script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// PowerShell twin of [`run_login`] for Windows remotes.
+pub fn run_win_login(client: &Client, script: &str) -> Result<String> {
+    run_win_login_args(client, script, &[])
+}
+
+/// [`run_win_login`] with base64 `$args` for the script.
+pub fn run_win_login_args(client: &Client, script: &str, args_b64: &[&str]) -> Result<String> {
+    let output = client.exec_win(script, args_b64)?;
+    if !output.status.success() {
+        client.require_ok(&output)?;
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
     let write = client.exec_login_stdin(
         remote::write_tmux_conf_script(),
@@ -53,12 +72,19 @@ pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
     Ok(())
 }
 
-pub fn list_sessions(host: &str, agent: AgentKind) -> Result<Vec<SessionSummary>> {
+pub fn list_sessions(host: &str, agent: AgentKind, os: HostOs) -> Result<Vec<SessionSummary>> {
     let client = Client::new(host)?;
-    let _ = ensure_tmux_conf(&client);
-    let text = run_login(&client, &remote::list_script(agent))?;
-    let dump = remote::parse_list(&text)?;
-    Ok(merge_sessions(agent, dump))
+    match os {
+        HostOs::Posix => {
+            let _ = ensure_tmux_conf(&client);
+            let text = run_login(&client, &remote::list_script(agent))?;
+            Ok(merge_sessions(agent, os, remote::parse_list(&text)?))
+        }
+        HostOs::Windows => {
+            let text = run_win_login(&client, &win::list_script(agent))?;
+            Ok(merge_sessions(agent, os, remote::parse_list(&text)?))
+        }
+    }
 }
 
 /// Create a detached tmux session if needed. If it already exists, only attach later.
@@ -83,7 +109,40 @@ pub fn ensure_tmux_session(
     let script = remote::start_script(agent, cwd_s.as_ref(), session_id, &name, create_cwd);
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { tmux } => Ok(tmux),
+        StartOutcome::Ok { name } => Ok(name),
+        StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
+            &error, &hint, &cwd_s,
+        ))),
+    }
+}
+
+/// Validate (and optionally create) the working directory on a Windows
+/// remote, then return the display name for the foreground launch that
+/// follows. There is no persistent session to create — `pty::attach_win`
+/// runs the agent right after, and quitting it ends the session.
+pub fn ensure_win_session(
+    host: &str,
+    agent: AgentKind,
+    cwd: &Path,
+    session_id: Option<&str>,
+    create_cwd: bool,
+) -> Result<String> {
+    let client = Client::new(host)?;
+    let sid = session_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(agents::new_session_id);
+    let name = agents::tmux_name(agent, &sid);
+    let cwd_s = cwd.to_string_lossy();
+    let cwd_b64 = win::b64(&cwd_s);
+    let name_b64 = win::b64(&name);
+    let create = if create_cwd { "1" } else { "0" };
+    let text = run_win_login_args(
+        &client,
+        &win::start_script(agent),
+        &[&cwd_b64, create, &name_b64],
+    )?;
+    match remote::parse_start(&text)? {
+        StartOutcome::Ok { .. } => Ok(name),
         StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
             &error, &hint, &cwd_s,
         ))),
@@ -116,7 +175,10 @@ impl SessionError {
     }
 }
 
-fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
+/// One merge for both dialects. POSIX: disk transcripts + tmux session names
+/// decide `live`. Windows: disk transcripts + a process scan, which can only
+/// suggest `running` (drives a confirmation, never a hard block).
+fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSummary> {
     let live_tmux: HashSet<String> = dump
         .tmux
         .iter()
@@ -133,7 +195,7 @@ fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
         .files
         .iter()
         .filter(|f| f.agent == agent.slug())
-        .map(|f| row_from_file(agent, f))
+        .map(|f| row_from_file(agent, f, os))
         .collect();
 
     let mut seen: HashSet<String> = HashSet::new();
@@ -165,12 +227,46 @@ fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
             cwd: (!cwd.is_empty()).then(|| cwd.clone()),
             mtime: 0.0,
             live: true,
+            running: false,
             tmux: Some(name.clone()),
         });
     }
 
+    let mut proc_seen: HashSet<String> = HashSet::new();
+    for (pagent, pid) in &dump.procs {
+        if pagent != agent.slug() || !proc_seen.insert(pid.clone()) {
+            continue;
+        }
+        if !pid.is_empty() {
+            let sid = match agent {
+                AgentKind::Codex => remote::find_uuid(pid).unwrap_or_else(|| pid.clone()),
+                _ => pid.clone(),
+            };
+            if let Some(row) = rows.iter_mut().find(|r| r.id == sid) {
+                row.running = true;
+                continue;
+            }
+        }
+        // A process without a matchable id: surface it so the user knows
+        // something for this agent may still hold a session.
+        rows.push(SessionSummary {
+            id: if pid.is_empty() {
+                "(running)".into()
+            } else {
+                pid.clone()
+            },
+            agent: agent.slug().into(),
+            title: Some("(running)".into()),
+            cwd: None,
+            mtime: 0.0,
+            live: false,
+            running: true,
+            tmux: None,
+        });
+    }
+
     rows.sort_by(|a, b| {
-        b.live.cmp(&a.live).then(
+        b.live.cmp(&a.live).then(b.running.cmp(&a.running)).then(
             b.mtime
                 .partial_cmp(&a.mtime)
                 .unwrap_or(std::cmp::Ordering::Equal),
@@ -179,7 +275,7 @@ fn merge_sessions(agent: AgentKind, dump: ListDump) -> Vec<SessionSummary> {
     rows
 }
 
-fn row_from_file(agent: AgentKind, f: &DiskFile) -> SessionSummary {
+fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
     let sid = match agent {
         AgentKind::Codex => remote::find_uuid(&f.id).unwrap_or_else(|| f.id.clone()),
         _ => f.id.clone(),
@@ -193,7 +289,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile) -> SessionSummary {
             let m = remote::jsonl_meta(&f.body, 80);
             (
                 m.title.or_else(|| Some(sid.clone())),
-                m.cwd.or_else(|| remote::claude_guess_cwd(&f.cwd_hint)),
+                m.cwd.or_else(|| remote::claude_guess_cwd(&f.cwd_hint, os)),
             )
         }
         AgentKind::Codex => {
@@ -217,6 +313,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile) -> SessionSummary {
         cwd,
         mtime: f.mtime,
         live: false,
+        running: false,
         tmux: Some(agents::tmux_name(agent, &sid)),
     }
 }
@@ -240,8 +337,9 @@ mod tests {
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
             }],
+            procs: vec![],
         };
-        let rows = merge_sessions(AgentKind::Grok, dump);
+        let rows = merge_sessions(AgentKind::Grok, HostOs::Posix, dump);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].live);
         assert_eq!(rows[0].title.as_deref(), Some("hello"));
@@ -253,8 +351,9 @@ mod tests {
         let dump = ListDump {
             tmux: vec![("faragent-pi-newsession01".into(), "/work".into())],
             files: vec![],
+            procs: vec![],
         };
-        let rows = merge_sessions(AgentKind::Pi, dump);
+        let rows = merge_sessions(AgentKind::Pi, HostOs::Posix, dump);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].live);
         assert_eq!(rows[0].cwd.as_deref(), Some("/work"));
@@ -272,8 +371,9 @@ mod tests {
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
             }],
+            procs: vec![],
         };
-        let rows = merge_sessions(AgentKind::Grok, dump);
+        let rows = merge_sessions(AgentKind::Grok, HostOs::Posix, dump);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].live);
         assert_eq!(rows[0].tmux.as_deref(), Some("farssh-grok-abc123abc123"));
@@ -287,12 +387,62 @@ mod tests {
                 ("faragent-grok-def456def456".into(), "/tmp/new".into()),
             ],
             files: vec![],
+            procs: vec![],
         };
-        let rows = merge_sessions(AgentKind::Grok, dump);
+        let rows = merge_sessions(AgentKind::Grok, HostOs::Posix, dump);
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.live));
         let names: HashSet<_> = rows.iter().filter_map(|r| r.tmux.as_deref()).collect();
         assert!(names.contains("farssh-grok-abc123abc123"));
         assert!(names.contains("faragent-grok-def456def456"));
+    }
+
+    #[test]
+    fn windows_proc_marks_running_and_adds_proc_only_rows() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![DiskFile {
+                agent: "claude".into(),
+                id: "abc123abc123".into(),
+                mtime: 10.0,
+                cwd_hint: "C--Users-me-app".into(),
+                body: br#"{"cwd":"C:\\Users\\me\\app","message":"hello"}"#.to_vec(),
+            }],
+            procs: vec![
+                ("claude".into(), "abc123abc123".into()),
+                ("claude".into(), "def456def456".into()),
+                ("codex".into(), "other".into()),
+            ],
+        };
+        let rows = merge_sessions(AgentKind::Claude, HostOs::Windows, dump);
+        assert_eq!(rows.len(), 2);
+        let marked = rows.iter().find(|r| r.id == "abc123abc123").unwrap();
+        assert!(marked.running);
+        assert!(!marked.live);
+        let proc_only = rows.iter().find(|r| r.id == "def456def456").unwrap();
+        assert!(proc_only.running);
+        assert_eq!(proc_only.title.as_deref(), Some("(running)"));
+        // Other agents' processes are ignored.
+        assert!(rows.iter().all(|r| r.agent == "claude"));
+    }
+
+    #[test]
+    fn windows_proc_without_id_becomes_one_generic_running_row() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![],
+            procs: vec![("claude".into(), "".into()), ("claude".into(), "".into())],
+        };
+        let rows = merge_sessions(AgentKind::Claude, HostOs::Windows, dump);
+        assert_eq!(rows.len(), 1, "duplicate empty ids collapse");
+        assert!(rows[0].running);
+        assert_eq!(rows[0].title.as_deref(), Some("(running)"));
+    }
+
+    #[test]
+    fn old_session_json_without_running_still_loads() {
+        let s: SessionSummary = serde_json::from_str(r#"{"id":"x","agent":"claude"}"#).unwrap();
+        assert!(!s.running);
+        assert!(!s.live);
     }
 }

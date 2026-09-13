@@ -35,6 +35,9 @@ enum Screen {
     /// Password for a host whose ssh cannot multiplex (Win32 OpenSSH). The
     /// value is held in process memory only and fed to ssh via askpass.
     Password,
+    /// Windows-remote session that looks like it may still be running: warn
+    /// before starting a second process on the same transcript.
+    RunningConfirm,
 }
 
 /// What to re-run when the user retries from the problem screen.
@@ -177,7 +180,8 @@ impl App {
             | Screen::NewDirConfirm
             | Screen::Confirm
             | Screen::Problem
-            | Screen::Password => {}
+            | Screen::Password
+            | Screen::RunningConfirm => {}
         }
     }
 }
@@ -231,6 +235,9 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::Password) {
         return handle_password_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::RunningConfirm) {
+        return handle_running_confirm_key(app, key, terminal);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
             Screen::Language | Screen::Hosts => app.quit = true,
@@ -248,7 +255,8 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
             | Screen::NewDirConfirm
             | Screen::Confirm
             | Screen::Problem
-            | Screen::Password => {}
+            | Screen::Password
+            | Screen::RunningConfirm => {}
         },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),
@@ -452,7 +460,11 @@ fn refresh(app: &mut App) -> Result<()> {
             app.status = app.lang.host_count(app.hosts.len());
         }
         Screen::Agents | Screen::Sessions | Screen::NewCwd => reload_probe_and_sessions(app)?,
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm | Screen::Password => {}
+        Screen::Confirm
+        | Screen::Problem
+        | Screen::NewDirConfirm
+        | Screen::Password
+        | Screen::RunningConfirm => {}
     }
     app.clamp();
     Ok(())
@@ -499,9 +511,13 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
             reload_sessions(app)?;
             app.screen = Screen::Sessions;
             app.session_idx = 0;
-            app.status = app.lang.sessions_status().into();
+            app.status = app.lang.sessions_status_os(probe_os(app)).into();
         }
-        Screen::Confirm | Screen::Problem | Screen::NewDirConfirm | Screen::Password => {}
+        Screen::Confirm
+        | Screen::Problem
+        | Screen::NewDirConfirm
+        | Screen::Password
+        | Screen::RunningConfirm => {}
         Screen::Sessions => {
             if app.sessions.is_empty() {
                 begin_new(app);
@@ -607,7 +623,7 @@ fn handle_problem_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermin
             app.error = None;
             app.screen = app.problem_from.clone();
             app.status = match app.screen {
-                Screen::Sessions => app.lang.sessions_status().into(),
+                Screen::Sessions => app.lang.sessions_status_os(probe_os(app)).into(),
                 Screen::Agents => app.lang.select_agent().into(),
                 _ => app.lang.status_ready().into(),
             };
@@ -714,7 +730,7 @@ fn handle_password_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTermi
             app.error = None;
             app.screen = app.problem_from.clone();
             app.status = match app.screen {
-                Screen::Sessions => app.lang.sessions_status().into(),
+                Screen::Sessions => app.lang.sessions_status_os(probe_os(app)).into(),
                 Screen::Agents => app.lang.select_agent().into(),
                 _ => app.lang.status_ready().into(),
             };
@@ -886,7 +902,7 @@ fn reload_sessions(app: &mut App) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
-    match runtime::list_sessions(&host, app.agent()) {
+    match runtime::list_sessions(&host, app.agent(), probe_os(app)) {
         Ok(rows) => {
             app.sessions = rows;
             app.error = None;
@@ -898,6 +914,31 @@ fn reload_sessions(app: &mut App) -> Result<()> {
 }
 
 fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(sess) = app.sessions.get(app.session_idx).cloned() else {
+        return Ok(());
+    };
+    // Live tmux: attach only. Never resume a running session (Codex #30424).
+    if sess.live {
+        let Some(host) = app.host().map(|h| h.alias.clone()) else {
+            return Ok(());
+        };
+        let agent = app.agent();
+        let tmux = sess
+            .tmux
+            .clone()
+            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
+        return drop_into_tmux(app, terminal, &host, &tmux);
+    }
+    // A Windows remote cannot prove liveness, only suggest it: ask first.
+    if sess.running {
+        app.screen = Screen::RunningConfirm;
+        return Ok(());
+    }
+    open_session(app, terminal)
+}
+
+/// Start or resume the highlighted session in its working directory.
+fn open_session(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
     let Some(host) = app.host().map(|h| h.alias.clone()) else {
         return Ok(());
     };
@@ -911,16 +952,26 @@ fn attach_existing(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> 
         .map(PathBuf::from)
         .or_else(|| app.probe.as_ref().map(|p| PathBuf::from(&p.home)))
         .unwrap_or_else(|| PathBuf::from("."));
-    // Live tmux: attach only. Never resume a running session (Codex #30424).
-    if sess.live {
-        let tmux = sess
-            .tmux
-            .clone()
-            .unwrap_or_else(|| crate::agents::tmux_name(agent, &sess.id));
-        return drop_into_tmux(app, terminal, &host, &tmux);
-    }
     let cwd_s = cwd.to_string_lossy().into_owned();
     start_session(app, terminal, &host, agent, &cwd_s, Some(&sess.id), false)
+}
+
+/// Keys on the "that session may still be running" confirmation.
+fn handle_running_confirm_key(
+    app: &mut App,
+    key: KeyEvent,
+    terminal: &mut DefaultTerminal,
+) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::Sessions;
+            app.status = app.lang.sessions_status_os(probe_os(app)).into();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Enter => open_session(app, terminal)?,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Start (or resume) a session in `cwd`. With `create_cwd = false` nothing is
@@ -935,17 +986,34 @@ fn start_session(
     session_id: Option<&str>,
     create_cwd: bool,
 ) -> Result<()> {
-    match runtime::ensure_tmux_session(
-        host,
-        agent,
-        std::path::Path::new(cwd),
-        session_id,
-        create_cwd,
-    ) {
-        Ok(tmux) => {
+    use crate::remote::HostOs;
+    let os = probe_os(app);
+    let result = match os {
+        HostOs::Posix => runtime::ensure_tmux_session(
+            host,
+            agent,
+            std::path::Path::new(cwd),
+            session_id,
+            create_cwd,
+        ),
+        HostOs::Windows => runtime::ensure_win_session(
+            host,
+            agent,
+            std::path::Path::new(cwd),
+            session_id,
+            create_cwd,
+        ),
+    };
+    match result {
+        Ok(name) => {
             app.pending = None;
             app.screen = Screen::Sessions;
-            drop_into_tmux(app, terminal, host, &tmux)?;
+            match os {
+                HostOs::Posix => drop_into_tmux(app, terminal, host, &name)?,
+                HostOs::Windows => {
+                    drop_into_win_session(app, terminal, host, agent, cwd, session_id)?
+                }
+            }
         }
         Err(e) => {
             match e.downcast_ref::<runtime::SessionError>() {
@@ -965,6 +1033,36 @@ fn start_session(
             }
         }
     }
+    Ok(())
+}
+
+/// Launch an agent in the foreground on a Windows remote. When it exits (or
+/// ssh drops), the session ends; resume restores the conversation later.
+fn drop_into_win_session(
+    app: &mut App,
+    terminal: &mut DefaultTerminal,
+    host: &str,
+    agent: AgentKind,
+    cwd: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    let argv = match session_id {
+        Some(id) => agent.resume_argv(id),
+        None => agent.new_argv(),
+    };
+    app.status = app.lang.attaching_resume(agent.title());
+    ratatui::restore();
+    let code = pty::attach_win(host, cwd, &argv);
+    *terminal = ratatui::init();
+    match code {
+        Ok(0) | Ok(1) => {
+            app.status = app.lang.session_ended().into();
+            app.error = None;
+        }
+        Ok(c) => app.status = app.lang.ssh_exited(c),
+        Err(e) => app.error = Some(e.to_string()),
+    }
+    let _ = reload_sessions(app);
     Ok(())
 }
 
@@ -992,7 +1090,13 @@ fn drop_into_tmux(
 }
 
 fn session_line(lang: Lang, s: &SessionSummary) -> String {
-    let mark = if s.live { lang.live() } else { lang.idle() };
+    let mark = if s.live {
+        lang.live()
+    } else if s.running {
+        lang.running()
+    } else {
+        lang.idle()
+    };
     let title = s
         .title
         .as_deref()
@@ -1048,6 +1152,9 @@ fn draw(frame: &mut Frame, app: &App) {
             .lang
             .problem_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
         Screen::Password => app.lang.password_title().into(),
+        Screen::RunningConfirm => app
+            .lang
+            .running_confirm_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
     };
     let header = Paragraph::new(title).block(
         Block::default()
@@ -1139,6 +1246,25 @@ fn draw(frame: &mut Frame, app: &App) {
             );
             frame.render_widget(p, chunks[1]);
         }
+        Screen::RunningConfirm => {
+            let title = app
+                .sessions
+                .get(app.session_idx)
+                .and_then(|s| s.title.clone())
+                .unwrap_or_default();
+            let lines: Vec<Line> = app
+                .lang
+                .running_confirm_lines(&title)
+                .into_iter()
+                .map(Line::from)
+                .collect();
+            let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .title(app.lang.session_warning_block_title())
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(p, chunks[1]);
+        }
     }
 
     let mut footer_lines = vec![Line::from(app.status.clone())];
@@ -1152,6 +1278,7 @@ fn draw(frame: &mut Frame, app: &App) {
             .confirm_keys_hint(app.plan.as_ref().map(|p| p.can_run()).unwrap_or(false)),
         Screen::Problem => app.lang.problem_keys_hint(),
         Screen::Password => app.lang.password_keys_hint(),
+        Screen::RunningConfirm => app.lang.running_confirm_keys_hint(),
         _ => app.lang.keys_hint_os(probe_os(app)),
     };
     footer_lines.push(Line::from(Span::styled(
@@ -1417,6 +1544,24 @@ mod tests {
                 assert_eq!(lines[idx], lang.new_dir_command(dir, os), "{lang:?} {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn session_line_prefers_live_then_running() {
+        let mk = |live: bool, running: bool| SessionSummary {
+            id: "x".into(),
+            agent: "claude".into(),
+            title: Some("t".into()),
+            cwd: Some("c".into()),
+            mtime: 0.0,
+            live,
+            running,
+            tmux: None,
+        };
+        assert!(session_line(Lang::En, &mk(true, false)).starts_with("[live]"));
+        assert!(session_line(Lang::En, &mk(false, true)).starts_with("[running]"));
+        assert!(session_line(Lang::En, &mk(false, false)).starts_with("[idle]"));
+        assert!(session_line(Lang::En, &mk(true, false)).contains("(c)"));
     }
 
     #[test]

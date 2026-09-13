@@ -15,6 +15,12 @@ pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
     run_remote_script(host, &attach_script(tmux_name))
 }
 
+/// Foreground agent launch on a Windows remote (no tmux): quitting the agent
+/// — or losing ssh — ends the session; resume brings the conversation back.
+pub fn attach_win(host: &str, cwd: &str, argv: &[String]) -> Result<i32> {
+    run_remote_line(host, &crate::win::attach_launcher(cwd, argv))
+}
+
 /// Socket + conf follow the session name so pre-rename live panes still attach.
 pub fn attach_script(tmux_name: &str) -> String {
     let name_q = ssh::shell_single_quote(tmux_name);

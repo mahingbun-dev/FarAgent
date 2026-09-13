@@ -11,6 +11,7 @@ mod remote;
 mod runtime;
 mod ssh;
 mod tui;
+mod win;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -114,7 +115,8 @@ fn probe_json(host: &str) -> Result<()> {
 
 fn sessions_json(host: &str, agent: &str) -> Result<()> {
     let kind = agents::AgentKind::parse(agent)?;
-    let rows = runtime::list_sessions(host, kind)?;
+    let os = probe::host_os(host)?;
+    let rows = runtime::list_sessions(host, kind, os)?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
 }

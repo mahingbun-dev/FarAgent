@@ -629,6 +629,15 @@ impl Client {
         self.wait_child(child, &line, EXEC_TIMEOUT)
     }
 
+    /// Run a PowerShell script on a Windows remote: the default shell (cmd)
+    /// only launches `powershell -File -` and the script rides stdin, so
+    /// nothing needs cmd quoting and command-line length limits do not apply.
+    /// Dynamic values travel as base64 `$args`.
+    pub fn exec_win(&self, script: &str, args_b64: &[&str]) -> Result<Output> {
+        let line = crate::win::ps_stdin_command(args_b64);
+        self.exec_stdio(&line, script.as_bytes())
+    }
+
     fn run_remote(&self, remote: &str) -> Result<Output> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);

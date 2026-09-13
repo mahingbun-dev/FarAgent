@@ -134,10 +134,13 @@ pub struct DiskFile {
 pub struct ListDump {
     pub tmux: Vec<(String, String)>,
     pub files: Vec<DiskFile>,
+    /// `(agent, session-id-or-empty)` from the process scan (Windows remotes;
+    /// while tmux-less, this is the closest thing to a live marker).
+    pub procs: Vec<(String, String)>,
 }
 
 pub enum StartOutcome {
-    Ok { tmux: String },
+    Ok { name: String },
     Err { error: String, hint: String },
 }
 
@@ -454,6 +457,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
     let body = after_magic(text, "FARAGENT_LIST_V1")?;
     let mut tmux = Vec::new();
     let mut files = Vec::new();
+    let mut procs = Vec::new();
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
         if line.is_empty() || line == "FARAGENT_LIST_V1" {
@@ -471,6 +475,12 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
                     }
                 }
             }
+            "proc" => {
+                let cols: Vec<&str> = line.splitn(3, '\t').collect();
+                if cols.len() >= 2 && !cols[1].is_empty() {
+                    procs.push((cols[1].to_string(), cols.get(2).unwrap_or(&"").to_string()));
+                }
+            }
             "file" => {
                 let cols: Vec<&str> = line.splitn(6, '\t').collect();
                 if cols.len() >= 4 {
@@ -486,7 +496,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
             _ => {}
         }
     }
-    Ok(ListDump { tmux, files })
+    Ok(ListDump { tmux, files, procs })
 }
 
 pub fn parse_start(text: &str) -> Result<StartOutcome> {
@@ -498,7 +508,7 @@ pub fn parse_start(text: &str) -> Result<StartOutcome> {
         match cols.first().copied() {
             Some("ok") if cols.len() >= 3 => {
                 last = Some(StartOutcome::Ok {
-                    tmux: cols[2].to_string(),
+                    name: cols[2].to_string(),
                 });
             }
             Some("err") if cols.len() >= 2 => {
@@ -576,9 +586,12 @@ pub fn grok_summary_meta(body: &[u8], cwd_hint: &str) -> (Option<String>, Option
     (title, cwd)
 }
 
-pub fn claude_guess_cwd(slug: &str) -> Option<String> {
+pub fn claude_guess_cwd(slug: &str, os: HostOs) -> Option<String> {
     if slug.is_empty() {
         return None;
+    }
+    if os == HostOs::Windows {
+        return crate::win::slug_to_cwd(slug);
     }
     let mut guessed = slug.replace('-', "/");
     if !guessed.starts_with('/') && guessed.starts_with("Users") {
@@ -872,7 +885,7 @@ agent	pi			missing
     fn parse_start_ok_and_err() {
         let ok = parse_start("FARAGENT_START_V1\nok\tcreated\tfaragent-grok-abc\n").unwrap();
         match ok {
-            StartOutcome::Ok { tmux } => assert_eq!(tmux, "faragent-grok-abc"),
+            StartOutcome::Ok { name } => assert_eq!(name, "faragent-grok-abc"),
             _ => panic!("expected ok"),
         }
         let err = parse_start("FARAGENT_START_V1\nerr\ttmux_missing\tInstall tmux\n").unwrap();
@@ -885,8 +898,34 @@ agent	pi			missing
     #[test]
     fn claude_slug_guess() {
         assert_eq!(
-            claude_guess_cwd("Users-me-src").as_deref(),
+            claude_guess_cwd("Users-me-src", HostOs::Posix).as_deref(),
             Some("/Users/me/src")
         );
+        assert_eq!(
+            claude_guess_cwd("C--Users-me-src-app", HostOs::Windows).as_deref(),
+            Some("C:\\Users\\me\\src\\app")
+        );
+        assert_eq!(claude_guess_cwd("", HostOs::Windows), None);
+    }
+
+    #[test]
+    fn parse_list_reads_proc_lines() {
+        let text = "\
+FARAGENT_LIST_V1
+file\tclaude\tabc123\t10.0\tC--Users-me\t
+proc\tclaude\tabc123
+proc\tclaude\t
+";
+        let dump = parse_list(text).unwrap();
+        assert_eq!(
+            dump.procs,
+            vec![
+                ("claude".to_string(), "abc123".to_string()),
+                ("claude".to_string(), String::new()),
+            ]
+        );
+        // POSIX output without proc lines still parses.
+        let old = parse_list("FARAGENT_LIST_V1\nfile\tgrok\tx\t1.0\thint\t\n").unwrap();
+        assert!(old.procs.is_empty());
     }
 }

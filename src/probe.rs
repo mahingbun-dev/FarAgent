@@ -4,6 +4,7 @@ use crate::i18n::Lang;
 use crate::remote::{self, HostOs};
 use crate::runtime;
 use crate::ssh::Client;
+use crate::win;
 use anyhow::Result;
 
 pub use crate::remote::Probe;
@@ -28,14 +29,34 @@ pub fn host_os(host: &str) -> Result<HostOs> {
 pub fn probe_host(host: &str) -> Result<Probe> {
     let client = Client::new(host)?;
     let expected = host_os(host).unwrap_or_default();
-    let text = runtime::run_login(&client, remote::probe_script())?;
-    let probe = remote::parse_probe(&text)?;
-    // Self-heal: the probe script itself reports the dialect; trust it over
-    // whatever we had cached (the host may have been reprovisioned).
+    let probe = match try_probe(&client, expected) {
+        Ok(p) => p,
+        Err(e) => {
+            // The cached dialect may be stale (reprovisioned host) or the
+            // marker inconclusive: one retry with the other dialect.
+            let other = match expected {
+                HostOs::Posix => HostOs::Windows,
+                HostOs::Windows => HostOs::Posix,
+            };
+            match try_probe(&client, other) {
+                Ok(p) => p,
+                Err(_) => return Err(e),
+            }
+        }
+    };
+    // Trust the probe script's own `os` line over any cache.
     if probe.os != expected {
         let _ = config::set_host_os(host, probe.os);
     }
     Ok(probe)
+}
+
+fn try_probe(client: &Client, os: HostOs) -> Result<Probe> {
+    let text = match os {
+        HostOs::Posix => runtime::run_login(client, remote::probe_script())?,
+        HostOs::Windows => runtime::run_win_login(client, &win::probe_script())?,
+    };
+    remote::parse_probe(&text)
 }
 
 pub fn format_agent_line(kind: AgentKind, probe: &Probe) -> String {

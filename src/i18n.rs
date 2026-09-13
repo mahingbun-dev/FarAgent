@@ -318,6 +318,67 @@ impl Lang {
         "idle"
     }
 
+    /// Windows-remote session mark: a process scan suggests it may be open
+    /// elsewhere (never a hard block — entering asks first).
+    pub fn running(self) -> &'static str {
+        "running"
+    }
+
+    pub fn sessions_status_os(self, os: crate::remote::HostOs) -> &'static str {
+        use crate::remote::HostOs;
+        match os {
+            HostOs::Posix => self.sessions_status(),
+            HostOs::Windows => match self {
+                Self::Zh => "回车启动/恢复 · n 新建会话 · running 表示可能有进程在跑",
+                Self::En => {
+                    "enter start/resume · n new session · running means a process may be alive"
+                }
+            },
+        }
+    }
+
+    pub fn running_confirm_title(self, host: &str) -> String {
+        match self {
+            Self::Zh => format!("FarAgent · {host} · 该会话可能在运行"),
+            Self::En => format!("FarAgent · {host} · session may be running"),
+        }
+    }
+
+    pub fn running_confirm_lines(self, title: &str) -> Vec<String> {
+        match self {
+            Self::Zh => vec![
+                format!("检测到与「{title}」相关的 agent 进程可能仍在运行。"),
+                String::new(),
+                "同一会话若被两个进程同时写入，可能互相覆盖改动（codex#30424）。建议先到那个终端里退出它，再回来恢复。".into(),
+                String::new(),
+                "回车 = 仍然进入（以 resume 方式新起一个前台进程）".into(),
+                "Esc = 返回会话列表".into(),
+            ],
+            Self::En => vec![
+                format!("A process that may belong to \"{title}\" appears to be running."),
+                String::new(),
+                "Two agents writing the same session can overwrite each other (codex#30424). Consider quitting it in its own terminal first.".into(),
+                String::new(),
+                "Enter = open anyway (starts a new foreground process via resume)".into(),
+                "Esc = back to the session list".into(),
+            ],
+        }
+    }
+
+    pub fn running_confirm_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "回车 仍然进入 · Esc 返回列表",
+            Self::En => "enter open anyway · esc back",
+        }
+    }
+
+    pub fn session_warning_block_title(self) -> &'static str {
+        match self {
+            Self::Zh => "可能的双开冲突",
+            Self::En => "possible double-open conflict",
+        }
+    }
+
     pub fn cancelled(self) -> &'static str {
         match self {
             Self::Zh => "已取消",
@@ -425,6 +486,21 @@ impl Lang {
         match self {
             Self::Zh => "已断开 · 会话仍在远程运行",
             Self::En => "detached · session stays alive on the remote",
+        }
+    }
+
+    /// Windows remote: the agent runs in the foreground of this connection.
+    pub fn attaching_resume(self, name: &str) -> String {
+        match self {
+            Self::Zh => format!("正在启动 {name}（前台运行 · 退出即结束，可 resume 恢复）"),
+            Self::En => format!("starting {name} (foreground · quitting ends it; resume later)"),
+        }
+    }
+
+    pub fn session_ended(self) -> &'static str {
+        match self {
+            Self::Zh => "会话已结束 · 回车可 resume 恢复",
+            Self::En => "session ended · enter resumes it later",
         }
     }
 
