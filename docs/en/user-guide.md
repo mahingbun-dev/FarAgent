@@ -24,27 +24,27 @@ Contents:
 
 ### On your laptop
 
-- macOS or Linux (Windows as a *client* is not supported yet)
-- OpenSSH (`ssh`)
+- macOS, Linux, or **Windows 11**
+- OpenSSH (`ssh`) — Windows ships it (Optional feature: OpenSSH Client)
 - A concrete `Host` entry in `~/.ssh/config` (see below)
-- **A working path to the host.** Keys or `ssh-agent` by default (`BatchMode`); when the server only takes an account password, FarAgent says so and supports one interactive login (nothing stored) — see [SSH access · password-only servers](ssh-access.md#password-only-servers-optional)
+- **A working path to the host.** Keys or `ssh-agent` by default (`BatchMode`); when the server only takes an account password, macOS/Linux support one interactive login (nothing stored) and Windows asks for the password in the TUI and keeps it in memory for that run only — see [SSH access · password-only servers](ssh-access.md#password-only-servers-optional) and [Windows client notes](ssh-access.md#windows-client-notes)
 - The laptop must actually reach the remote: same LAN, a public IP/domain, or [Tailscale](ssh-access.md) (recommended behind home NAT / from a café)
 
 ### On the remote machine
 
 | Need | Notes |
 | --- | --- |
-| `sshd` | Normal SSH server |
-| `bash` | Login shell; faragent probes with `bash -lc` |
-| `tmux` | Required to attach. If missing, FarAgent can install it (brew, or sudo + apt/dnf/yum/pacman/apk) |
+| `sshd` | Normal SSH server — Win32 OpenSSH counts on Windows 11 |
+| `bash` (Linux/macOS) | Login shell; faragent probes with `bash -lc` |
+| `tmux` (Linux/macOS) | Required to attach. If missing, FarAgent can install it (brew, or sudo + apt/dnf/yum/pacman/apk) |
 | At least one agent | `claude`, `codex`, `grok`, or `pi` on the **login-shell** PATH. Missing agents can be installed from the TUI |
 | Agent already authenticated | faragent does not complete OAuth for you |
 
-**Windows remotes (v0.1):** SSH into **WSL2** (`sshd` inside the distro). Native Win32 OpenSSH is on the [roadmap](roadmap.md).
+**Windows remotes (native):** Windows 11 with Win32 OpenSSH (`sshd` from Optional Features, port 22 open in the firewall), keep the default **cmd** shell. There is no tmux on Windows: sessions run in the **foreground** — quitting the agent (or losing the connection) ends it, and the next `enter` restores the conversation through `claude --resume` / `codex resume`. Sessions that look like they are already running elsewhere are marked `[running]` and ask before opening ([codex#30424](https://github.com/openai/codex/issues/30424)). WSL2 also still works — it is just a Linux host. Setup walkthrough: [SSH access · Windows remote](ssh-access.md#windows-remote-native).
 
-You can install agents from the TUI (official `curl | bash` into the user directory, no sudo) or run those installers yourself on the remote, then log in once there (`claude`, `codex login`, `grok login --device-auth`, `pi` `/login`, etc.).
+You can install agents from the TUI (on Linux/macOS: official `curl | bash` into the user directory, no sudo; on Windows: the official PowerShell installers, also no admin) or run those installers yourself on the remote, then log in once there (`claude`, `codex login`, `grok login`, `pi` `/login`, etc.).
 
-The laptop never copies API keys. Probe and session listing run in Rust locally; the remote runs bash, tmux, and the official installers you confirm. First session start still writes `~/.faragent/tmux.conf`. No python3, no faragent binary on the target.
+The laptop never copies API keys. Probe and session listing run in Rust locally; the remote runs bash (or PowerShell on Windows), tmux, and the official installers you confirm. First session start on a Linux/macOS remote still writes `~/.faragent/tmux.conf`. No python3, no faragent binary on the target.
 
 There are three ways to run the laptop side: **hack on the source**, **use a release binary here**, or **copy that binary to another computer**. The remote machine that holds your agents does not need Rust or this repository.
 
@@ -183,7 +183,7 @@ file target/release/faragent
 | Intel Mac (`x86_64`) | Intel Mac |
 | Linux x86_64 | Linux x86_64 (glibc should not be much older) |
 
-v0.1 **cannot** run a macOS binary on Linux, and cannot run as a Windows client yet ([roadmap](roadmap.md)).
+A binary **cannot** cross OSes or architectures (macOS ≠ Linux ≠ Windows; `arm64` ≠ `x86_64`) — copy the matching build, or `cargo install --path .` on the target machine.
 
 ### 2. What to copy and what to leave
 
@@ -316,7 +316,7 @@ When a connection fails, FarAgent switches to an **error screen** holding the ra
 | Key | Action |
 | --- | --- |
 | `j` / `k`, `PgUp` / `PgDn` | Scroll the report |
-| `a` | One interactive login: accept the host key, type the password (it goes straight to OpenSSH; FarAgent stores nothing) |
+| `a` | Password hosts: one interactive login on macOS/Linux (the password goes straight to OpenSSH, nothing stored), or the in-memory password prompt on Windows |
 | `r` | Retry the step that failed, once you fixed something |
 | `y` | Copy cause + raw error + steps to the clipboard |
 | `Esc` / `q` | Back |
@@ -415,7 +415,7 @@ Do not SSH in by hand and `codex resume` the same id while the pane is live.
 
 faragent forwards your `TERM` / `COLORTERM` through `ssh -tt`. The dedicated tmux config enables mouse, truecolor (`RGB`), and OSC 52 clipboard.
 
-Use a terminal with 256 colors and mouse (Ghostty, iTerm2, Kitty, WezTerm, Windows Terminal over SSH from Linux/macOS clients). If Grok’s `/doctor` complains about clipboard, its own `grok wrap ssh` is optional; faragent does not require it.
+Use a terminal with 256 colors and mouse (Ghostty, iTerm2, Kitty, WezTerm, or Windows Terminal — the officially supported terminal on Windows 11). If Grok’s `/doctor` complains about clipboard, its own `grok wrap ssh` is optional; faragent does not require it.
 
 Resize the window: OpenSSH sends `SIGWINCH`; the agent TUI should relayout.
 
@@ -451,14 +451,14 @@ Treat SSH access as full access to that user’s agents and repos — because it
 | macOS remote cannot read Desktop/Documents | Grant Full Disk Access to `sshd` (TCC). faragent cannot bypass this |
 | `ControlMaster` feels stuck | `ssh -O exit -o ControlPath=~/.faragent/cm/%r@%h:%p host` then retry |
 
-## What v0.1 does not do
+## What FarAgent does not do
 
-Password SSH, OTP, `ProxyJump`, session delete/rename/fork, copying remote credentials to the laptop, compiling tmux from source, Entware/synopkg.
+OTP, `ProxyJump`, session delete/rename/fork, copying remote credentials to the laptop, compiling tmux from source, Entware/synopkg, keeping sessions alive on a Windows remote (a tmux-equivalent session host is planned).
 
-Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap.md).
+A Windows session host (keep-alive without WSL) and a styled app frontend are planned: [roadmap](roadmap.md).
 
 ## See also
 
 - [SSH access: LAN, public IP, domain, Tailscale](ssh-access.md)
 - [Development](development.md) — architecture and contributing
-- [Roadmap](roadmap.md) — native Windows and app frontend
+- [Roadmap](roadmap.md) — Windows session host and app frontend

@@ -2,20 +2,18 @@
 
 [English](../en/roadmap.md) · **中文**
 
-v0.1 是 Linux / macOS / Windows **WSL** 上的 SSH 选择器 + 原生 TUI 透传。下面两项是明确要做的后续工作，不在当前版本里。
+v0.2 已支持 Linux / macOS / **Windows 11** 上的 SSH 选择器 + 原生 TUI 透传 —— Windows 既能当客户端，也能当远程主机（resume 模式，不使用 WSL）。WSL 仍然支持（它就是一台 Linux 主机）。下面是明确要做的后续工作。
 
-## 1. 支持 Windows 原生（不使用 WSL）
+## 1. Windows 会话托管（不用 WSL 的 tmux 等价保活）
 
-把 Windows 同时当作 **客户端** 和 **远程主机** 用，不再依赖 WSL2。
+v0.2 的 Windows 远程是**前台运行**：退出 agent（或断开连接）即结束，下次经 `resume` 恢复上下文。下一步做真正的保活。
 
 | 方面 | 目标 |
 | --- | --- |
-| 远程 | 直接对接 Win32 OpenSSH + ConPTY（`claude` / `codex` / `grok` / `pi` 的 Windows 原生程序） |
-| 保活 | 不依赖 Linux `tmux` 也能保住会话（Windows 原生会话托管或等价方案） |
-| 客户端 | `faragent` 可在 Windows Terminal / PowerShell 上运行，不只是 macOS 和 Linux |
-| PATH / 探测 | 识别用户 PATH、`AppData`，以及 `%USERPROFILE%` 下的 `.claude` / `.codex` / `.grok` / `.pi` |
-
-WSL 仍然支持。原生 Windows 是增量能力。
+| 托管 | faragent 的隐藏子命令用 ConPTY 托管 agent，断线后会话仍存活 |
+| 接入 | 命名管道 attach/detach，`C-g d` 前缀与 tmux 行为一致 |
+| live | Windows 远程也有 `[live]`；进程扫描的 `[running]` 启发式保留给其他来源的进程 |
+| 上传 | 首次使用时经用户确认上传到远端；无需管理员、不写注册表 |
 
 ## 2. 增加 App 前端样式
 
@@ -31,4 +29,4 @@ WSL 仍然支持。原生 Windows 是增量能力。
 
 ## 在另立项之前仍不做
 
-OpenClaw 式网关、源码编译 tmux、Entware/synopkg、把 API key 拷到笔记本。（密码 / 键盘交互登录已支持，见 [SSH 连接](ssh-access.md#服务端只让用密码可选)。）
+OpenClaw 式网关、源码编译 tmux、Entware/synopkg、把 API key 拷到笔记本。（密码 / 键盘交互登录已支持，见 [SSH 连接](ssh-access.md#服务端只让用密码可选)；Windows 只支持 11，不支持 Windows 10。）

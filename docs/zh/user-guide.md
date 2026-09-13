@@ -24,25 +24,25 @@
 
 ### 本机（你打开 faragent 的那台）
 
-- macOS 或 Linux（暂不支持把 Windows 当作客户端）
-- OpenSSH（`ssh`）
+- macOS、Linux，或 **Windows 11**
+- OpenSSH（`ssh`）—— Windows 自带（可选功能「OpenSSH 客户端」）
 - `~/.ssh/config` 里有具体的 `Host`（见下文）
-- **能连上这台机器**：默认用密钥或 ssh-agent 免密（`BatchMode`）；服务端只让用账号密码时，FarAgent 会提示你并支持交互式登录一次（密码不落盘），见 [SSH 连接 · 服务端只让用密码](ssh-access.md#服务端只让用密码可选)
+- **能连上这台机器**：默认用密钥或 ssh-agent 免密（`BatchMode`）；服务端只让用账号密码时，macOS/Linux 支持交互式登录一次（密码不落盘），Windows 由 TUI 自己询问并只在本次运行的进程内存里保留，见 [SSH 连接 · 服务端只让用密码](ssh-access.md#服务端只让用密码可选) 与 [Windows 客户端说明](ssh-access.md#windows-客户端说明)
 - 本机能真正 SSH 到远程：同一局域网、公网 IP/域名，或 [Tailscale](ssh-access.md)（家宽 NAT / 出门连家用机器时推荐）
 
 ### 远程（agent 真正跑的那台）
 
 | 需要 | 说明 |
 | --- | --- |
-| `sshd` | 普通 SSH 服务 |
-| `bash` | 登录壳；faragent 用 `bash -lc` 探测 |
-| `tmux` | attach 需要。缺失时 FarAgent 可用 brew，或 sudo + apt/dnf/yum/pacman/apk 代装 |
+| `sshd` | 普通 SSH 服务 —— Windows 11 上就是 Win32 OpenSSH |
+| `bash`（Linux/macOS） | 登录壳；faragent 用 `bash -lc` 探测 |
+| `tmux`（Linux/macOS） | attach 需要。缺失时 FarAgent 可用 brew，或 sudo + apt/dnf/yum/pacman/apk 代装 |
 | 至少一个 agent | 登录壳 PATH 上能找到 `claude` / `codex` / `grok` / `pi`。未安装可从 TUI 代装 |
 | agent 已登录 | faragent 不代做 OAuth |
 
-**Windows 远程（v0.1）：** SSH 进 **WSL2** 里的 sshd。原生 Win32 OpenSSH 见 [后续计划](roadmap.md)。
+**Windows 远程（原生）：** Windows 11 装 Win32 OpenSSH（可选功能里的 `sshd`，防火墙放行 22 端口），保持默认的 **cmd** 外壳。Windows 上没有 tmux：会话**前台运行**——退出 agent（或断开连接）即结束，下次回车经 `claude --resume` / `codex resume` 恢复上下文。疑似已在别处运行的会话会标 `[running]` 并先询问（[codex#30424](https://github.com/openai/codex/issues/30424)）。WSL2 也仍然支持——它就是一台 Linux 主机。安装步骤见 [SSH 连接 · Windows 远程](ssh-access.md#windows-远程原生)。
 
-可在 TUI 里用官方 `curl | bash` 装到用户目录（agent 不用 sudo），也可自己在远程安装，然后在那台机器上登录（例如 `grok login --device-auth`）。
+可在 TUI 里代装 agent（Linux/macOS 用官方 `curl | bash` 装到用户目录、不用 sudo；Windows 用官方 PowerShell 安装器、也不用管理员），也可自己在远程安装，然后在那台机器上登录（例如 `grok login`）。
 
 本机不拷 API key。探测和列会话在本机 Rust 里完成；远程跑 bash、tmux，以及你确认过的官方安装器。第一次启动会话仍会写入 `~/.faragent/tmux.conf`。不需要 python3，也不需要把 faragent 二进制放到远程。
 
@@ -183,7 +183,7 @@ file target/release/faragent
 | Intel Mac（`x86_64`） | 也是 Intel Mac |
 | Linux x86_64 | 也是 Linux x86_64（glibc 不宜过旧） |
 
-v0.1 **不能**把 macOS 二进制拿到 Linux 上跑，也还不能当 Windows 客户端（见 [后续计划](roadmap.md)）。
+二进制**不能**跨系统或跨架构（macOS ≠ Linux ≠ Windows；`arm64` ≠ `x86_64`）——拷对应平台的产物，或在目标机器上 `cargo install --path .`。
 
 ### 2. 拷走什么、不要拷什么
 
@@ -317,7 +317,7 @@ faragent
 | 键 | 作用 |
 | --- | --- |
 | `j` / `k`、`PgUp` / `PgDn` | 滚动报错页 |
-| `a` | 交互式登录一次：确认主机指纹、输密码（密码只给系统 ssh，FarAgent 不保存） |
+| `a` | 密码主机：macOS/Linux 走交互式登录一次（密码只给系统 ssh，不保存）；Windows 弹内存密码输入 |
 | `r` | 修好之后重试刚才那步 |
 | `y` | 把「结论 + 原始报错 + 处理步骤」整段复制到剪贴板 |
 | `Esc` / `q` | 返回上一层 |
@@ -416,7 +416,7 @@ faragent login --host home-mac                 # 交互式登录一次（密码/
 
 通过 `ssh -tt` 转发 `TERM` / `COLORTERM`。独立 tmux 配置打开鼠标、truecolor、OSC 52 剪贴板。
 
-推荐 Ghostty、iTerm2、Kitty、WezTerm 等。窗口缩放由 OpenSSH 转发 `SIGWINCH`。
+推荐 Ghostty、iTerm2、Kitty、WezTerm，Windows 11 上用 Windows Terminal（官方支持）。窗口缩放由 OpenSSH 转发 `SIGWINCH`。
 
 ## 安全
 
@@ -450,14 +450,14 @@ faragent login --host home-mac                 # 交互式登录一次（密码/
 | macOS 远程读不了文稿/桌面 | 给 sshd 完全磁盘访问权限（TCC） |
 | ControlMaster 僵住 | `ssh -O exit -o ControlPath=~/.faragent/cm/%r@%h:%p host` |
 
-## v0.1 明确不做
+## FarAgent 明确不做
 
-删除/重命名/fork 会话、把远程密钥或密码拷到本机、源码编译 tmux、Entware/synopkg。
+删除/重命名/fork 会话、把远程密钥或密码拷到本机、源码编译 tmux、Entware/synopkg、在 Windows 远程上保活会话（tmux 等价的会话托管已列入计划）。
 
-Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](roadmap.md)。
+Windows 会话托管（不用 WSL 的保活）与 App 前端样式已列入 [后续计划](roadmap.md)。
 
 ## 另见
 
 - [SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)
 - [开发者文档](development.md)
-- [后续计划](roadmap.md) — Windows 原生与 App 前端样式
+- [后续计划](roadmap.md) — Windows 会话托管与 App 前端样式

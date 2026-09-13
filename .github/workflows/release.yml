@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: faragent-linux-x86_64
+          - os: macos-latest
+            artifact: faragent-macos-aarch64
+          - os: windows-latest
+            artifact: faragent-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --locked --release
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: tar czf ${{ matrix.artifact }}.tar.gz -C target/release faragent
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/release/faragent.exe -DestinationPath ${{ matrix.artifact }}.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip

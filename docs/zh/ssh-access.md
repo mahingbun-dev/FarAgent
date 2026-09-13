@@ -94,9 +94,25 @@ sudo pacman -S --noconfirm openssh
 sudo systemctl enable --now sshd
 ```
 
-**Windows 远程（v0.1）**
+#### Windows 远程（原生）
 
-SSH 必须进 **WSL2 里的 sshd**，不要用 Win32 OpenSSH。在发行版里按 Linux 的方式安装并启动 `ssh`/`sshd`。
+Windows 11 上安装 OpenSSH **Server**（管理员 PowerShell）：
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service sshd -StartupType Automatic
+```
+
+保持默认外壳（cmd.exe）即可 —— faragent 会自己识别系统并用 PowerShell 干活，远端不需要任何配置。如果 `DefaultShell` 注册表值被改坏过，改回来：
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell `
+  -Value 'C:\Windows\System32\cmd.exe' -PropertyType String -Force
+Restart-Service sshd
+```
+
+公钥放 `%USERPROFILE%\.ssh\authorized_keys`（OpenSSH Server 可选功能会配好 ACL；管理员账号另有一份 `administrators_authorized_keys`）。WSL2 也仍然支持——它就是一台 Linux 主机。
 
 确认服务在跑：
 
@@ -358,9 +374,9 @@ sudo tailscale up
 2. 打开 Tailscale，按提示安装 VPN 配置，用 **同一个账号** 登录。
 3. 菜单栏图标应显示 Connected。
 
-**Windows 远程 + WSL2**
+**Windows 远程（Tailscale）**
 
-FarAgent 进的是 WSL2 里的 sshd。把 Tailscale 装进 **同一个 WSL 发行版**（按 Linux 步骤），保证 `tailscale ip -4` 和 `sshd` 在同一网络命名空间。只装在 Windows 主机、却 SSH 进 WSL 的 22，地址往往对不上。
+原生 Windows：Tailscale 直接装在 Windows 主机上 —— `sshd`（Win32 OpenSSH）和 Tailscale 共享同一网络栈，`100.x` 地址直接可用。WSL2：把 Tailscale 装进 **同一个 WSL 发行版**（按 Linux 步骤），保证 `tailscale ip -4` 和 `sshd` 在同一网络命名空间；只装在 Windows 主机、却 SSH 进 WSL 的 22，地址往往对不上。
 
 登录成功后，在远程执行：
 
@@ -477,6 +493,21 @@ faragent doctor --host home-mac                 # 之后正常用
 
 > 密钥仍然更稳：不受改密码影响，能单独吊销，也不需要复用连接。配好密钥后 `faragent auth --host home-mac --mode auto` 即可。
 
+## Windows 客户端说明
+
+Windows 11 可以当客户端（官方支持的终端是 Windows Terminal）。两处平台差异：
+
+- **没有连接复用。** Windows 自带的 ssh 建不了 ControlMaster socket，FarAgent 会整体省略相关参数。每条命令各开一条短连接——行为一样，只是握手多一点。`faragent doctor` 会显示 `multiplex: not supported by this ssh build`。
+- **密码主机走内存。** 没有可复用的多路复用连接，TUI 会自己弹出密码输入（报错页按 `a`，或对固定为密码模式的主机提前询问），密码只保留在本次运行的进程内存里——不写盘、faragent 退出即清除。ssh 经 `SSH_ASKPASS` 读取：OpenSSH 把 faragent 自己再拉起来当 askpass 助手，密码经回环 socket + 一次性令牌传递。它**只回答密码提示**——主机指纹与密钥口令仍走 `faragent login`，首次连接的指纹核对语义不变。
+
+如果安全软件拦了 askpass 助手，退回密钥 / ssh-agent：
+
+```powershell
+Get-Service ssh-agent | Set-Service -StartupType Automatic
+Start-Service ssh-agent
+ssh-add $env:USERPROFILE\.ssh\id_ed25519
+```
+
 ---
 
 ## 连不上时：原始报错 → 原因 → 解决
@@ -485,6 +516,7 @@ FarAgent 不猜、也不只丢一句「连接失败」：它把 **ssh 的原始�
 
 | 原始报错（ssh 原样输出） | 原因 | 解决 |
 | --- | --- | --- |
+| `'ssh' 不是内部或外部命令`（或 无法将"ssh"项识别为 cmdlet） | Windows 本机没装 OpenSSH 客户端 | 设置 → 系统 → 可选功能 → 添加功能 → **OpenSSH 客户端**（或管理员 PowerShell `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`），然后重开终端 |
 | `Permission denied (publickey).` | 服务端拒绝了公钥：公钥没上传、`User` 不对，或远程权限不对 | `ssh -v <Host> true` 看送的是哪把钥匙；`ssh-copy-id -i ~/.ssh/id_ed25519.pub <Host>`；在 `~/.ssh/config` 里写 `IdentityFile` + `IdentitiesOnly yes`；只让用密码时见上一节 |
 | `Permission denied (publickey,password).` | 服务端接受密码，但 FarAgent 不会自己弹密码框 | `faragent auth --host <Host> --mode password` 后 `faragent login --host <Host>`（TUI 里按 `a`） |
 | `Too many authentication failures` | ssh-agent 里的钥匙太多，轮到你那把之前服务端就断了 | 钉一把：`IdentityFile` + `IdentitiesOnly yes`；`ssh-add -D` 清掉不用的钥匙 |
@@ -501,6 +533,7 @@ FarAgent 不猜、也不只丢一句「连接失败」：它把 **ssh 的原始�
 | `kex_exchange_identification: Connection closed by remote host` | 握手阶段就被关：sshd 没真在跑、被 fail2ban 类机制拉黑、`hosts.deny` 拒绝 | 等几分钟再试；远程 `sudo systemctl status ssh`；检查 `hosts.allow` / `hosts.deny` |
 | `no matching key exchange method found. Their offer: ...` | 服务端太老（只给 ssh-rsa / 老 KEX） | `ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa <Host> true` 能用就把这几行写进 `~/.ssh/config` |
 | `bash: ...` / 探测输出里没有 `FARAGENT_PROBE_V1` | SSH 通了，但远程登录壳没跑成 bash | `ssh <Host> -- bash -lc 'echo ok'`；确认远程有 bash，`~/.bashrc` / `~/.bash_profile` 里没有 `read` / `ssh-add` 之类会卡住的命令 |
+| `'bash' 不是内部或外部命令` / `shell request failed on channel 0` | 远端默认 shell 根本不认我们的命令（Windows 上常见于 sshd 的 `DefaultShell` 被改坏） | 见 [Windows 远程](#windows-远程原生) 的 DefaultShell 修复命令；Linux/macOS 检查登录 shell 是否存在且可执行（`chsh -s /bin/bash <user>`） |
 
 报错页里按 `y` 会把 **结论 + 原始报错 + 上面这些步骤** 整段复制到剪贴板，可以直接贴给同事或在 issue 里附上。
 

@@ -83,9 +83,9 @@ flowchart LR
 
 ## 快速开始
 
-**本机：** macOS 或 Linux，OpenSSH，以及一条能连上该 Host 的路 —— 密钥免密（BatchMode），或服务端只给密码时用 `faragent login` 输一次。
+**本机：** macOS / Linux / Windows 11，OpenSSH，以及一条能连上该 Host 的路 —— 密钥免密；或服务端只给密码时输一次（macOS/Linux 用 `faragent login`，Windows 由 TUI 在内存里记住本次运行的密码，见 [SSH 连接](docs/zh/ssh-access.md#windows-客户端说明)）。
 
-**远程：** `sshd` 和 `bash`。缺 tmux 或缺 agent 可从 TUI 代装。请在那台机器上登录一次 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
+**远程：** Linux/macOS（含 WSL2）要 `sshd` 和 `bash`；**原生 Windows 11** 要 Win32 OpenSSH 且保持默认的 cmd 外壳，推荐密钥登录。缺 tmux 或缺 agent 可从 TUI 代装（Windows 上用各家官方 PowerShell 安装器，没有 tmux）。请在那台机器上登录一次 agent。不需要 python3。
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarAgent.git
@@ -108,9 +108,9 @@ faragent doctor --host home-mac
 faragent                 # TUI：主机 → agent → 会话
 ```
 
-在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。
+Linux/macOS 远程：在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach，进程继续在远程跑。原生 Windows 远程：agent 在前台运行，退出（或断开连接）即结束，下次回车经 `resume` 恢复上下文。
 
-只让用密码的机器：`faragent auth --host home-mac --mode password`，再 `faragent login --host home-mac`（或 TUI 主机列表按 `g` / 报错页按 `a`）。
+只让用密码的机器：`faragent auth --host home-mac --mode password`，再 `faragent login --host home-mac`（或 TUI 主机列表按 `g` / 报错页按 `a`）。Windows 上由 TUI 自己弹出密码输入，仅保存在本次运行的进程内存里。
 
 完整步骤见 [用户手册](docs/zh/user-guide.md)（开发者模式、打包二进制、迁到另一台电脑）。家里机器在 NAT 后面：见 [SSH 连接](docs/zh/ssh-access.md)（局域网、公网 IP、域名、Tailscale）。
 
@@ -129,7 +129,7 @@ faragent                 # TUI：主机 → agent → 会话
 
 ## 现状
 
-v0.1 适合已经习惯 SSH 的人。接下来要做：**Windows 原生（不使用 WSL）**，以及 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
+v0.2 新增 **Windows 11 原生支持（不使用 WSL）** —— 既能当客户端，也能当被连的远程主机（resume 模式）。接下来要做：**Windows 会话托管**（不用 WSL 的 tmux 等价保活）与 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
 
 密码 / 键盘交互登录已支持，见 [SSH 连接 · 服务端只让用密码](docs/zh/ssh-access.md#服务端只让用密码可选)。当前计划之外：OpenClaw 式网关、源码编译 tmux。
 

@@ -83,9 +83,9 @@ flowchart LR
 
 ## Quick start
 
-**Laptop:** macOS or Linux, OpenSSH, and a working path to the host — key-based login (`BatchMode`, no password prompt), or a password you type once via `faragent login` when the server only takes one.
+**Laptop:** macOS, Linux, or Windows 11, with OpenSSH, and a working path to the host — key-based login (no password prompt), or a password you type once (`faragent login` on macOS/Linux; on Windows the in-memory password prompt — see [SSH access](docs/en/ssh-access.md#windows-client-notes)).
 
-**Remote:** `sshd` and `bash`. `tmux` and agents can be installed from the TUI if missing. Log in to an agent once on that machine. No python3. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
+**Remote:** `sshd` and `bash` on Linux/macOS (including WSL2), or Win32 OpenSSH on **native Windows 11** — always with the default cmd shell, key login recommended. `tmux` and agents can be installed from the TUI if missing (on Windows, agents install via their official PowerShell installers; there is no tmux). No python3.
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarAgent.git
@@ -108,9 +108,9 @@ faragent doctor --host home-mac
 faragent                 # TUI: host → agent → session
 ```
 
-Inside the agent TUI, detach with **`Ctrl-g` then `d`**. The process keeps running on the remote.
+Inside the agent TUI on a Linux/macOS remote, detach with **`Ctrl-g` then `d`** — the process keeps running on the remote. On a native Windows remote the agent runs in the foreground of the connection: quitting it (or closing the connection) ends it, and the next `enter` restores the conversation through `resume`.
 
-Host that only accepts a password: `faragent auth --host home-mac --mode password`, then `faragent login --host home-mac` (or press `g` in the TUI host list / `a` on the error screen).
+Host that only accepts a password: `faragent auth --host home-mac --mode password`, then `faragent login --host home-mac` (or press `g` in the TUI host list / `a` on the error screen). On Windows the TUI asks for the password itself and keeps it in memory for this run only.
 
 Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release binary, copying the binary to another computer). Reaching a machine behind NAT: [SSH access](docs/en/ssh-access.md) (LAN, public IP, domain, Tailscale).
 
@@ -129,7 +129,7 @@ Full walkthrough: [User guide](docs/en/user-guide.md) (developer mode, release b
 
 ## Status
 
-v0.1 is usable if you already live in SSH. Next: **native Windows (no WSL)** and a **styled app frontend**. Details: [Roadmap](docs/en/roadmap.md).
+v0.2 adds **native Windows 11 support (no WSL)** — as a client and as a remote host in resume mode. Next: a **Windows session host** (tmux-equivalent persistence without WSL) and a **styled app frontend**. Details: [Roadmap](docs/en/roadmap.md).
 
 Password / keyboard-interactive login ships (see [SSH access](docs/en/ssh-access.md#password-only-servers-optional)). Not in the current plan: an OpenClaw-style gateway, compiling tmux from source.
 

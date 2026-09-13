@@ -103,30 +103,41 @@ Do not commit `target/` or a remote `~/.faragent` dump.
 ## Adding an agent
 
 1. `AgentKind` in `src/agents.rs` (`slug`, `title`, `resume_argv`).
-2. Disk scanner branch in `src/remote.rs` `list_script` / `row_from_file`.
+2. Disk scanner branch in `src/remote.rs` `list_script` (POSIX) **and** `src/win.rs` `list_script` (Windows).
 3. Tests for resume argv and the probe/list parsers.
 4. User-guide table (EN + ZH).
 
 Prefer a vendor CLI that can **resume by id** and stores transcripts under the home directory. If it has no interactive TUI, it does not belong in this product’s attach path.
 
+## The Windows dialect
+
+`src/win.rs` is the Windows counterpart of `src/remote.rs`’s POSIX scripts. Ground rules:
+
+- cmd.exe is the outer shell (sshd’s default); PowerShell 5.1 does the work.
+- Scripts are **ASCII-only** and travel on stdin (`powershell -File -`); dynamic values ride base64 `$args`. Nothing on the ssh command line needs cmd quoting, and cmd’s ~8k command-line limit does not apply. Interactive launchers use `-EncodedCommand` instead because stdin belongs to the tty — keep those short.
+- Every script starts by forcing UTF-8 output (`[Console]::OutputEncoding`).
+- The `FARAGENT_*_V1` markers and tab-separated line shapes are shared with the POSIX side; parsers in `remote.rs` never care which dialect produced the bytes.
+- The remote dialect is detected once (`echo FARAGENT_OS_V1 %OS% "$env:OS"`) and cached per host in `~/.faragent/config.json`; `probe_host` self-heals the cache and retries once with the other dialect.
+
+Windows clients have no ControlMaster (Win32 OpenSSH): `ssh::mux_capable()` detects that and omits the mux options. The in-memory password path lives in `src/askpass.rs` — read its module docs before touching ssh env plumbing.
+
 ## Roadmap vs not now
 
 Planned next (see [roadmap.md](roadmap.md)):
 
-1. Native Windows remote and client (OpenSSH + ConPTY, no WSL required)
+1. Windows session host: ConPTY + named-pipe attach/detach for tmux-equivalent keep-alive without WSL
 2. A styled application frontend around host / agent / session management
 3. Auth modes: `auto` / `key` / `password` ship today; keychain integration and a smoother jump-host flow are candidates
 
 Do not add without a separate plan:
 
 - An OpenClaw-style gateway
-- Installing tmux or agents over SSH
 - Binding agent protocol ports on `0.0.0.0`
 - Copying API keys to the laptop
 
 ## Release sketch
 
-v0.1 is source-only (`cargo install --path .`). A later release can attach `cargo dist` or GitHub Actions for macOS/Linux binaries. `tmux.conf` on the remote is rewritten from the embedded template on each start.
+Tagged releases build on GitHub Actions (ubuntu/macos/windows) and attach per-OS archives; `cargo install --path .` still works. `tmux.conf` on a POSIX remote is rewritten from the embedded template on each start.
 
 ## License
 

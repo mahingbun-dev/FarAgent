@@ -94,9 +94,25 @@ sudo pacman -S --noconfirm openssh
 sudo systemctl enable --now sshd
 ```
 
-**Windows remote (v0.1)**
+#### Windows remote (native)
 
-SSH into **sshd inside WSL2**, not Win32 OpenSSH. Install and start `ssh`/`sshd` in the distro as on Linux.
+On Windows 11, install the OpenSSH **Server** (an admin PowerShell):
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service sshd -StartupType Automatic
+```
+
+Keep the default shell (cmd.exe) — faragent detects the OS and talks to PowerShell by itself, no remote configuration needed. If the `DefaultShell` registry value was changed and things broke, set it back:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell `
+  -Value 'C:\Windows\System32\cmd.exe' -PropertyType String -Force
+Restart-Service sshd
+```
+
+Keys go to `%USERPROFILE%\.ssh\authorized_keys` (the OpenSSH Server optional feature sets up the right ACLs; for an administrator account there is a second `administrators_authorized_keys` file). WSL2 also still works — it is just a Linux host.
 
 Check it is running:
 
@@ -356,9 +372,9 @@ Prefer not to `curl | sh`: install from [Tailscale Packages](https://pkgs.tailsc
 2. Open Tailscale, install the VPN configuration, sign in with the **same account**.
 3. The menu-bar icon should read Connected.
 
-**Windows remote + WSL2**
+**Windows remote (Tailscale)**
 
-FarAgent talks to sshd **inside WSL2**. Install Tailscale in **that same distro** (Linux steps) so `tailscale ip -4` and `sshd` share a network namespace. Tailscale only on the Windows host, SSH to WSL’s port 22, usually will not match.
+Native Windows: install Tailscale on the Windows host itself — `sshd` (Win32 OpenSSH) and Tailscale share that network stack, so the `100.x` address just works. WSL2: install Tailscale **inside the distro** (Linux steps) so `tailscale ip -4` and `sshd` share a network namespace; Tailscale only on the Windows host, SSH to WSL’s port 22, usually will not match.
 
 When login succeeds, on the remote:
 
@@ -497,6 +513,21 @@ faragent doctor --host home-mac                 # then use it normally
 
 > Keys are still sturdier: no dependency on a live multiplexed connection, and individually revocable. Once keys work, `faragent auth --host home-mac --mode auto`.
 
+## Windows client notes
+
+Windows 11 works as a client (Windows Terminal is the supported terminal). Two platform differences matter:
+
+- **No connection multiplexing.** Windows' built-in ssh cannot create ControlMaster sockets, so FarAgent omits them entirely. Every command opens its own short SSH connection — same behavior, slightly more handshakes. `faragent doctor` says `multiplex: not supported by this ssh build`.
+- **Password hosts go through memory.** With no multiplexed connection to reuse, the TUI asks for the password itself (press `a` on the error screen, or it prompts up front for hosts pinned to password mode) and keeps it in this process only — never written to disk, cleared when faragent exits. ssh reads it through `SSH_ASKPASS`: OpenSSH calls faragent again as its askpass helper, and the secret travels over a loopback socket behind a one-time token. It answers **password prompts only** — host-key confirmations and key passphrases still go through `faragent login`, so the first-connect fingerprint check keeps its meaning.
+
+If endpoint protection blocks the askpass helper, fall back to keys / ssh-agent:
+
+```powershell
+Get-Service ssh-agent | Set-Service -StartupType Automatic
+Start-Service ssh-agent
+ssh-add $env:USERPROFILE\.ssh\id_ed25519
+```
+
 ---
 
 ## When it fails: error, cause, fix
@@ -505,6 +536,7 @@ FarAgent does not guess, and it does not stop at "connection failed": it keeps t
 
 | Raw error (verbatim ssh output) | Cause | Fix |
 | --- | --- | --- |
+| `'ssh' is not recognized as an internal or external command` (or 无法将"ssh"项识别为 cmdlet) | The local OpenSSH client is missing on Windows | Settings → System → Optional features → Add a feature → **OpenSSH Client** (or `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` in an admin PowerShell), then reopen the terminal |
 | `Permission denied (publickey).` | The server refused the key: not installed, wrong `User`, or remote permissions | `ssh -v <Host> true` to see which key was offered; `ssh-copy-id -i ~/.ssh/id_ed25519.pub <Host>`; add `IdentityFile` + `IdentitiesOnly yes`; password-only servers: see above |
 | `Permission denied (publickey,password).` | The server accepts passwords, but FarAgent cannot type one by itself | `faragent auth --host <Host> --mode password`, then `faragent login --host <Host>` (or `a` in the TUI) |
 | `Too many authentication failures` | Too many keys in the agent; the server hung up before reaching yours | Pin one: `IdentityFile` + `IdentitiesOnly yes`; `ssh-add -D` to drop the rest |
