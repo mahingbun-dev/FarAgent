@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -79,14 +81,23 @@ pub enum Flavor {
 
 /// Shared flags plus the auth bundle. `ControlMaster=auto` means the first
 /// connection to a host becomes the master and everything else rides it.
-pub fn args_for(control_path: &str, persist: &str, flavor: Flavor) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        format!("ControlPath={control_path}"),
-        "-o".into(),
-        format!("ControlPersist={persist}"),
+///
+/// `mux` is false on Win32 OpenSSH, which cannot create the ControlMaster
+/// socket — passing `ControlPath` there breaks every connection outright, so
+/// the three mux options are omitted entirely instead of degraded.
+pub fn args_for(mux: bool, control_path: &str, persist: &str, flavor: Flavor) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if mux {
+        args.extend([
+            "-o".into(),
+            "ControlMaster=auto".into(),
+            "-o".into(),
+            format!("ControlPath={control_path}"),
+            "-o".into(),
+            format!("ControlPersist={persist}"),
+        ]);
+    }
+    args.extend([
         "-o".into(),
         "GSSAPIAuthentication=no".into(),
         "-o".into(),
@@ -95,7 +106,7 @@ pub fn args_for(control_path: &str, persist: &str, flavor: Flavor) -> Vec<String
         "ServerAliveInterval=5".into(),
         "-o".into(),
         "ServerAliveCountMax=2".into(),
-    ];
+    ]);
     let mut opt = |k: &str| {
         args.push("-o".into());
         args.push(k.into());
@@ -128,6 +139,30 @@ pub fn args_for(control_path: &str, persist: &str, flavor: Flavor) -> Vec<String
         }
     }
     args
+}
+
+/// `OpenSSH_for_Windows_8.6p1, LibreSSL 3.8.2` → true. The Win32 build has no
+/// ControlMaster (AF_UNIX control socket) support at any released version.
+pub fn openssh_is_windows(version: &str) -> bool {
+    version.to_ascii_lowercase().contains("for_windows")
+}
+
+/// Can this machine's `ssh` multiplex connections? Probed once per process
+/// (`ssh -V` prints to stderr). If ssh cannot even spawn we report capable so
+/// the real failure surfaces later as a classified `SshMissing`.
+pub fn mux_capable() -> bool {
+    static CAPABLE: OnceLock<bool> = OnceLock::new();
+    *CAPABLE.get_or_init(|| match Command::new("ssh").arg("-V").output() {
+        Ok(o) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stderr),
+                String::from_utf8_lossy(&o.stdout)
+            );
+            !openssh_is_windows(&text)
+        }
+        Err(_) => true,
+    })
 }
 
 /// A failed SSH run, kept structured so the UI can show the verbatim error
@@ -444,7 +479,10 @@ pub fn migrate_app_home(home: &Path) -> Result<PathBuf> {
 pub fn control_dir() -> Result<PathBuf> {
     let dir = faragent_home()?.join("cm");
     fs::create_dir_all(&dir).ok();
-    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    #[cfg(unix)]
+    {
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
     Ok(dir)
 }
 
@@ -460,8 +498,10 @@ pub fn control_path() -> Result<String> {
 pub struct Client {
     pub host: String,
     pub mode: AuthMode,
-    control_path: String,
+    /// None when this machine's ssh cannot multiplex (Win32 OpenSSH).
+    control_path: Option<String>,
     persist: String,
+    mux: bool,
 }
 
 impl Client {
@@ -477,12 +517,20 @@ impl Client {
             AuthMode::Password => PASSWORD_PERSIST,
             _ => KEY_PERSIST,
         };
+        let mux = mux_capable();
+        let control_path = if mux { Some(control_path()?) } else { None };
         Ok(Self {
             host: host.into(),
             mode,
-            control_path: control_path()?,
+            control_path,
             persist: persist.to_string(),
+            mux,
         })
+    }
+
+    /// Does this machine's ssh multiplex connections (ControlMaster)?
+    pub fn muxed(&self) -> bool {
+        self.mux
     }
 
     /// Bundle used for non-interactive commands (probe, sessions, exec).
@@ -494,7 +542,12 @@ impl Client {
     }
 
     pub fn args(&self, flavor: Flavor) -> Vec<String> {
-        args_for(&self.control_path, &self.persist, flavor)
+        args_for(
+            self.mux,
+            self.control_path.as_deref().unwrap_or(""),
+            &self.persist,
+            flavor,
+        )
     }
 
     fn command_flavor(&self, flavor: Flavor) -> Command {
@@ -665,6 +718,9 @@ impl Client {
 
     /// Is a multiplexed ControlMaster already authenticated for this host?
     pub fn master_alive(&self) -> bool {
+        if !self.mux {
+            return false;
+        }
         let mut cmd = Command::new("ssh");
         for arg in self.args(Flavor::MuxCheck) {
             cmd.arg(arg);
@@ -804,7 +860,7 @@ Host ignored
 
     #[test]
     fn key_args_include_batchmode_and_controlmaster() {
-        let args = args_for("/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
+        let args = args_for(true, "/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"));
@@ -866,7 +922,7 @@ Host ignored
 
     #[test]
     fn key_args_include_alive_and_pubkey() {
-        let args = args_for("/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
+        let args = args_for(true, "/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-o" && w[1] == "ServerAliveInterval=5"));
@@ -883,8 +939,31 @@ Host ignored
     }
 
     #[test]
+    fn windows_openssh_is_detected() {
+        assert!(openssh_is_windows(
+            "OpenSSH_for_Windows_8.6p1, LibreSSL 3.8.2"
+        ));
+        assert!(openssh_is_windows("OpenSSH_for_Windows_9.5p1"));
+        assert!(!openssh_is_windows(
+            "OpenSSH_9.6p1 Ubuntu-3ubuntu13.5, OpenSSL 3.0.13 30 Jan 2024"
+        ));
+        assert!(!openssh_is_windows("OpenSSH_9.6p1, LibreSSL 3.8.2"));
+    }
+
+    #[test]
+    fn no_mux_omits_every_controlmaster_flag() {
+        // Win32 OpenSSH fails outright when ControlPath is passed, so the
+        // whole bundle must vanish — not just ControlMaster.
+        let args = args_for(false, "/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
+        assert!(!args.iter().any(|a| a.contains("Control")));
+        assert!(opt(&args, "BatchMode=yes"));
+        assert!(opt(&args, "ServerAliveInterval=5"));
+        assert!(opt(&args, "PreferredAuthentications=publickey"));
+    }
+
+    #[test]
     fn batch_password_flavor_never_prompts_but_allows_password() {
-        let args = args_for("/tmp/cm", PASSWORD_PERSIST, Flavor::BatchPassword);
+        let args = args_for(true, "/tmp/cm", PASSWORD_PERSIST, Flavor::BatchPassword);
         assert!(opt(&args, "BatchMode=yes"));
         assert!(opt(
             &args,
@@ -895,7 +974,12 @@ Host ignored
 
     #[test]
     fn interactive_flavors_allow_prompts_and_multiplex() {
-        let pw = args_for("/tmp/cm", PASSWORD_PERSIST, Flavor::InteractivePassword);
+        let pw = args_for(
+            true,
+            "/tmp/cm",
+            PASSWORD_PERSIST,
+            Flavor::InteractivePassword,
+        );
         assert!(opt(&pw, "BatchMode=no"));
         assert!(opt(
             &pw,
@@ -903,7 +987,7 @@ Host ignored
         ));
         assert!(opt(&pw, "NumberOfPasswordPrompts=3"));
         assert!(opt(&pw, "ControlMaster=auto"));
-        let key = args_for("/tmp/cm", KEY_PERSIST, Flavor::InteractiveKey);
+        let key = args_for(true, "/tmp/cm", KEY_PERSIST, Flavor::InteractiveKey);
         assert!(opt(&key, "BatchMode=no"));
         assert!(opt(
             &key,
@@ -913,7 +997,7 @@ Host ignored
 
     #[test]
     fn enumerate_flavor_asks_without_credentials() {
-        let args = args_for("/tmp/cm", KEY_PERSIST, Flavor::Enumerate);
+        let args = args_for(true, "/tmp/cm", KEY_PERSIST, Flavor::Enumerate);
         assert!(opt(&args, "PreferredAuthentications=none"));
         assert!(opt(&args, "BatchMode=yes"));
     }

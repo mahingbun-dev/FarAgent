@@ -611,11 +611,14 @@ fn authenticate(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
 
 /// Copy-paste the whole report. Uses whichever clipboard tool exists.
 fn copy_to_clipboard(text: &str) -> bool {
-    let tools: [(&str, &[&str]); 3] = [
+    #[allow(unused_mut)]
+    let mut tools: Vec<(&str, &[&str])> = vec![
         ("pbcopy", &[]),
         ("wl-copy", &[]),
         ("xclip", &["-selection", "clipboard"]),
     ];
+    #[cfg(windows)]
+    tools.push(("clip", &[]));
     for (bin, args) in tools {
         let Ok(mut child) = Command::new(bin)
             .args(args)

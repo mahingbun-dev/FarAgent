@@ -55,7 +55,9 @@ pub fn run(host: Option<&str>) -> Result<()> {
         println!("ssh: ok");
         println!(
             "multiplex: {}",
-            if client.master_alive() {
+            if !client.muxed() {
+                "not supported by this ssh build (no ControlMaster; Win32 OpenSSH)"
+            } else if client.master_alive() {
                 "ControlMaster running"
             } else {
                 "no ControlMaster socket"
@@ -120,15 +122,52 @@ pub fn run(host: Option<&str>) -> Result<()> {
 }
 
 fn which_local(bin: &str) -> Option<String> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let p = dir.join(bin);
-            p.exists().then(|| p.display().to_string())
-        })
+    let paths = std::env::var_os("PATH")?;
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&paths).collect();
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
+    which_in(&dirs, bin, exts)
+}
+
+/// First `dir/bin<ext>` that exists, in PATH order — the way a shell would
+/// resolve it. Windows executables carry a `.exe` suffix.
+fn which_in(dirs: &[std::path::PathBuf], bin: &str, exts: &[&str]) -> Option<String> {
+    dirs.iter().find_map(|dir| {
+        exts.iter()
+            .map(|ext| dir.join(format!("{bin}{ext}")))
+            .find(|p| p.is_file())
+            .map(|p| p.display().to_string())
     })
 }
 
 /// doctor speaks the language the user picked in the TUI.
 fn lang() -> Lang {
     crate::config::language().unwrap_or(Lang::Zh)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn which_in_prefers_path_order_and_tries_extensions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("ssh"), "x").unwrap();
+        std::fs::write(a.join("ssh.exe"), "x").unwrap();
+        let dirs = vec![a.clone(), b.clone()];
+        // Unix: only the bare name counts; ssh.exe is invisible.
+        assert_eq!(
+            which_in(&dirs, "ssh", &[""]),
+            Some(b.join("ssh").display().to_string())
+        );
+        // Windows: the earlier PATH entry with ssh.exe wins.
+        assert_eq!(
+            which_in(&dirs, "ssh", &[".exe", ""]),
+            Some(a.join("ssh.exe").display().to_string())
+        );
+        assert_eq!(which_in(&dirs, "missing", &[".exe", ""]), None);
+    }
 }
