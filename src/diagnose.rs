@@ -5,6 +5,7 @@
 //! commands that fix it — instead of making the user go read a wiki first.
 
 use crate::i18n::Lang;
+use crate::remote::HostOs;
 use crate::ssh::{self, AuthMode, SshError};
 
 /// Every failure we know how to explain.
@@ -46,6 +47,9 @@ pub enum Problem {
     VersionMismatch,
     /// SSH works, but the remote login shell did not run bash / our probe.
     RemoteBash,
+    /// The remote's default shell cannot run our commands at all (Win32
+    /// OpenSSH wired to a missing shell, POSIX login shell not executable).
+    RemoteShellUnsupported,
     /// Unclassified: raw output is still shown.
     Unknown,
 }
@@ -53,7 +57,7 @@ pub enum Problem {
 impl Problem {
     /// Used by the tests to prove every variant has wording in both languages.
     #[allow(dead_code)]
-    pub const ALL: [Problem; 19] = [
+    pub const ALL: [Problem; 20] = [
         Problem::SshMissing,
         Problem::PublickeyDenied,
         Problem::NeedsPassword,
@@ -72,6 +76,7 @@ impl Problem {
         Problem::KexClosed,
         Problem::VersionMismatch,
         Problem::RemoteBash,
+        Problem::RemoteShellUnsupported,
         Problem::Unknown,
     ];
 
@@ -95,6 +100,7 @@ impl Problem {
             Problem::KexClosed => "kex_closed",
             Problem::VersionMismatch => "version_mismatch",
             Problem::RemoteBash => "remote_bash",
+            Problem::RemoteShellUnsupported => "remote_shell_unsupported",
             Problem::Unknown => "unknown",
         }
     }
@@ -112,6 +118,10 @@ pub struct Facts {
     pub methods: String,
     pub mode: AuthMode,
     pub identity: Option<String>,
+    /// The local client's platform. Advice for local problems (missing ssh,
+    /// key file permissions) must match the machine the user is sitting at —
+    /// kept as data so both wordings are testable on any CI runner.
+    pub local: HostOs,
 }
 
 impl Facts {
@@ -119,6 +129,11 @@ impl Facts {
         let found = ssh::list_hosts()
             .ok()
             .and_then(|hosts| hosts.into_iter().find(|h| h.alias == host));
+        let local = if cfg!(windows) {
+            HostOs::Windows
+        } else {
+            HostOs::Posix
+        };
         match found {
             Some(h) => Facts {
                 host: h.alias.clone(),
@@ -127,6 +142,7 @@ impl Facts {
                 identity: h.identity.clone(),
                 methods: String::new(),
                 mode: AuthMode::default(),
+                local,
             },
             None => Facts {
                 host: host.to_string(),
@@ -135,6 +151,7 @@ impl Facts {
                 identity: None,
                 methods: String::new(),
                 mode: AuthMode::default(),
+                local,
             },
         }
     }
@@ -349,6 +366,17 @@ pub fn classify(raw: &str) -> Problem {
     {
         return Problem::RemoteBash;
     }
+    // The remote's default shell could not run our command line at all:
+    // cmd/powershell "not recognized" wording, or sshd refusing to start a
+    // broken login shell. Chinese Windows consoles phrase these differently.
+    if has("shell request failed on channel 0")
+        || has("is not recognized as an internal or external command")
+        || has("not recognized as the name of a cmdlet")
+        || has("不是内部或外部命令")
+        || (has("无法将") && has("cmdlet"))
+    {
+        return Problem::RemoteShellUnsupported;
+    }
     if has("authentication failed") {
         return Problem::PasswordDenied;
     }
@@ -377,11 +405,13 @@ pub fn diagnosis_of(err: &anyhow::Error, host: &str, lang: Lang) -> Option<Diagn
     }
     let text = format!("{err:#}");
     match classify(&text) {
-        // For text that never came from OpenSSH, only these two are
+        // For text that never came from OpenSSH, only these are
         // unambiguous. Anything else (say `mkdir: ...: Permission denied` from
         // the remote start script) must not be dressed up as a credential
         // problem; the short footer line is the honest answer.
-        Problem::RemoteBash | Problem::SshMissing => Some(Diagnosis::of_message(host, &text, lang)),
+        Problem::RemoteBash | Problem::RemoteShellUnsupported | Problem::SshMissing => {
+            Some(Diagnosis::of_message(host, &text, lang))
+        }
         _ => None,
     }
 }
@@ -393,6 +423,79 @@ mod tests {
 
     fn p(raw: &str) -> Problem {
         classify(raw)
+    }
+
+    #[test]
+    fn classifies_windows_shell_errors() {
+        assert_eq!(
+            p("'bash' is not recognized as an internal or external command,\r\noperable program or batch file."),
+            Problem::RemoteShellUnsupported
+        );
+        assert_eq!(
+            p("bash : 无法将“bash”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。"),
+            Problem::RemoteShellUnsupported
+        );
+        assert_eq!(
+            p("'bash' 不是内部或外部命令，也不是可运行的程序或批处理文件。"),
+            Problem::RemoteShellUnsupported
+        );
+        assert_eq!(
+            p("powershell is not recognized as the name of a cmdlet"),
+            Problem::RemoteShellUnsupported
+        );
+        assert_eq!(
+            p("shell request failed on channel 0"),
+            Problem::RemoteShellUnsupported
+        );
+    }
+
+    #[test]
+    fn windows_local_advice_mentions_windows_tools() {
+        let facts = Facts {
+            host: "devbox".into(),
+            target: "10.0.0.2".into(),
+            port: 22,
+            methods: String::new(),
+            mode: AuthMode::Auto,
+            identity: None,
+            local: HostOs::Windows,
+        };
+        let ssh_missing = Lang::Zh
+            .problem_steps(Problem::SshMissing, &facts)
+            .join("\n");
+        assert!(
+            ssh_missing.contains("Add-WindowsCapability"),
+            "{ssh_missing}"
+        );
+        assert!(
+            !ssh_missing.contains("brew"),
+            "no macOS advice: {ssh_missing}"
+        );
+
+        let perms = Lang::En
+            .problem_steps(Problem::PrivateFilePermissions, &facts)
+            .join("\n");
+        assert!(perms.contains("icacls"), "{perms}");
+        assert!(
+            !perms.contains("chmod"),
+            "no chmod advice on Windows: {perms}"
+        );
+
+        let password = Lang::En
+            .problem_steps(Problem::NeedsPassword, &facts)
+            .join("\n");
+        assert!(password.contains("SSH_ASKPASS"), "{password}");
+
+        // POSIX clients keep the POSIX wording.
+        let posix = Facts {
+            local: HostOs::Posix,
+            ..facts.clone()
+        };
+        let steps = Lang::Zh
+            .problem_steps(Problem::PrivateFilePermissions, &posix)
+            .join("\n");
+        assert!(steps.contains("chmod"), "{steps}");
+        assert!(!steps.contains("icacls"), "{steps}");
     }
 
     #[test]
@@ -478,6 +581,7 @@ mod tests {
             methods: "publickey,password".into(),
             mode: AuthMode::Auto,
             identity: Some("/Users/a/.ssh/id_ed25519".into()),
+            local: HostOs::Posix,
         };
         for lang in Lang::ALL {
             for problem in Problem::ALL {
@@ -511,6 +615,7 @@ mod tests {
             methods: String::new(),
             mode: AuthMode::Auto,
             identity: None,
+            local: HostOs::Posix,
         };
         let steps = Lang::Zh.problem_steps(Problem::HostKeyChanged, &facts);
         let joined = steps.join("\n");
@@ -554,6 +659,7 @@ mod tests {
             methods: "publickey,password".into(),
             mode: AuthMode::Auto,
             identity: None,
+            local: HostOs::Posix,
         };
         let pw = Facts {
             mode: AuthMode::Password,
