@@ -224,7 +224,7 @@ pub fn preflight_script(agent: AgentKind) -> String {
     let slug = agent.slug();
     format!(
         r#"
-printf 'FARSSH_PREFLIGHT_V1\n'
+printf 'FARAGENT_PREFLIGHT_V1\n'
 printf 'home\t%s\n' "$HOME"
 which1() {{ command -v "$1" 2>/dev/null || true; }}
 printf 'curl\t%s\n' "$(which1 curl)"
@@ -247,6 +247,9 @@ printf 'pkg\t%s\n' "$pkg"
 printf 'agent_path\t%s\n' "$(which1 {slug})"
 live=0
 if command -v tmux >/dev/null 2>&1; then
+  if tmux -L faragent list-sessions -F '#{{session_name}}' 2>/dev/null | grep -q '^faragent-{slug}-'; then
+    live=1
+  fi
   if tmux -L farssh list-sessions -F '#{{session_name}}' 2>/dev/null | grep -q '^farssh-{slug}-'; then
     live=1
   fi
@@ -257,11 +260,11 @@ printf 'live\t%s\n' "$live"
 }
 
 pub fn parse_preflight(text: &str) -> Result<Preflight> {
-    let body = after_magic(text, "FARSSH_PREFLIGHT_V1")?;
+    let body = after_magic(text, "FARAGENT_PREFLIGHT_V1")?;
     let mut pf = Preflight::default();
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
-        if line.is_empty() || line == "FARSSH_PREFLIGHT_V1" {
+        if line.is_empty() || line == "FARAGENT_PREFLIGHT_V1" {
             continue;
         }
         let mut cols = line.splitn(2, '\t');
@@ -517,14 +520,14 @@ fn finish_plan(
 fn render_script(agent: AgentKind, action: Action, steps: &[Step]) -> String {
     let mut s = String::from(
         r#"set -eo pipefail
-farssh_cleanup() {
+faragent_cleanup() {
   st=$?
   echo
-  echo "========== farssh: finished (status $st) =========="
-  echo "Press Enter to return to FarSSH."
+  echo "========== faragent: finished (status $st) =========="
+  echo "Press Enter to return to FarAgent."
   read -r _ || true
 }
-trap farssh_cleanup EXIT
+trap faragent_cleanup EXIT
 export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"
 if [ -s "$HOME/.nvm/nvm.sh" ]; then
   export NVM_DIR="$HOME/.nvm"
@@ -532,11 +535,11 @@ if [ -s "$HOME/.nvm/nvm.sh" ]; then
   . "$NVM_DIR/nvm.sh"
   set -e
 fi
-echo "farssh: remote $(hostname 2>/dev/null || true)  action below"
+echo "faragent: remote $(hostname 2>/dev/null || true)  action below"
 "#,
     );
     s.push_str(&format!(
-        "echo 'farssh: {} {}'\n",
+        "echo 'faragent: {} {}'\n",
         action_word(action),
         agent.slug()
     ));
@@ -799,7 +802,7 @@ mod tests {
     fn parse_preflight_fixture() {
         let text = "\
 junk
-FARSSH_PREFLIGHT_V1
+FARAGENT_PREFLIGHT_V1
 home\t/home/you
 curl\t/usr/bin/curl
 node\t

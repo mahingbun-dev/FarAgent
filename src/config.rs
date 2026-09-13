@@ -1,4 +1,4 @@
-//! Local client config: `~/.farssh/config.json`.
+//! Local client config: `~/.faragent/config.json`.
 
 use crate::i18n::Lang;
 use crate::ssh;
@@ -15,7 +15,7 @@ pub struct Config {
 }
 
 pub fn path() -> Result<PathBuf> {
-    Ok(ssh::farssh_home()?.join("config.json"))
+    Ok(ssh::faragent_home()?.join("config.json"))
 }
 
 pub fn load() -> Config {
@@ -29,7 +29,7 @@ pub fn load() -> Config {
 }
 
 pub fn save(cfg: &Config) -> Result<()> {
-    let dir = ssh::farssh_home()?;
+    let dir = ssh::faragent_home()?;
     fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
     let path = dir.join("config.json");
     let tmp = dir.join("config.json.tmp");

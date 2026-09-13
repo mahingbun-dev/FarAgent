@@ -2,12 +2,12 @@
 
 [English](../en/development.md) · **中文**
 
-本文说明 farssh 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
+本文说明 faragent 怎么组成、怎么改、怎么加一家 agent。日常使用请看 [用户手册](user-guide.md)。
 
 ## 仓库结构
 
 ```
-farssh/
+faragent/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs          clap：tui / doctor / probe / sessions
@@ -28,7 +28,7 @@ farssh/
 └── plans/               本地笔记（已 gitignore）
 ```
 
-二进制名：`farssh`。Rust 1.80+，edition 2021。
+二进制名：`faragent`。Rust 1.80+，edition 2021。
 
 ## 架构
 
@@ -36,22 +36,22 @@ farssh/
 本机                            SSH                         远程用户
 ┌─────────────────────┐         ControlMaster         ┌──────────────────────────┐
 │ ratatui 选择器      │--------- exec bash -lc ------►│ bash: which/find/tmux│
-│ （Rust 解析 JSONL）  │                               │   + tmux -L farssh     │
-│ 恢复 tty            │========= ssh -tt ===========►│ tmux -L farssh      │
-│                     │         PTY + SIGWINCH        │   farssh-<agent>-<shortid>  │
+│ （Rust 解析 JSONL）  │                               │   + tmux -L faragent     │
+│ 恢复 tty            │========= ssh -tt ===========►│ tmux -L faragent      │
+│                     │         PTY + SIGWINCH        │   faragent-<agent>-<shortid>  │
 └─────────────────────┘                               │   exec 原生 TUI          │
                                                       └──────────────────────────┘
 ```
 
-**不自己实现 SSH。** 固定带 `BatchMode=yes`、`ControlMaster=auto`、`ControlPath=~/.farssh/cm/%r@%h:%p`。
+**不自己实现 SSH。** 固定带 `BatchMode=yes`、`ControlMaster=auto`、`ControlPath=~/.faragent/cm/%r@%h:%p`。
 
 **不自己实现 coding UI。** attach 之后就是厂商 TUI 的字节流。
 
-**tmux 隔离：** `-L farssh`，不占用用户默认 server。配置在 `~/.farssh/tmux.conf`（前缀 `C-g`、鼠标、truecolor）。该 socket 上已有 server 时 `-f` 会被忽略；第一次 `new-session` 会带上我们的配置文件。
+**tmux 隔离：** `-L faragent`，不占用用户默认 server。配置在 `~/.faragent/tmux.conf`（前缀 `C-g`、鼠标、truecolor）。该 socket 上已有 server 时 `-f` 会被忽略；第一次 `new-session` 会带上我们的配置文件。列表/attach 仍会查升级前的 `-L farssh`，所以 live 的 `farssh-*` 会话不会丢；新建只走 `faragent`。
 
 ## 远程侧（不用 python3）
 
-逻辑在本机 `src/remote.rs`。SSH 对端只跑 `bash -lc`（which、find、tmux），第一次开会话时用 stdin 写入 `~/.farssh/tmux.conf`。**不会**上传 farssh 二进制：macOS 编出来的文件没法在 Linux 上跑。
+逻辑在本机 `src/remote.rs`。SSH 对端只跑 `bash -lc`（which、find、tmux），第一次开会话时用 stdin 写入 `~/.faragent/tmux.conf`。**不会**上传 faragent 二进制：macOS 编出来的文件没法在 Linux 上跑。
 
 | 本机解析 | 远程 bash |
 | --- | --- |
@@ -66,7 +66,7 @@ farssh/
 ### tmux 命名
 
 ```
-farssh-<agent>-<shortid>
+faragent-<agent>-<shortid>
 ```
 
 `shortid` 是厂商 session id 去掉非字母数字后的最后 12 位（`agents::short_id`）。新建会话用随机 12 位，启动命令 **不带** resume。
@@ -92,12 +92,12 @@ rustup toolchain install stable
 cargo test
 cargo fmt
 cargo build
-./target/debug/farssh doctor
+./target/debug/faragent doctor
 ```
 
 CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。真机路径见用户手册里的验收清单。
 
-不要提交 `target/`，也不要提交远程 `~/.farssh` 的转储。
+不要提交 `target/`，也不要提交远程 `~/.faragent` 的转储。
 
 ## 增加一家 agent
 

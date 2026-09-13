@@ -1,14 +1,14 @@
 [package]
-name = "farssh"
+name = "faragent"
 version = "0.1.0"
 edition = "2021"
-description = "FarSSH: attach to coding agents on your own machines over SSH"
+description = "FarAgent: attach to coding agents on your own machines over SSH"
 license = "MIT"
-repository = "https://github.com/mahingbun-dev/FarSSH"
+repository = "https://github.com/mahingbun-dev/FarAgent"
 rust-version = "1.80"
 
 [[bin]]
-name = "farssh"
+name = "faragent"
 path = "src/main.rs"
 
 [dependencies]

@@ -5,7 +5,7 @@ use crate::ssh::{self, Client};
 use anyhow::Result;
 
 pub fn run(host: Option<&str>) -> Result<()> {
-    println!("farssh doctor");
+    println!("faragent doctor");
     println!(
         "local ssh: {}",
         which_local("ssh").unwrap_or_else(|| "(missing)".into())
@@ -23,6 +23,13 @@ pub fn run(host: Option<&str>) -> Result<()> {
     }
     if hosts.is_empty() {
         println!("  (add concrete Host entries; wildcards like * are ignored)");
+    }
+    if let Some(home) = dirs::home_dir() {
+        let old = home.join(".farssh");
+        let new = home.join(".faragent");
+        if old.exists() && new.exists() {
+            println!("note: leftover ~/.farssh (active config is ~/.faragent)");
+        }
     }
 
     let Some(host) = host else {
@@ -71,11 +78,11 @@ pub fn run(host: Option<&str>) -> Result<()> {
                 if let Err(e) = runtime::ensure_tmux_conf(&client) {
                     println!("tmux.conf: {e}");
                 } else {
-                    println!("tmux conf: {}/.farssh/tmux.conf", p.home);
+                    println!("tmux conf: {}/.faragent/tmux.conf", p.home);
                 }
             }
             println!("\nnotes:");
-            println!("  - Coding is the native agent TUI inside tmux socket 'farssh'.");
+            println!("  - Coding is the native agent TUI inside tmux socket 'faragent'.");
             println!("  - Detach with C-g d (prefix C-g). This does not kill the agent.");
             println!("  - Do not resume a live session; attach the existing tmux session.");
             println!("  - Remote needs bash. tmux + agents can be installed from the TUI.");
@@ -86,7 +93,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
                 "  - tmux/curl may use sudo + the system package manager. Node for Pi uses nvm."
             );
             println!("  - doctor never runs those commands; the TUI confirm screen does.");
-            println!("  - No python3. No farssh binary on the target.");
+            println!("  - No python3. No faragent binary on the target.");
         }
         Err(e) => println!("probe: {e}"),
     }

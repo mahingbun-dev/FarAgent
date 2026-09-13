@@ -11,9 +11,18 @@ use std::process::{Command, Stdio};
 
 /// Drop ratatui/crossterm, attach to a remote tmux session, then return.
 pub fn attach_tmux(host: &str, tmux_name: &str) -> Result<i32> {
+    run_remote_script(host, &attach_script(tmux_name))
+}
+
+/// Socket + conf follow the session name so pre-rename live panes still attach.
+pub fn attach_script(tmux_name: &str) -> String {
     let name_q = ssh::shell_single_quote(tmux_name);
-    let script = format!("exec tmux -L farssh -f \"$HOME/.farssh/tmux.conf\" attach -t {name_q}");
-    run_remote_script(host, &script)
+    let (sock, conf) = if tmux_name.starts_with("farssh-") {
+        ("farssh", "$HOME/.farssh/tmux.conf")
+    } else {
+        ("faragent", "$HOME/.faragent/tmux.conf")
+    };
+    format!("exec tmux -L {sock} -f \"{conf}\" attach -t {name_q}")
 }
 
 /// Hand the local tty to `ssh -tt` running a login-shell script. No exec timeout:
@@ -43,4 +52,25 @@ pub fn restore_tty() -> Result<()> {
     let _ = execute!(out, crossterm::cursor::Show);
     out.flush().ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attach_script;
+
+    #[test]
+    fn attach_script_uses_new_socket() {
+        let s = attach_script("faragent-grok-abc123abc123");
+        assert!(s.contains("tmux -L faragent"));
+        assert!(s.contains("$HOME/.faragent/tmux.conf"));
+        assert!(!s.contains("-L farssh"));
+    }
+
+    #[test]
+    fn attach_script_uses_legacy_socket() {
+        let s = attach_script("farssh-grok-abc123abc123");
+        assert!(s.contains("tmux -L farssh"));
+        assert!(s.contains("$HOME/.farssh/tmux.conf"));
+        assert!(!s.contains("-L faragent"));
+    }
 }

@@ -88,8 +88,35 @@ pub fn short_id(session_id: &str) -> String {
     }
 }
 
+pub const TMUX_PREFIX: &str = "faragent";
+/// Pre-rename tmux session prefix; list/attach still recognize these.
+pub const LEGACY_TMUX_PREFIX: &str = "farssh";
+
 pub fn tmux_name(agent: AgentKind, session_id: &str) -> String {
-    format!("farssh-{}-{}", agent.slug(), short_id(session_id))
+    format!("{}-{}-{}", TMUX_PREFIX, agent.slug(), short_id(session_id))
+}
+
+pub fn legacy_tmux_name(agent: AgentKind, session_id: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        LEGACY_TMUX_PREFIX,
+        agent.slug(),
+        short_id(session_id)
+    )
+}
+
+/// Session id suffix if `name` is a current or legacy tmux name for `agent`.
+pub fn tmux_id_from_name(agent: AgentKind, name: &str) -> Option<&str> {
+    let slug = agent.slug();
+    for prefix in [TMUX_PREFIX, LEGACY_TMUX_PREFIX] {
+        let p = format!("{prefix}-{slug}-");
+        if let Some(rest) = name.strip_prefix(&p) {
+            if !rest.is_empty() {
+                return Some(rest);
+            }
+        }
+    }
+    None
 }
 
 pub fn new_session_id() -> String {
@@ -125,11 +152,21 @@ mod tests {
     fn tmux_name_uses_last_12_alnum() {
         let id = "01a093cd-ec3c-74e3-9d43-cdb915ddb244";
         let name = tmux_name(AgentKind::Grok, id);
-        assert!(name.starts_with("farssh-grok-"));
-        let suffix = name.strip_prefix("farssh-grok-").unwrap();
+        assert!(name.starts_with("faragent-grok-"));
+        let suffix = name.strip_prefix("faragent-grok-").unwrap();
         assert!(suffix.chars().all(|c| c.is_ascii_alphanumeric()));
         assert_eq!(suffix.len(), 12);
         assert_eq!(short_id(id), suffix);
+        assert_eq!(
+            tmux_id_from_name(AgentKind::Grok, &name).as_deref(),
+            Some(suffix)
+        );
+        let legacy = legacy_tmux_name(AgentKind::Grok, id);
+        assert_eq!(
+            tmux_id_from_name(AgentKind::Grok, &legacy).as_deref(),
+            Some(suffix)
+        );
+        assert!(tmux_id_from_name(AgentKind::Claude, &name).is_none());
     }
 
     #[test]

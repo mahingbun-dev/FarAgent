@@ -1,4 +1,4 @@
-//! UI language. Chosen once, stored in `~/.farssh/config.json`.
+//! UI language. Chosen once, stored in `~/.faragent/config.json`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -33,31 +33,31 @@ impl Lang {
 
     pub fn hosts_title(self) -> &'static str {
         match self {
-            Self::Zh => "FarSSH · 主机",
-            Self::En => "FarSSH · hosts",
+            Self::Zh => "FarAgent · 主机",
+            Self::En => "FarAgent · hosts",
         }
     }
 
     pub fn agents_title(self, host: &str) -> String {
         match self {
-            Self::Zh => format!("FarSSH · {host} · 编程助手"),
-            Self::En => format!("FarSSH · {host} · agents"),
+            Self::Zh => format!("FarAgent · {host} · 编程助手"),
+            Self::En => format!("FarAgent · {host} · agents"),
         }
     }
 
     pub fn sessions_title(self, host: &str, agent: &str) -> String {
-        format!("FarSSH · {host} · {agent}")
+        format!("FarAgent · {host} · {agent}")
     }
 
     pub fn new_cwd_title(self) -> &'static str {
         match self {
-            Self::Zh => "FarSSH · 新会话 · 远程目录",
-            Self::En => "FarSSH · new session · remote cwd",
+            Self::Zh => "FarAgent · 新会话 · 远程目录",
+            Self::En => "FarAgent · new session · remote cwd",
         }
     }
 
     pub fn language_title(self) -> &'static str {
-        "FarSSH · language / 语言"
+        "FarAgent · language / 语言"
     }
 
     pub fn hosts_list_title(self) -> &'static str {
@@ -325,11 +325,11 @@ impl Lang {
     pub fn language_saved(self) -> String {
         match self {
             Self::Zh => format!(
-                "界面语言已保存到 ~/.farssh/config.json（{}）。之后不会再问。",
+                "界面语言已保存到 ~/.faragent/config.json（{}）。之后不会再问。",
                 self.native_name()
             ),
             Self::En => format!(
-                "Language saved to ~/.farssh/config.json ({}). Won't ask again.",
+                "Language saved to ~/.faragent/config.json ({}). Won't ask again.",
                 self.native_name()
             ),
         }
@@ -337,20 +337,20 @@ impl Lang {
 
     pub fn language_save_failed(self, err: &str) -> String {
         match self {
-            Self::Zh => format!("无法写入 ~/.farssh/config.json: {err}"),
-            Self::En => format!("could not write ~/.farssh/config.json: {err}"),
+            Self::Zh => format!("无法写入 ~/.faragent/config.json: {err}"),
+            Self::En => format!("could not write ~/.faragent/config.json: {err}"),
         }
     }
 
     pub fn confirm_title(self, action: crate::install::Action, host: &str, agent: &str) -> String {
         use crate::install::Action;
         match (self, action) {
-            (Self::Zh, Action::Install) => format!("FarSSH · {host} · 安装 {agent}"),
-            (Self::En, Action::Install) => format!("FarSSH · {host} · install {agent}"),
-            (Self::Zh, Action::Upgrade) => format!("FarSSH · {host} · 升级 {agent}"),
-            (Self::En, Action::Upgrade) => format!("FarSSH · {host} · upgrade {agent}"),
-            (Self::Zh, Action::Uninstall) => format!("FarSSH · {host} · 卸载 {agent}"),
-            (Self::En, Action::Uninstall) => format!("FarSSH · {host} · uninstall {agent}"),
+            (Self::Zh, Action::Install) => format!("FarAgent · {host} · 安装 {agent}"),
+            (Self::En, Action::Install) => format!("FarAgent · {host} · install {agent}"),
+            (Self::Zh, Action::Upgrade) => format!("FarAgent · {host} · 升级 {agent}"),
+            (Self::En, Action::Upgrade) => format!("FarAgent · {host} · upgrade {agent}"),
+            (Self::Zh, Action::Uninstall) => format!("FarAgent · {host} · 卸载 {agent}"),
+            (Self::En, Action::Uninstall) => format!("FarAgent · {host} · uninstall {agent}"),
         }
     }
 
@@ -442,8 +442,8 @@ impl Lang {
 
     pub fn suggested_title(self) -> &'static str {
         match self {
-            Self::Zh => "可复制命令（FarSSH 不会执行这些）：",
-            Self::En => "Copy-paste (FarSSH will not run these):",
+            Self::Zh => "可复制命令（FarAgent 不会执行这些）：",
+            Self::En => "Copy-paste (FarAgent will not run these):",
         }
     }
 

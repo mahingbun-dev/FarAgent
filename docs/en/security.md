@@ -2,13 +2,13 @@
 
 **English** · [中文](../zh/security.md)
 
-`farssh` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
+`faragent` is an SSH client wrapper. Anyone who can use it against a host can run that user’s coding agents and therefore read and write their repos.
 
 ## What we assume
 
 - You already trust `ssh <host>` as that user.
 - Authentication is **keys / ssh-agent only** (`BatchMode`). SSH itself will not prompt for a password.
-- Remote commands (`bash -lc`, tmux socket `farssh`) run as the SSH user. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarSSH does not store it).
+- Remote commands (`bash -lc`, tmux socket `faragent`) run as the SSH user. Confirmed tmux/curl steps may call `sudo` in a live PTY (you type that password there; FarAgent does not store it).
 
 ## What we do not do
 

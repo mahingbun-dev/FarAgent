@@ -2,13 +2,13 @@
 
 [English](../en/security.md) · **中文**
 
-`farssh` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
+`faragent` 是 SSH 客户端封装。能用它连上一台主机，就等于能跑该用户的 coding agent，从而读写对应仓库。
 
 ## 我们假定
 
 - 你已经信任以该用户执行 `ssh <host>`。
 - 认证只有 **密钥 / ssh-agent**（`BatchMode`）。SSH 本身不会弹密码。
-- 远程命令（`bash -lc`、tmux socket `farssh`）以 SSH 用户身份运行。确认过的 tmux/curl 步骤可能在直播 PTY 里调用 `sudo`（密码当场输入，FarSSH 不保存）。
+- 远程命令（`bash -lc`、tmux socket `faragent`）以 SSH 用户身份运行。确认过的 tmux/curl 步骤可能在直播 PTY 里调用 `sudo`（密码当场输入，FarAgent 不保存）。
 
 ## 我们不会做的事
 
