@@ -13,6 +13,7 @@ faragent-core = { path = "../faragent-core" }
 faragent-remote = { path = "../faragent-remote" }
 faragent-transport = { path = "../faragent-transport" }
 anyhow.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

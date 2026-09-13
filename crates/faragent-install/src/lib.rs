@@ -8,6 +8,7 @@ use faragent_core::text::LocalizedText;
 use faragent_core::vocab::HostOs;
 use faragent_remote::win;
 use faragent_transport::{host_os, OpenSshTransport};
+use serde::{Deserialize, Serialize};
 
 pub const CLAUDE_INSTALL: &str = "curl -fsSL https://claude.ai/install.sh | bash";
 pub const CODEX_INSTALL: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
@@ -51,7 +52,8 @@ pub const SUGGESTED_CURL: &[&str] = &[
     "sudo apk add curl",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Action {
     Install,
     Upgrade,
@@ -68,6 +70,12 @@ pub enum PkgManager {
     Pacman,
     Apk,
     Winget,
+}
+
+impl Serialize for PkgManager {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(self.slug())
+    }
 }
 
 impl PkgManager {
@@ -125,14 +133,16 @@ impl PkgManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Warning {
     LiveTmux,
     TmuxSkippedNoPkg,
     NeedsSudo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Blocked {
     NoCurlNoPkg,
     TmuxOnlyNoPkg,
@@ -140,7 +150,7 @@ pub enum Blocked {
     NothingToDo,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Step {
     pub title: String,
     pub command: String,
@@ -164,7 +174,7 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Preflight {
     pub os: HostOs,
     pub home: String,

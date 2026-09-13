@@ -1,6 +1,6 @@
 //! Drive the system OpenSSH client. Never reimplements the wire protocol.
 
-use crate::{ExecOutput, Transport, TransportError};
+use crate::{AttachOptions, AttachStream, ExecOutput, Transport, TransportError};
 use anyhow::{anyhow, Context, Result};
 use faragent_core::paths::faragent_home;
 pub use faragent_core::shell::shell_single_quote;
@@ -769,6 +769,46 @@ impl OpenSshTransport {
     }
 }
 
+impl OpenSshTransport {
+    /// Open `remote_line` interactively inside a local PTY and hand back its
+    /// byte streams: the GUI's way to run tmux attach / an installer / a
+    /// first login without owning a terminal. The remote still sees `ssh -tt`.
+    pub fn attach_stream(&self, remote_line: &str, opts: &AttachOptions) -> Result<AttachStream> {
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        let flavor = interactive_flavor(self.mode);
+        let mut cmd = CommandBuilder::new("ssh");
+        for arg in self.args(flavor) {
+            cmd.arg(arg);
+        }
+        cmd.arg("-tt");
+        cmd.arg(&self.host);
+        cmd.arg("--");
+        cmd.arg(remote_line);
+        cmd.env("TERM", "xterm-256color");
+        if opts.askpass {
+            for (k, v) in crate::askpass::env_for(&self.host) {
+                cmd.env(k, v);
+            }
+        }
+        let pair = native_pty_system().openpty(PtySize {
+            rows: opts.rows,
+            cols: opts.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        let reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
+        Ok(AttachStream {
+            reader,
+            writer,
+            master: pair.master,
+            child,
+        })
+    }
+}
+
 /// Which interactive bundle fits this host: password hosts should not burn
 /// their `MaxAuthTries` budget on keys they do not own.
 fn interactive_flavor(mode: AuthMode) -> Flavor {
@@ -808,6 +848,10 @@ impl Transport for OpenSshTransport {
 
     fn attach_stdio(&self, remote_line: &str) -> Result<i32> {
         OpenSshTransport::attach_stdio(self, remote_line)
+    }
+
+    fn attach_stream(&self, remote_line: &str, opts: &AttachOptions) -> Result<AttachStream> {
+        OpenSshTransport::attach_stream(self, remote_line, opts)
     }
 
     fn error_for(&self, out: &ExecOutput) -> TransportError {

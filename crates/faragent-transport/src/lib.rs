@@ -15,6 +15,7 @@ pub use ssh::*;
 use anyhow::Result;
 pub use faragent_core::vocab::AuthMode;
 use std::fmt;
+use std::io::{Read, Write};
 
 /// Result of one finished remote run, decoupled from `std::process::Output`
 /// so a non-OpenSSH transport can fill it too.
@@ -41,6 +42,66 @@ impl ExecOutput {
         } else {
             format!("{stdout}{stderr}")
         }
+    }
+}
+
+/// How to open an interactive stream.
+#[derive(Debug, Clone, Copy)]
+pub struct AttachOptions {
+    pub cols: u16,
+    pub rows: u16,
+    /// Hand a held password to ssh via askpass. The interactive *login* flow
+    /// turns this off on purpose: the user must see OpenSSH's own prompts.
+    pub askpass: bool,
+}
+
+/// A live interactive session for frontends without a local tty: bytes from
+/// the remote agent, bytes to it, and a window size the remote pty can be
+/// told about. The desktop implementation is a local PTY running `ssh -tt`;
+/// an in-process (russh) transport produces the same shape from a channel.
+pub struct AttachStream {
+    /// The agent's output.
+    pub reader: Box<dyn Read + Send>,
+    /// The user's keystrokes.
+    pub writer: Box<dyn Write + Send>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+impl AttachStream {
+    /// Tell the remote pty the new window size (SIGWINCH over there).
+    pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        self.master.resize(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        Ok(())
+    }
+
+    /// Wait for the interactive command to exit; returns its code.
+    pub fn wait(&mut self) -> anyhow::Result<i32> {
+        let status = self.child.wait()?;
+        Ok(status.exit_code() as i32)
+    }
+
+    /// Kill the child (tab close, app exit).
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
+
+    /// Move the read half out (into the GUI's pump thread). Reading is done
+    /// once per stream; the placeholder never yields bytes.
+    pub fn take_reader(&mut self) -> Box<dyn Read + Send> {
+        std::mem::replace(&mut self.reader, Box::new(std::io::empty()))
+    }
+}
+
+impl Drop for AttachStream {
+    /// A dropped stream must not leave an ssh child running.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
     }
 }
 
@@ -106,6 +167,10 @@ pub trait Transport: Send + Sync {
     /// The **caller** owns raw-mode / alternate-screen state (restore
     /// before, re-init after).
     fn attach_stdio(&self, remote_line: &str) -> Result<i32>;
+
+    /// Open an interactive run of `remote_line` as byte streams inside a
+    /// local PTY — how a GUI attaches without owning a terminal.
+    fn attach_stream(&self, remote_line: &str, opts: &AttachOptions) -> Result<AttachStream>;
 
     /// Structured failure for a finished non-zero run.
     fn error_for(&self, out: &ExecOutput) -> TransportError;

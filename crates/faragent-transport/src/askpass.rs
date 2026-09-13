@@ -70,21 +70,32 @@ pub fn clear() {
     sessions().lock().unwrap().clear();
 }
 
-/// Give this ssh command access to the held password: askpass env vars point
-/// back at this binary; the token/port identify the session's socket.
-pub fn apply(cmd: &mut Command, host: &str) {
+/// The askpass environment for this host's ssh child, when a password is
+/// held: variables point back at this binary; the token/port identify the
+/// session's loopback socket. Empty when nothing is held (or the executable
+/// path cannot be resolved).
+pub fn env_for(host: &str) -> Vec<(String, String)> {
     let guard = sessions().lock().unwrap();
     let Some(session) = guard.get(host) else {
-        return;
+        return Vec::new();
     };
     let Ok(exe) = std::env::current_exe() else {
-        return;
+        return Vec::new();
     };
-    cmd.env(ENV_CHILD, "askpass");
-    cmd.env("SSH_ASKPASS", exe);
-    cmd.env("SSH_ASKPASS_REQUIRE", "force");
-    cmd.env(ENV_PORT, session.port.to_string());
-    cmd.env(ENV_TOKEN, &session.token);
+    vec![
+        (ENV_CHILD.into(), "askpass".into()),
+        ("SSH_ASKPASS".into(), exe.to_string_lossy().into_owned()),
+        ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+        (ENV_PORT.into(), session.port.to_string()),
+        (ENV_TOKEN.into(), session.token.clone()),
+    ]
+}
+
+/// Give this ssh command access to the held password.
+pub fn apply(cmd: &mut Command, host: &str) {
+    for (k, v) in env_for(host) {
+        cmd.env(k, v);
+    }
 }
 
 fn serve(listener: TcpListener, generation: u64) {

@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/*"]
+# The Tauri app is a member (so it shares Cargo.lock and the workspace deps),
+# but it is NOT in default-members: bare `cargo build/test/clippy` at the root
+# keep covering only the crates, exactly like CI runs them.
+members = ["crates/*", "apps/*/src-tauri"]
+default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -30,3 +34,12 @@ uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 pretty_assertions = "1"
 tempfile = "3"
+
+# Release tuning: one codegen unit, fat LTO, stripped; panic=abort shrinks the
+# Tauri app. (Profiles must live at the workspace root.)
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
