@@ -27,7 +27,7 @@
 - macOS 或 Linux（暂不支持把 Windows 当作客户端）
 - OpenSSH（`ssh`）
 - `~/.ssh/config` 里有具体的 `Host`（见下文）
-- **密钥或 ssh-agent 免密**。v0.1 不支持密码、OTP、跳板机
+- **能连上这台机器**：默认用密钥或 ssh-agent 免密（`BatchMode`）；服务端只让用账号密码时，FarAgent 会提示你并支持交互式登录一次（密码不落盘），见 [SSH 连接 · 服务端只让用密码](ssh-access.md#服务端只让用密码可选)
 - 本机能真正 SSH 到远程：同一局域网、公网 IP/域名，或 [Tailscale](ssh-access.md)（家宽 NAT / 出门连家用机器时推荐）
 
 ### 远程（agent 真正跑的那台）
@@ -241,7 +241,7 @@ faragent
 
 选择器只列出 **非通配** 的 `Host`。`Host *`、`Host *.github.com` 这类会被跳过。
 
-`HostName` 可以是局域网 IP、公网 IP、域名，或 Tailscale 的 `100.x` / MagicDNS 名。FarAgent 不自己做穿透：只要系统 OpenSSH 能 **密钥免密** 连上，TUI 就能用。逐步说明（含家里 NAT、CGNAT、以及 Tailscale 教程）见 **[SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)**。
+`HostName` 可以是局域网 IP、公网 IP、域名，或 Tailscale 的 `100.x` / MagicDNS 名。FarAgent 不自己做穿透：**判定标准就是 `ssh <Host> true` 能不能通**（默认密钥，服务端只给密码时用密码模式）。逐步说明（含家里 NAT、CGNAT、Tailscale 教程、密码登录、报错对照表）见 **[SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)**。
 
 ```ssh-config
 Host home-mac
@@ -292,7 +292,7 @@ faragent
 | **Agents** | 已安装显示版本；未安装显示「未安装 · 回车安装」 |
 | **确认屏** | 列出安装/升级/卸载的完整命令。回车后 SSH PTY 直播 |
 | **Sessions** | `[live]` 是还在跑的 tmux；`[idle]` 是磁盘上的历史会话 |
-| **New cwd** | 按 `n`，输入远程已存在的目录，回车开新会话 |
+| **新建会话** | 按 `n`，输入 agent 的**工作目录**（不是新建文件夹）。不存在时问你是否创建 |
 
 管理界面快捷键：
 
@@ -300,6 +300,7 @@ faragent
 | --- | --- |
 | `j` / `k` 或方向键 | 移动 |
 | Enter | 探测 / 进入 / attach；agent 或 tmux 缺失时进入 **安装** |
+| `g` | 切换该主机的登录方式：`auto` → `key` → `password`（主机列表） |
 | `U` | 升级当前 agent（助手列表） |
 | `X` | 卸载当前 agent 的 CLI（保留 `~/.claude` 等配置） |
 | `n` | 新建会话 |
@@ -308,6 +309,20 @@ faragent
 | `?` | 短帮助 |
 | `q` 或 Esc | 返回 / 退出 |
 | `Ctrl-c` | 退出 |
+
+主机列表里每台机器后面会标出登录方式：`[仅密钥]` / `[密码登录]`，没标就是默认 `auto`。
+
+连不上时 FarAgent 会切到 **报错页**，上面列出「ssh 原始输出 + 原因 + 可复制的修复命令」：
+
+| 键 | 作用 |
+| --- | --- |
+| `j` / `k`、`PgUp` / `PgDn` | 滚动报错页 |
+| `a` | 交互式登录一次：确认主机指纹、输密码（密码只给系统 ssh，FarAgent 不保存） |
+| `r` | 修好之后重试刚才那步 |
+| `y` | 把「结论 + 原始报错 + 处理步骤」整段复制到剪贴板 |
+| `Esc` / `q` | 返回上一层 |
+
+完整的「原始报错 → 原因 → 解决」对照表见 [SSH 连接](ssh-access.md#连不上时原始报错--原因--解决)。
 
 进入 agent 全屏之后：
 
@@ -327,8 +342,11 @@ tmux 前缀是 **`Ctrl-g`**，不是默认的 `Ctrl-b`，减少和 agent 抢键�
 
 1. 进入某个 agent 的会话列表
 2. 按 `n`
-3. 输入远程 **已经存在** 的目录（不会替你 `mkdir` 项目）
-4. 回车，登录壳里启动 `claude` / `codex` / `grok` / `pi`
+3. 输入这个会话的 **工作目录**（agent 读写代码的根目录；`~` 会按远程家目录展开）
+4. 目录已存在 → 直接回车，登录壳里启动 `claude` / `codex` / `grok` / `pi`
+5. 目录不存在 → 会切到确认屏，**显示将要执行的 `mkdir -p`**；回车创建并开始，Esc 返回改路径
+
+这一步不是文件夹浏览器，也不会在你没点确认前动远程磁盘：只有确认屏上按了回车，FarAgent 才会 `mkdir -p`。
 
 ## 安装、升级、卸载
 
@@ -368,9 +386,12 @@ faragent doctor
 faragent doctor --host home-mac
 faragent probe --host home-mac
 faragent sessions --host home-mac --agent grok
+faragent auth --host home-mac                  # 看该主机的登录方式
+faragent auth --host home-mac --mode password  # auto | key | password
+faragent login --host home-mac                 # 交互式登录一次（密码/指纹），之后复用
 ```
 
-`probe` 和 `sessions` 输出 JSON。agent 名：`claude`、`codex`、`grok`、`pi`。
+`probe` 和 `sessions` 输出 JSON。agent 名：`claude`、`codex`、`grok`、`pi`。连不上时这些命令会打印和 TUI 相同的报错说明并以非零码退出。
 
 ## 四家 agent
 
@@ -413,12 +434,16 @@ faragent sessions --host home-mac --agent grok
 | 现象 | 处理 |
 | --- | --- |
 | Host 列表是空的 | 在 `~/.ssh/config` 加非通配 `Host` |
-| `Permission denied` / 卡在密码 | 配好密钥；BatchMode 不会出密码框 |
+| `Permission denied (publickey)` | 公钥没配好：见 [报错对照表](ssh-access.md#连不上时原始报错--原因--解决)；改完按 `r` 重试 |
+| `Permission denied (publickey,password)` | 服务端只认密码：`faragent auth --host X --mode password`，再 `faragent login --host X`（或 TUI 报错页按 `a`） |
+| 反复要密码 / 每次都弹指纹 | 先 `faragent login --host X` 做一次，之后走多路复用连接就不问了 |
+| 想改用/退出密码模式 | `faragent auth --host X --mode key`（只用密钥）或 `--mode auto`（默认） |
 | 咖啡馆连不上家里的 `192.168.x` | 那是局域网地址，出不了你家。改用 [Tailscale](ssh-access.md#用-tailscale-做内网穿透推荐) 或公网 IP / 域名 |
 | 显示未安装但 SSH 里能跑 | 检查登录 PATH；看 `faragent doctor --host X` |
 | `tmux_missing` | 在助手列表回车代装 tmux，或从确认屏复制命令 |
-| `cwd_missing` | 目录必须已存在 |
-| 探测失败停在「正在探测」且底部有红字 | 红字才是原因；修 SSH 后回车重试 |
+| `cwd_missing` | 工作目录不存在：确认屏回车创建，或 Esc 改路径 |
+| `mkdir_failed` | 远程创建目录失败（权限 / 只读挂载）；红字里是 mkdir 的原始输出 |
+| 探测失败切到报错页 | 页面上有 ssh 原始报错和处理步骤；`a` 交互式登录、`r` 重试、`y` 复制全文、`Esc` 返回 |
 | 探测失败提到 bash / FARAGENT_PROBE | 远程需要 bash；`ssh host -- bash -lc 'echo ok'` |
 | 花屏 | 换 truecolor 终端；缩放后重新 attach |
 | 两个 agent 改同一仓库 | live 时不要手动 resume |
@@ -427,7 +452,7 @@ faragent sessions --host home-mac --agent grok
 
 ## v0.1 明确不做
 
-密码 SSH、OTP、ProxyJump、删除/重命名/fork 会话、把远程密钥拷到本机、源码编译 tmux、Entware/synopkg。
+删除/重命名/fork 会话、把远程密钥或密码拷到本机、源码编译 tmux、Entware/synopkg。
 
 Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](roadmap.md)。
 
@@ -436,4 +461,3 @@ Windows 原生（不使用 WSL）和 App 前端样式已列入 [后续计划](ro
 - [SSH 连接：局域网、公网 IP、域名、Tailscale](ssh-access.md)
 - [开发者文档](development.md)
 - [后续计划](roadmap.md) — Windows 原生与 App 前端样式
-

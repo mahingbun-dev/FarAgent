@@ -1,7 +1,7 @@
 use crate::agents::{self, AgentKind};
 use crate::remote::{self, DiskFile, ListDump, StartOutcome};
 use crate::ssh::Client;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -39,7 +39,7 @@ impl SessionSummary {
 pub fn run_login(client: &Client, script: &str) -> Result<String> {
     let output = client.exec_login(script)?;
     if !output.status.success() {
-        Client::require_ok(&output)?;
+        client.require_ok(&output)?;
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -49,7 +49,7 @@ pub fn ensure_tmux_conf(client: &Client) -> Result<()> {
         remote::write_tmux_conf_script(),
         remote::TMUX_CONF.as_bytes(),
     )?;
-    Client::require_ok(&write)?;
+    client.require_ok(&write)?;
     Ok(())
 }
 
@@ -62,11 +62,16 @@ pub fn list_sessions(host: &str, agent: AgentKind) -> Result<Vec<SessionSummary>
 }
 
 /// Create a detached tmux session if needed. If it already exists, only attach later.
+///
+/// `create_cwd = true` runs `mkdir -p` for the working directory on the remote.
+/// Only the TUI's confirmation screen passes `true`; every other path just
+/// reports [`SessionError::CwdMissing`] so nothing is written behind the user.
 pub fn ensure_tmux_session(
     host: &str,
     agent: AgentKind,
     cwd: &Path,
     session_id: Option<&str>,
+    create_cwd: bool,
 ) -> Result<String> {
     let client = Client::new(host)?;
     ensure_tmux_conf(&client)?;
@@ -75,11 +80,39 @@ pub fn ensure_tmux_session(
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
     let cwd_s = cwd.to_string_lossy();
-    let script = remote::start_script(agent, cwd_s.as_ref(), session_id, &name);
+    let script = remote::start_script(agent, cwd_s.as_ref(), session_id, &name, create_cwd);
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
         StartOutcome::Ok { tmux } => Ok(tmux),
-        StartOutcome::Err { error, hint } => Err(anyhow!("{error}: {hint}")),
+        StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
+            &error, &hint, &cwd_s,
+        ))),
+    }
+}
+
+/// Why a new session could not be started.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SessionError {
+    /// The working directory is not there yet. The TUI turns this into a
+    /// "create it?" confirmation instead of a dead end.
+    #[error("remote directory does not exist: {dir}")]
+    CwdMissing { dir: String },
+    /// Anything else the remote start script reported (`tmux_missing`, ...).
+    #[error("{code}: {hint}")]
+    Remote { code: String, hint: String },
+}
+
+impl SessionError {
+    fn from_remote(code: &str, hint: &str, dir: &str) -> Self {
+        match code {
+            "cwd_missing" => Self::CwdMissing {
+                dir: dir.to_string(),
+            },
+            _ => Self::Remote {
+                code: code.to_string(),
+                hint: hint.to_string(),
+            },
+        }
     }
 }
 

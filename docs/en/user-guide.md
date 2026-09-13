@@ -27,7 +27,7 @@ Contents:
 - macOS or Linux (Windows as a *client* is not supported yet)
 - OpenSSH (`ssh`)
 - A concrete `Host` entry in `~/.ssh/config` (see below)
-- Key or `ssh-agent` login — **BatchMode**. Password, OTP, and jump hosts are out of scope for v0.1
+- **A working path to the host.** Keys or `ssh-agent` by default (`BatchMode`); when the server only takes an account password, FarAgent says so and supports one interactive login (nothing stored) — see [SSH access · password-only servers](ssh-access.md#password-only-servers-optional)
 - The laptop must actually reach the remote: same LAN, a public IP/domain, or [Tailscale](ssh-access.md) (recommended behind home NAT / from a café)
 
 ### On the remote machine
@@ -292,7 +292,7 @@ faragent
 | **Agents** | Installed agents show a version. Missing ones say **not installed · enter to install**. |
 | **Confirm** | Exact commands for install / upgrade / uninstall. Enter runs them live over SSH PTY. |
 | **Sessions** | `[live]` is a tmux pane still running. `[idle]` is a transcript on disk. |
-| **New cwd** | `n` — type a remote directory that already exists, Enter to start. |
+| **New session** | `n` — type the agent's **working directory** (not a new folder). If it is missing, FarAgent asks before creating it. |
 
 Keys (manager TUI):
 
@@ -308,6 +308,20 @@ Keys (manager TUI):
 | `?` | Short help |
 | `q` or Esc | Back / quit |
 | `Ctrl-c` | Quit |
+
+Each host row is tagged with its sign-in mode: `[key only]` / `[password]`; no tag means the default `auto`. Press `g` on the host list to cycle `auto` -> `key` -> `password`.
+
+When a connection fails, FarAgent switches to an **error screen** holding the raw ssh output, the cause, and copy-pasteable fixes:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, `PgUp` / `PgDn` | Scroll the report |
+| `a` | One interactive login: accept the host key, type the password (it goes straight to OpenSSH; FarAgent stores nothing) |
+| `r` | Retry the step that failed, once you fixed something |
+| `y` | Copy cause + raw error + steps to the clipboard |
+| `Esc` / `q` | Back |
+
+The full raw-error -> cause -> fix table lives in [SSH access](ssh-access.md#when-it-fails-error-cause-fix).
 
 Once the native agent fills the screen:
 
@@ -327,8 +341,11 @@ Prefix is **`Ctrl-g`**, not tmux’s usual `Ctrl-b`, so it fights less with agen
 
 1. Open the agent’s session list.
 2. Press `n`.
-3. Confirm a directory that **already exists** on the remote (`test -d`). faragent does not create project folders.
-4. Enter — a new tmux session starts `claude` / `codex` / `grok` / `pi` with a login shell.
+3. Type the **working directory** for this session — the root of the code the agent reads and writes (`~` expands against the remote home).
+4. Directory exists → Enter starts `claude` / `codex` / `grok` / `pi` in a login shell there.
+5. Directory missing → FarAgent switches to a confirmation screen that **shows the exact `mkdir -p`**; Enter creates it and starts, Esc goes back to the path.
+
+This field is not a folder browser, and nothing is written on the remote until you press Enter on that confirmation screen.
 
 ## Install, upgrade, uninstall
 
@@ -368,9 +385,12 @@ faragent doctor
 faragent doctor --host home-mac
 faragent probe --host home-mac
 faragent sessions --host home-mac --agent grok
+faragent auth --host home-mac                  # print this host's sign-in mode
+faragent auth --host home-mac --mode password  # auto | key | password
+faragent login --host home-mac                 # one interactive login (password / host key), reused afterwards
 ```
 
-`probe` and `sessions` print JSON (automation / debugging). Agent names: `claude`, `codex`, `grok`, `pi`.
+`probe` and `sessions` print JSON (automation / debugging). Agent names: `claude`, `codex`, `grok`, `pi`. When a connection fails they print the same report the TUI shows (raw ssh output + cause + fixes) and exit non-zero.
 
 ## Agents
 
@@ -415,12 +435,16 @@ Treat SSH access as full access to that user’s agents and repos — because it
 | Symptom | What to try |
 | --- | --- |
 | Host list empty | Add a non-wildcard `Host` to `~/.ssh/config` |
-| `Permission denied` / hangs on password | Set up keys; BatchMode cannot prompt |
+| `Permission denied (publickey)` | The key is not set up: see the [error table](ssh-access.md#when-it-fails-error-cause-fix); press `r` to retry after fixing |
+| `Permission denied (publickey,password)` | The server only takes passwords: `faragent auth --host X --mode password`, then `faragent login --host X` (or `a` on the TUI error screen) |
+| Asked for a password again and again | Run `faragent login --host X` once; later commands ride the multiplexed connection |
+| Want to leave password mode | `faragent auth --host X --mode key` (keys only) or `--mode auto` (default) |
 | Café cannot reach home `192.168.x` | That is a LAN address. Use [Tailscale](ssh-access.md#tailscale-for-nat-traversal-recommended) or a public IP / domain |
 | Agent `not installed` but works in SSH | Login PATH: nvm, Homebrew, `~/.local/bin`. `faragent doctor --host X` prints `PATH` |
 | `tmux_missing` | Enter on the agent list to install tmux, or copy the commands from the confirm screen |
-| `cwd_missing` | Directory must exist; faragent will not `mkdir` a project |
-| Probe stuck then a red error | The red footer is the real reason; fix SSH and press Enter to retry |
+| `cwd_missing` | The working directory is missing: press Enter on the confirm screen to create it, or Esc to edit the path |
+| `mkdir_failed` | Creating the directory failed on the remote (permissions / read-only mount); the red line carries the raw mkdir output |
+| Probe switched to the error screen | The page has the raw ssh output and the fixes; `a` interactive login, `r` retry, `y` copy, `Esc` back |
 | Probe missing `FARAGENT_PROBE` / bash error | Remote needs bash; try `ssh host -- bash -lc 'echo ok'` |
 | Garbled TUI | Truecolor terminal; detach and reattach after resize |
 | Two agents on one repo | You resumed a **live** session by hand. Use attach only |
@@ -438,4 +462,3 @@ Native Windows (no WSL) and a styled app frontend are planned: [roadmap](roadmap
 - [SSH access: LAN, public IP, domain, Tailscale](ssh-access.md)
 - [Development](development.md) — architecture and contributing
 - [Roadmap](roadmap.md) — native Windows and app frontend
-

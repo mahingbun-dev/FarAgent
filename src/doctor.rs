@@ -1,3 +1,5 @@
+use crate::diagnose::Diagnosis;
+use crate::i18n::Lang;
 use crate::install;
 use crate::probe;
 use crate::runtime;
@@ -19,7 +21,11 @@ pub fn run(host: Option<&str>) -> Result<()> {
     let hosts = ssh::list_hosts()?;
     println!("hosts in ~/.ssh/config (non-pattern): {}", hosts.len());
     for h in &hosts {
-        println!("  - {}", h.label());
+        println!(
+            "  - {}{}",
+            h.label(),
+            lang().auth_tag(crate::config::auth_for(&h.alias))
+        );
     }
     if hosts.is_empty() {
         println!("  (add concrete Host entries; wildcards like * are ignored)");
@@ -39,12 +45,25 @@ pub fn run(host: Option<&str>) -> Result<()> {
 
     println!("\n== remote {host} ==");
     let client = Client::new(host)?;
+    println!(
+        "auth mode: {} ({})",
+        client.mode.code(),
+        lang().auth_mode_label(client.mode)
+    );
     let ping = client.exec(&["true"])?;
     if ping.status.success() {
-        println!("ssh: ok (BatchMode)");
+        println!("ssh: ok");
+        println!(
+            "multiplex: {}",
+            if client.master_alive() {
+                "ControlMaster running"
+            } else {
+                "no ControlMaster socket"
+            }
+        );
     } else {
-        println!("ssh: FAIL");
-        println!("{}", Client::output_text(&ping).trim());
+        let err = client.error_for(&ping);
+        println!("{}", Diagnosis::of(&err, lang()).plain(lang()));
         return Ok(());
     }
 
@@ -95,7 +114,7 @@ pub fn run(host: Option<&str>) -> Result<()> {
             println!("  - doctor never runs those commands; the TUI confirm screen does.");
             println!("  - No python3. No faragent binary on the target.");
         }
-        Err(e) => println!("probe: {e}"),
+        Err(e) => println!("{}", crate::diagnose::render_error(&e, host, lang())),
     }
     Ok(())
 }
@@ -107,4 +126,9 @@ fn which_local(bin: &str) -> Option<String> {
             p.exists().then(|| p.display().to_string())
         })
     })
+}
+
+/// doctor speaks the language the user picked in the TUI.
+fn lang() -> Lang {
+    crate::config::language().unwrap_or(Lang::Zh)
 }

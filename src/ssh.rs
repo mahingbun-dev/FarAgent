@@ -1,16 +1,204 @@
 //! Drive the system OpenSSH client. Never reimplements the wire protocol.
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// Kill a hung remote login shell instead of freezing the TUI forever.
 pub const EXEC_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// How long the multiplexed ControlMaster socket is kept alive.
+pub const KEY_PERSIST: &str = "600";
+/// Password logins prompt **once**; keep the multiplexed master around longer
+/// so the user is not asked again for every probe. The password itself is only
+/// ever typed into OpenSSH and is never stored by FarAgent.
+pub const PASSWORD_PERSIST: &str = "4h";
+
+/// How FarAgent is allowed to authenticate to a host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// Key first (BatchMode). If the server only offers password, say so and
+    /// offer an interactive login instead of guessing.
+    #[default]
+    Auto,
+    /// Key / ssh-agent only. Never prompts, fails fast.
+    Key,
+    /// Password / keyboard-interactive. Prompts once through OpenSSH, then
+    /// multiplexes every later command over the ControlMaster socket.
+    Password,
+}
+
+impl AuthMode {
+    pub const ALL: [AuthMode; 3] = [Self::Auto, Self::Key, Self::Password];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "key" | "keys" | "publickey" | "pubkey" => Some(Self::Key),
+            "password" | "passwd" | "pw" | "interactive" | "keyboard-interactive" => {
+                Some(Self::Password)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Key => "key",
+            Self::Password => "password",
+        }
+    }
+}
+
+/// Which bundle of `-o` options we hand to OpenSSH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    /// BatchMode + publickey only. Probe/list/exec for key hosts.
+    Key,
+    /// BatchMode, but the server may also accept password or
+    /// keyboard-interactive. Never prompts; rides an existing ControlMaster.
+    BatchPassword,
+    /// Key first, but OpenSSH may still ask (host key confirmation).
+    InteractiveKey,
+    /// Password / keyboard-interactive first, and OpenSSH may ask.
+    InteractivePassword,
+    /// `ssh -O check`: is the ControlMaster socket alive?
+    MuxCheck,
+    /// `PreferredAuthentications=none`: ask the server which methods it offers.
+    Enumerate,
+}
+
+/// Shared flags plus the auth bundle. `ControlMaster=auto` means the first
+/// connection to a host becomes the master and everything else rides it.
+pub fn args_for(control_path: &str, persist: &str, flavor: Flavor) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        "ControlMaster=auto".into(),
+        "-o".into(),
+        format!("ControlPath={control_path}"),
+        "-o".into(),
+        format!("ControlPersist={persist}"),
+        "-o".into(),
+        "GSSAPIAuthentication=no".into(),
+        "-o".into(),
+        "ConnectTimeout=8".into(),
+        "-o".into(),
+        "ServerAliveInterval=5".into(),
+        "-o".into(),
+        "ServerAliveCountMax=2".into(),
+    ];
+    let mut opt = |k: &str| {
+        args.push("-o".into());
+        args.push(k.into());
+    };
+    match flavor {
+        Flavor::Key => {
+            opt("BatchMode=yes");
+            opt("PreferredAuthentications=publickey");
+        }
+        Flavor::BatchPassword => {
+            opt("BatchMode=yes");
+            opt("PreferredAuthentications=publickey,password,keyboard-interactive");
+        }
+        Flavor::InteractiveKey => {
+            opt("BatchMode=no");
+            opt("PreferredAuthentications=publickey,password,keyboard-interactive");
+            opt("NumberOfPasswordPrompts=3");
+        }
+        Flavor::InteractivePassword => {
+            opt("BatchMode=no");
+            opt("PreferredAuthentications=password,keyboard-interactive");
+            opt("NumberOfPasswordPrompts=3");
+        }
+        Flavor::MuxCheck => {
+            opt("BatchMode=yes");
+        }
+        Flavor::Enumerate => {
+            opt("BatchMode=yes");
+            opt("PreferredAuthentications=none");
+        }
+    }
+    args
+}
+
+/// A failed SSH run, kept structured so the UI can show the verbatim error
+/// **and** the matching fix instead of a paraphrased one-liner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshError {
+    pub host: String,
+    pub mode: AuthMode,
+    /// Local command line we actually executed (copy-pasteable).
+    pub command: String,
+    /// Verbatim OpenSSH stdout + stderr. Never truncated.
+    pub raw: String,
+    pub status: Option<i32>,
+    pub timed_out: bool,
+    /// The server wants an interactive login (password / host key confirm).
+    pub needs_auth: bool,
+    /// Auth methods the server reported, e.g. `publickey,password`.
+    pub methods: String,
+}
+
+impl fmt::Display for SshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let raw = self.raw.trim();
+        if raw.is_empty() {
+            write!(f, "ssh to {} failed (status {:?})", self.host, self.status)
+        } else {
+            write!(f, "{raw}")
+        }
+    }
+}
+
+impl std::error::Error for SshError {}
+
+/// `Permission denied (publickey,password).` → `publickey,password`
+pub fn parse_auth_methods(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some(i) = lower.find("permission denied (") {
+            let rest = &line[i + "permission denied (".len()..];
+            if let Some(end) = rest.find(')') {
+                let methods = rest[..end].trim();
+                if !methods.is_empty() {
+                    return Some(methods.to_string());
+                }
+            }
+        }
+        if let Some(i) = lower.find("authentications that can continue:") {
+            let rest = &line[i + "authentications that can continue:".len()..];
+            let methods = rest.trim();
+            if !methods.is_empty() {
+                return Some(methods.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Did the server refuse us over credentials (as opposed to network, host key,
+/// or algorithm problems)?
+pub fn is_auth_failure(raw: &str) -> bool {
+    let r = raw.to_ascii_lowercase();
+    r.contains("permission denied")
+        || r.contains("authentication failed")
+        || r.contains("too many authentication failures")
+        || r.contains("no supported authentication methods")
+}
+
+pub fn offers_password(methods: &str) -> bool {
+    let m = methods.to_ascii_lowercase();
+    m.contains("password") || m.contains("keyboard-interactive")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshHost {
@@ -18,6 +206,7 @@ pub struct SshHost {
     pub hostname: Option<String>,
     pub user: Option<String>,
     pub port: Option<u16>,
+    pub identity: Option<String>,
 }
 
 impl SshHost {
@@ -37,6 +226,15 @@ impl SshHost {
         } else {
             format!("{}  ({})", self.alias, extra.join(" "))
         }
+    }
+
+    /// Hostname as OpenSSH would use it: `HostName`, else the alias itself.
+    pub fn target(&self) -> &str {
+        self.hostname.as_deref().unwrap_or(&self.alias)
+    }
+
+    pub fn port_or_22(&self) -> u16 {
+        self.port.unwrap_or(22)
     }
 }
 
@@ -69,11 +267,13 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
     let mut hostname = None;
     let mut user = None;
     let mut port = None;
+    let mut identity = None;
 
     let flush = |current: &mut Vec<String>,
                  hostname: &mut Option<String>,
                  user: &mut Option<String>,
                  port: &mut Option<u16>,
+                 identity: &mut Option<String>,
                  hosts: &mut Vec<SshHost>| {
         for alias in current.drain(..) {
             if is_pattern(&alias) {
@@ -84,11 +284,13 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
                 hostname: hostname.clone(),
                 user: user.clone(),
                 port: *port,
+                identity: identity.clone(),
             });
         }
         *hostname = None;
         *user = None;
         *port = None;
+        *identity = None;
     };
 
     for raw in text.lines() {
@@ -108,6 +310,7 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
                 &mut hostname,
                 &mut user,
                 &mut port,
+                &mut identity,
                 &mut hosts,
             );
             break;
@@ -118,6 +321,7 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
                 &mut hostname,
                 &mut user,
                 &mut port,
+                &mut identity,
                 &mut hosts,
             );
             for extra in expand_include(&value, origin)? {
@@ -135,6 +339,7 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
                 &mut hostname,
                 &mut user,
                 &mut port,
+                &mut identity,
                 &mut hosts,
             );
             current = value.split_whitespace().map(|s| s.to_string()).collect();
@@ -149,6 +354,8 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
             user = Some(value);
         } else if key.eq_ignore_ascii_case("Port") {
             port = value.parse().ok();
+        } else if key.eq_ignore_ascii_case("IdentityFile") {
+            identity = Some(expand_tilde(&value).unwrap_or(value));
         }
     }
     flush(
@@ -156,6 +363,7 @@ fn parse_ssh_config_inner(text: &str, origin: &Path, depth: u8) -> Result<Vec<Ss
         &mut hostname,
         &mut user,
         &mut port,
+        &mut identity,
         &mut hosts,
     );
     let mut seen = std::collections::HashSet::new();
@@ -248,50 +456,68 @@ pub fn control_path() -> Result<String> {
 }
 
 /// OpenSSH flags shared by exec and PTY attach.
-pub fn base_args(control_path: &str) -> Vec<String> {
-    vec![
-        "-o".into(),
-        "BatchMode=yes".into(),
-        "-o".into(),
-        "PreferredAuthentications=publickey".into(),
-        "-o".into(),
-        "GSSAPIAuthentication=no".into(),
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        format!("ControlPath={control_path}"),
-        "-o".into(),
-        "ControlPersist=600".into(),
-        "-o".into(),
-        "ConnectTimeout=8".into(),
-        "-o".into(),
-        "ServerAliveInterval=5".into(),
-        "-o".into(),
-        "ServerAliveCountMax=2".into(),
-    ]
-}
-
 #[derive(Debug, Clone)]
 pub struct Client {
     pub host: String,
+    pub mode: AuthMode,
     control_path: String,
+    persist: String,
 }
 
 impl Client {
+    /// Auth mode comes from `~/.faragent/config.json` (`auto` unless set).
     pub fn new(host: impl Into<String>) -> Result<Self> {
+        let host = host.into();
+        let mode = crate::config::auth_for(&host);
+        Self::with_mode(host, mode)
+    }
+
+    pub fn with_mode(host: impl Into<String>, mode: AuthMode) -> Result<Self> {
+        let persist = match mode {
+            AuthMode::Password => PASSWORD_PERSIST,
+            _ => KEY_PERSIST,
+        };
         Ok(Self {
             host: host.into(),
+            mode,
             control_path: control_path()?,
+            persist: persist.to_string(),
         })
     }
 
-    fn command(&self) -> Command {
+    /// Bundle used for non-interactive commands (probe, sessions, exec).
+    pub fn flavor(&self) -> Flavor {
+        match self.mode {
+            AuthMode::Key => Flavor::Key,
+            AuthMode::Auto | AuthMode::Password => Flavor::BatchPassword,
+        }
+    }
+
+    pub fn args(&self, flavor: Flavor) -> Vec<String> {
+        args_for(&self.control_path, &self.persist, flavor)
+    }
+
+    fn command_flavor(&self, flavor: Flavor) -> Command {
         let mut cmd = Command::new("ssh");
-        for arg in base_args(&self.control_path) {
+        for arg in self.args(flavor) {
             cmd.arg(arg);
         }
         cmd.arg(&self.host);
         cmd
+    }
+
+    /// Copy-pasteable version of what we ran, for error reports.
+    pub fn command_line(&self, flavor: Flavor, remote: &str) -> String {
+        let mut s = String::from("ssh");
+        for arg in self.args(flavor) {
+            s.push(' ');
+            s.push_str(&shell_single_quote(&arg));
+        }
+        s.push(' ');
+        s.push_str(&shell_single_quote(&self.host));
+        s.push_str(" -- ");
+        s.push_str(remote);
+        s
     }
 
     pub fn exec(&self, remote: &[&str]) -> Result<Output> {
@@ -300,34 +526,85 @@ impl Client {
             .map(|a| shell_single_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        let mut cmd = self.command();
+        let flavor = self.flavor();
+        let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
         cmd.arg(&joined);
         cmd.stdin(Stdio::null());
-        run_cmd_timeout(cmd, EXEC_TIMEOUT)
+        let line = self.command_line(flavor, &joined);
+        self.run_cmd(cmd, &line, EXEC_TIMEOUT)
     }
 
     /// Login-shell so nvm / Homebrew / ~/.local/bin are visible.
     pub fn exec_login(&self, script: &str) -> Result<Output> {
-        let mut cmd = self.command();
-        cmd.arg("--");
-        cmd.arg(bash_login_command(script));
-        cmd.stdin(Stdio::null());
-        run_cmd_timeout(cmd, EXEC_TIMEOUT)
+        self.run_remote(&bash_login_command(script))
     }
 
     pub fn exec_login_stdin(&self, bash_lc: &str, stdin: &[u8]) -> Result<Output> {
-        let mut cmd = self.command();
+        let remote = bash_login_command(bash_lc);
+        let flavor = self.flavor();
+        let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
-        cmd.arg(bash_login_command(bash_lc));
+        cmd.arg(&remote);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd.spawn().context("failed to spawn ssh")?;
+        let line = self.command_line(flavor, &remote);
+        let mut child = cmd.spawn().map_err(|e| self.spawn_error(&line, e))?;
         if let Some(mut s) = child.stdin.take() {
             s.write_all(stdin).ok();
         }
-        wait_child_timeout(child, EXEC_TIMEOUT)
+        self.wait_child(child, &line, EXEC_TIMEOUT)
+    }
+
+    fn run_remote(&self, remote: &str) -> Result<Output> {
+        let flavor = self.flavor();
+        let mut cmd = self.command_flavor(flavor);
+        cmd.arg("--");
+        cmd.arg(remote);
+        cmd.stdin(Stdio::null());
+        let line = self.command_line(flavor, remote);
+        self.run_cmd(cmd, &line, EXEC_TIMEOUT)
+    }
+
+    fn run_cmd(&self, mut cmd: Command, line: &str, timeout: Duration) -> Result<Output> {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let child = cmd.spawn().map_err(|e| self.spawn_error(line, e))?;
+        self.wait_child(child, line, timeout)
+    }
+
+    fn wait_child(&self, child: Child, line: &str, timeout: Duration) -> Result<Output> {
+        match wait_child_timeout(child, timeout) {
+            Ok(output) => Ok(output),
+            Err(WaitError::Timeout) => Err(anyhow::Error::new(SshError {
+                host: self.host.clone(),
+                mode: self.mode,
+                command: line.to_string(),
+                raw: format!(
+                    "SSH timed out after {}s: no answer from the host, or the remote login shell hung.",
+                    timeout.as_secs()
+                ),
+                status: None,
+                timed_out: true,
+                needs_auth: false,
+                methods: String::new(),
+            })),
+            Err(WaitError::Io(e)) => Err(e),
+        }
+    }
+
+    fn spawn_error(&self, line: &str, e: std::io::Error) -> anyhow::Error {
+        anyhow::Error::new(SshError {
+            host: self.host.clone(),
+            mode: self.mode,
+            command: line.to_string(),
+            raw: format!("could not run the local OpenSSH client: {e}"),
+            status: None,
+            timed_out: false,
+            needs_auth: false,
+            methods: String::new(),
+        })
     }
 
     pub fn output_text(output: &Output) -> String {
@@ -340,26 +617,65 @@ impl Client {
         }
     }
 
-    pub fn require_ok(output: &Output) -> Result<()> {
+    /// Structured failure for a non-interactive run.
+    pub fn error_for(&self, output: &Output) -> SshError {
+        let raw = Self::output_text(output);
+        let auth_failure = is_auth_failure(&raw);
+        // `PreferredAuthentications=none` makes the server list what it accepts.
+        // Only worth an extra round trip when credentials are the problem.
+        let methods = if auth_failure && self.mode != AuthMode::Password {
+            self.server_auth_methods().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let needs_auth = auth_failure
+            && (self.mode == AuthMode::Password
+                || offers_password(&methods)
+                || raw.to_ascii_lowercase().contains("password"));
+        SshError {
+            host: self.host.clone(),
+            mode: self.mode,
+            command: self.command_line(self.flavor(), "-"),
+            raw,
+            status: output.status.code(),
+            timed_out: false,
+            needs_auth,
+            methods,
+        }
+    }
+
+    pub fn require_ok(&self, output: &Output) -> Result<()> {
         if output.status.success() {
             return Ok(());
         }
-        let msg = Self::output_text(output);
-        let trimmed = msg.trim();
-        if trimmed.contains("Permission denied")
-            || trimmed.contains("No matching host key")
-            || trimmed.contains("Host key verification failed")
-        {
-            return Err(anyhow!(
-                "SSH failed (BatchMode, key/agent only): {}",
-                trimmed
-            ));
+        Err(anyhow::Error::new(self.error_for(output)))
+    }
+
+    /// Ask the server which auth methods it accepts. Cheap and harmless: the
+    /// `none` method cannot succeed, it only makes sshd reply.
+    pub fn server_auth_methods(&self) -> Option<String> {
+        let mut cmd = self.command_flavor(Flavor::Enumerate);
+        cmd.arg("--");
+        cmd.arg("true");
+        cmd.stdin(Stdio::null());
+        let line = self.command_line(Flavor::Enumerate, "true");
+        let out = self.run_cmd(cmd, &line, EXEC_TIMEOUT).ok()?;
+        parse_auth_methods(&Self::output_text(&out))
+    }
+
+    /// Is a multiplexed ControlMaster already authenticated for this host?
+    pub fn master_alive(&self) -> bool {
+        let mut cmd = Command::new("ssh");
+        for arg in self.args(Flavor::MuxCheck) {
+            cmd.arg(arg);
         }
-        Err(anyhow!(
-            "SSH command failed (status {:?}): {}",
-            output.status.code(),
-            trimmed
-        ))
+        cmd.arg("-O");
+        cmd.arg("check");
+        cmd.arg(&self.host);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        matches!(cmd.output(), Ok(o) if o.status.success())
     }
 }
 
@@ -382,14 +698,17 @@ pub fn bash_login_command(script: &str) -> String {
     format!("bash -lc {}", shell_single_quote(script))
 }
 
-fn run_cmd_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let child = cmd.spawn().context("failed to spawn ssh")?;
-    wait_child_timeout(child, timeout)
+/// Why a child did not hand us output.
+enum WaitError {
+    /// Still running after the deadline; we killed it.
+    Timeout,
+    Io(anyhow::Error),
 }
 
-fn wait_child_timeout(mut child: std::process::Child, timeout: Duration) -> Result<Output> {
+fn wait_child_timeout(
+    mut child: Child,
+    timeout: Duration,
+) -> std::result::Result<Output, WaitError> {
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let stdout_h = thread::spawn(move || {
@@ -409,15 +728,15 @@ fn wait_child_timeout(mut child: std::process::Child, timeout: Duration) -> Resu
 
     let start = Instant::now();
     let status = loop {
-        match child.try_wait().context("ssh wait")? {
+        match child
+            .try_wait()
+            .map_err(|e| WaitError::Io(anyhow!("ssh wait: {e}")))?
+        {
             Some(st) => break st,
             None if start.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(anyhow!(
-                    "SSH command timed out after {}s. Host unreachable, or the remote login shell hung.",
-                    timeout.as_secs()
-                ));
+                return Err(WaitError::Timeout);
             }
             None => thread::sleep(Duration::from_millis(40)),
         }
@@ -444,6 +763,7 @@ Host *
 Host devbox
     HostName 10.0.0.2
     User sunny
+    IdentityFile ~/.ssh/id_ed25519
 Host *.github.com
     User git
 Host work laptop
@@ -454,6 +774,18 @@ Host work laptop
         assert_eq!(aliases, vec!["devbox", "work", "laptop"]);
         assert_eq!(hosts[0].hostname.as_deref(), Some("10.0.0.2"));
         assert_eq!(hosts[0].user.as_deref(), Some("sunny"));
+        assert_eq!(hosts[0].port_or_22(), 22);
+        assert_eq!(hosts[0].target(), "10.0.0.2");
+        assert!(hosts[0]
+            .identity
+            .as_deref()
+            .unwrap()
+            .ends_with("/.ssh/id_ed25519"));
+        // `Host work laptop` shares one HostName, and the wildcard block's
+        // `User git` must not leak into it.
+        assert_eq!(hosts[1].target(), "office.example");
+        assert_eq!(hosts[2].target(), "office.example");
+        assert_eq!(hosts[1].user, None);
     }
 
     #[test]
@@ -471,8 +803,8 @@ Host ignored
     }
 
     #[test]
-    fn base_args_include_batchmode_and_controlmaster() {
-        let args = base_args("/tmp/cm/%r@%h:%p");
+    fn key_args_include_batchmode_and_controlmaster() {
+        let args = args_for("/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-o" && w[1] == "BatchMode=yes"));
@@ -533,13 +865,103 @@ Host ignored
     }
 
     #[test]
-    fn base_args_include_alive_and_pubkey() {
-        let args = base_args("/tmp/cm/%r@%h:%p");
+    fn key_args_include_alive_and_pubkey() {
+        let args = args_for("/tmp/cm/%r@%h:%p", KEY_PERSIST, Flavor::Key);
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-o" && w[1] == "ServerAliveInterval=5"));
         assert!(args
             .windows(2)
             .any(|w| w[0] == "-o" && w[1] == "GSSAPIAuthentication=no"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-o" && w[1] == "PreferredAuthentications=publickey"));
+    }
+
+    fn opt(args: &[String], key: &str) -> bool {
+        args.windows(2).any(|w| w[0] == "-o" && w[1] == key)
+    }
+
+    #[test]
+    fn batch_password_flavor_never_prompts_but_allows_password() {
+        let args = args_for("/tmp/cm", PASSWORD_PERSIST, Flavor::BatchPassword);
+        assert!(opt(&args, "BatchMode=yes"));
+        assert!(opt(
+            &args,
+            "PreferredAuthentications=publickey,password,keyboard-interactive"
+        ));
+        assert!(opt(&args, "ControlPersist=4h"));
+    }
+
+    #[test]
+    fn interactive_flavors_allow_prompts_and_multiplex() {
+        let pw = args_for("/tmp/cm", PASSWORD_PERSIST, Flavor::InteractivePassword);
+        assert!(opt(&pw, "BatchMode=no"));
+        assert!(opt(
+            &pw,
+            "PreferredAuthentications=password,keyboard-interactive"
+        ));
+        assert!(opt(&pw, "NumberOfPasswordPrompts=3"));
+        assert!(opt(&pw, "ControlMaster=auto"));
+        let key = args_for("/tmp/cm", KEY_PERSIST, Flavor::InteractiveKey);
+        assert!(opt(&key, "BatchMode=no"));
+        assert!(opt(
+            &key,
+            "PreferredAuthentications=publickey,password,keyboard-interactive"
+        ));
+    }
+
+    #[test]
+    fn enumerate_flavor_asks_without_credentials() {
+        let args = args_for("/tmp/cm", KEY_PERSIST, Flavor::Enumerate);
+        assert!(opt(&args, "PreferredAuthentications=none"));
+        assert!(opt(&args, "BatchMode=yes"));
+    }
+
+    #[test]
+    fn auth_mode_parsing() {
+        assert_eq!(AuthMode::parse("auto"), Some(AuthMode::Auto));
+        assert_eq!(AuthMode::parse("Key"), Some(AuthMode::Key));
+        assert_eq!(AuthMode::parse(" password "), Some(AuthMode::Password));
+        assert_eq!(AuthMode::parse("pubkey"), Some(AuthMode::Key));
+        assert_eq!(AuthMode::parse("nope"), None);
+        assert_eq!(AuthMode::default(), AuthMode::Auto);
+        assert_eq!(AuthMode::code(AuthMode::Password), "password");
+    }
+
+    #[test]
+    fn parses_server_auth_methods() {
+        let text = "you@host: Permission denied (publickey,password).\n";
+        assert_eq!(
+            parse_auth_methods(text).as_deref(),
+            Some("publickey,password")
+        );
+        assert_eq!(
+            parse_auth_methods("Permission denied (publickey).").as_deref(),
+            Some("publickey")
+        );
+        assert!(parse_auth_methods("Connection refused").is_none());
+        assert!(offers_password("publickey,password"));
+        assert!(offers_password("keyboard-interactive"));
+        assert!(!offers_password("publickey"));
+        assert!(is_auth_failure("Permission denied (publickey)."));
+        assert!(!is_auth_failure("Connection timed out"));
+    }
+
+    #[test]
+    fn ssh_error_display_keeps_raw_text() {
+        let err = SshError {
+            host: "devbox".into(),
+            mode: AuthMode::Key,
+            command: "ssh devbox -- true".into(),
+            raw: "you@devbox: Permission denied (publickey).\n".into(),
+            status: Some(255),
+            timed_out: false,
+            needs_auth: false,
+            methods: "publickey".into(),
+        };
+        assert!(err.to_string().contains("Permission denied (publickey)"));
+        let boxed: std::sync::Arc<dyn std::error::Error + Send + Sync> = std::sync::Arc::new(err);
+        assert!(boxed.to_string().contains("publickey"));
     }
 }

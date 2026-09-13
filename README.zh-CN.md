@@ -45,7 +45,7 @@
 
 ```mermaid
 flowchart LR
-  You[你的笔记本<br/>faragent TUI] -->|OpenSSH BatchMode<br/>ControlMaster| Probe[远程登录壳]
+  You[你的笔记本<br/>faragent TUI] -->|OpenSSH ControlMaster<br/>密钥或密码| Probe[远程登录壳]
   Probe --> List[探测 claude / codex / grok / pi<br/>列出磁盘会话]
   You -->|ssh -tt PTY| Tmux[tmux socket: faragent]
   Tmux --> Agent[原生 TUI<br/>权限、slash、鼠标]
@@ -65,6 +65,8 @@ flowchart LR
 - **安全重连** — live 只 attach，避免两个 Codex 同时改同一仓库（[openai/codex#30424](https://github.com/openai/codex/issues/30424)）。
 - **远程仍是你的** — 官方安装器在你确认命令之后跑在那台机器上；API key 留在远程；不对外监听；流量走 SSH。
 - **安装 / 升级 / 卸载** — 确认屏列出每条命令，然后 `ssh -tt` 直播过程。agent：官方 `curl | bash`，用户目录，不用 sudo。tmux/curl 可用 sudo + brew/apt/dnf/yum/pacman/apk。
+- **给方案，不让人猜** — 连不上时直接展示 **ssh 原始报错 + 原因 + 可复制命令**（报错页按 `y` 复制全文）。对照表见 [SSH 连接](docs/zh/ssh-access.md#连不上时原始报错--原因--解决)。
+- **密钥或密码都行** — 默认密钥 / ssh-agent；服务端只让用账号密码时，交互式登录一次后复用多路复用连接。密码只交给系统 ssh，不落盘。
 - **Doctor** — `faragent doctor --host devbox` 打印 PATH、tmux 和各 agent 版本。
 
 ```
@@ -81,7 +83,7 @@ flowchart LR
 
 ## 快速开始
 
-**本机：** macOS 或 Linux，OpenSSH，对该 Host **密钥免密**（BatchMode，不能弹密码）。
+**本机：** macOS 或 Linux，OpenSSH，以及一条能连上该 Host 的路 —— 密钥免密（BatchMode），或服务端只给密码时用 `faragent login` 输一次。
 
 **远程：** `sshd` 和 `bash`。缺 tmux 或缺 agent 可从 TUI 代装。请在那台机器上登录一次 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
 
@@ -101,12 +103,14 @@ Host home-mac
 ```
 
 ```bash
-ssh home-mac true          # 必须免密成功
+ssh home-mac true          # 密钥这条路必须零交互成功（首次会问主机指纹）
 faragent doctor --host home-mac
 faragent                 # TUI：主机 → agent → 会话
 ```
 
 在 agent TUI 里用 **`Ctrl-g` 再按 `d`** detach。进程继续在远程跑。
+
+只让用密码的机器：`faragent auth --host home-mac --mode password`，再 `faragent login --host home-mac`（或 TUI 主机列表按 `g` / 报错页按 `a`）。
 
 完整步骤见 [用户手册](docs/zh/user-guide.md)（开发者模式、打包二进制、迁到另一台电脑）。家里机器在 NAT 后面：见 [SSH 连接](docs/zh/ssh-access.md)（局域网、公网 IP、域名、Tailscale）。
 
@@ -127,7 +131,7 @@ faragent                 # TUI：主机 → agent → 会话
 
 v0.1 适合已经习惯 SSH 的人。接下来要做：**Windows 原生（不使用 WSL）**，以及 **App 前端样式**。详见 [后续开发计划](docs/zh/roadmap.md)。
 
-当前计划之外：密码 SSH、ProxyJump。
+密码 / 键盘交互登录已支持，见 [SSH 连接 · 服务端只让用密码](docs/zh/ssh-access.md#服务端只让用密码可选)。当前计划之外：OpenClaw 式网关、源码编译 tmux。
 
 ## 许可证
 

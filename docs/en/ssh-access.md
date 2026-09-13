@@ -2,9 +2,11 @@
 
 **English** · [中文](../zh/ssh-access.md)
 
-FarAgent does **not** punch NAT for you. It reads concrete `Host` entries from `~/.ssh/config` and runs system OpenSSH in **BatchMode** (key-only, no password prompt).
+FarAgent does **not** punch NAT for you. It reads concrete `Host` entries from `~/.ssh/config` and runs system OpenSSH.
 
-This chapter has one job: make `ssh <Host> true` work on the network you actually use. After that, pick the same Host in the TUI.
+Authentication defaults to **keys / ssh-agent** (`BatchMode`, no password prompt). If the server only allows an account password, FarAgent **tells you on the error screen** and lets you do one interactive login (the password goes straight to OpenSSH), then reuses that connection — see [password-only servers](#password-only-servers-optional).
+
+This chapter has one job: make `ssh <Host> true` work on the network you actually use. After that, pick the same Host in the TUI. When it fails, FarAgent shows the **raw ssh output plus the cause and copy-pasteable fixes**; the table is [when it fails](#when-it-fails-error-cause-fix).
 
 Four usual ways in:
 
@@ -15,7 +17,9 @@ Four usual ways in:
 | Public IP changes, or you want a name | [Domain](#domain) | Home WAN still needs a forward |
 | Home box behind NAT / CGNAT, or you need a café / LTE path | [Tailscale (recommended)](#tailscale-for-nat-traversal-recommended) | **No** |
 
-v0.1 does **not** support password SSH, OTP, or `ProxyJump`. Jump hosts and “connect through frp first” are not Hosts FarAgent can use. A tunnel that looks like a direct address (for example `HostName 127.0.0.1` plus a local forwarded port) can work; Tailscale is less work.
+Jump hosts / `ProxyJump` are handled by system ssh, not by FarAgent: the test is still whether `ssh <Host> true` works. A tunnel that looks like a direct address (for example `HostName 127.0.0.1` plus a local forwarded port) can work too; Tailscale is less work on a home connection.
+
+OTP / two-factor: when the server offers it through **keyboard-interactive**, type the code at the prompt during the interactive login in password mode.
 
 ---
 
@@ -33,11 +37,29 @@ The picker lists **non-pattern** `Host` names only. `Host *` and `Host *.github.
 Before opening the TUI:
 
 ```bash
-ssh -o BatchMode=yes home-mac true
+ssh -o BatchMode=yes home-mac true    # the key path must work with zero prompts
 faragent doctor --host home-mac
 ```
 
-If `BatchMode=yes` fails, FarAgent will fail the same way (password prompt or missing key).
+If `BatchMode=yes` works, you are done.
+
+If it fails, first find out what the server wants:
+
+```bash
+# Ask which auth methods it accepts (this never logs in)
+ssh -o PreferredAuthentications=none home-mac true
+# -> Permission denied (publickey).              keys only
+# -> Permission denied (publickey,password).     passwords allowed too
+```
+
+Three modes, switchable at any time (press **`g`** in the TUI host list to cycle):
+
+```bash
+faragent auth --host home-mac                 # show the current mode
+faragent auth --host home-mac --mode auto     # default: try keys, offer a prompt if the server wants a password
+faragent auth --host home-mac --mode key      # key only, never prompts
+faragent auth --host home-mac --mode password # account password / keyboard-interactive
+```
 
 ---
 
@@ -107,7 +129,7 @@ macOS Remote Login usually opens the macOS firewall for you.
 
 ### 3. Create a key on the laptop and install it on the remote
 
-FarAgent accepts keys / ssh-agent only.
+This is the recommended path: keys are stable, individually revocable, and survive password rotations.
 
 ```bash
 ssh-keygen -t ed25519 -C "you@laptop" -f ~/.ssh/id_ed25519
@@ -451,6 +473,59 @@ Use `home-mac-lan` at home (lower latency) and `home-mac` on the road. FarAgent 
 
 ---
 
+## Password-only servers (optional)
+
+Some machines only take an account password: a temporary account a colleague handed you, a freshly installed server with no `authorized_keys` yet, or an sshd with `PubkeyAuthentication no`. FarAgent supports that path:
+
+1. Switch the Host to password mode: `faragent auth --host home-mac --mode password` (or press `g` in the TUI host list until it says `[password]`).
+2. Do one interactive login: `faragent login --host home-mac` (in the TUI, press `a` on the error screen).
+3. After that FarAgent reuses the connection; by default you are not asked again for 4 hours.
+
+What this does and does not do:
+
+- The password goes **only into system OpenSSH**. FarAgent never reads it, forwards it, writes it to config, or logs it.
+- A successful login leaves a ControlMaster socket (`~/.faragent/cm/`, mode `0700`). Probe, session listing, and attach all ride it, so you are not asked repeatedly.
+- When that connection drops or outlives `ControlPersist` (4 hours in password mode), run `faragent login` once more.
+- The first connection also asks for the host key fingerprint (`yes/no`); verify it and answer `yes` during the interactive login.
+- `faragent doctor` prints the current mode; `faragent auth --host home-mac --mode auto` goes back to the default (keys first, prompt only if the server demands it).
+
+```bash
+faragent auth --host home-mac --mode password   # switch
+faragent login --host home-mac                  # type the password once / accept the host key
+faragent doctor --host home-mac                 # then use it normally
+```
+
+> Keys are still sturdier: no dependency on a live multiplexed connection, and individually revocable. Once keys work, `faragent auth --host home-mac --mode auto`.
+
+---
+
+## When it fails: error, cause, fix
+
+FarAgent does not guess, and it does not stop at "connection failed": it keeps the **verbatim ssh output**, then names the cause and the exact commands to run. On the TUI error screen: `j/k` scroll, `a` interactive login, `r` retry, `y` copy the whole report, `Esc` back. `faragent doctor --host X` and `faragent probe --host X` print the same report.
+
+| Raw error (verbatim ssh output) | Cause | Fix |
+| --- | --- | --- |
+| `Permission denied (publickey).` | The server refused the key: not installed, wrong `User`, or remote permissions | `ssh -v <Host> true` to see which key was offered; `ssh-copy-id -i ~/.ssh/id_ed25519.pub <Host>`; add `IdentityFile` + `IdentitiesOnly yes`; password-only servers: see above |
+| `Permission denied (publickey,password).` | The server accepts passwords, but FarAgent cannot type one by itself | `faragent auth --host <Host> --mode password`, then `faragent login --host <Host>` (or `a` in the TUI) |
+| `Too many authentication failures` | Too many keys in the agent; the server hung up before reaching yours | Pin one: `IdentityFile` + `IdentitiesOnly yes`; `ssh-add -D` to drop the rest |
+| `Host key verification failed.` | The host key is not in `known_hosts` yet | `faragent login --host <Host>`, verify the fingerprint, answer `yes` (or `ssh-keyscan` first and compare) |
+| `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!` | The host key changed: reinstall, rebuilt VM, or interception | Check `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the remote, then `ssh-keygen -R <Host>` (non-22 ports: `ssh-keygen -R "[<Host>]:<port>"`) |
+| `WARNING: UNPROTECTED PRIVATE KEY FILE!` / `Permissions 0644 ... are too open` | A local `~/.ssh` file is too permissive or wrongly owned | `chmod 700 ~/.ssh && chmod 600 ~/.ssh/config ~/.ssh/id_ed25519 ~/.ssh/known_hosts` |
+| `Load key "...": invalid format` | Corrupt private key, or `IdentityFile` points at a `.pub` | Regenerate with `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519`, then `ssh-copy-id` |
+| `Enter passphrase for key '...'` | The key has a passphrase no agent remembers | `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` (Linux: `ssh-add ~/.ssh/id_ed25519`) |
+| `No such identity` / `Identity file ... not accessible` | `IdentityFile` points at a file that is not there | `grep -n -i identityfile ~/.ssh/config`, fix the path or generate the key |
+| `Could not resolve hostname` | Name does not resolve: `HostName` typo, DNS, or an internal name needing VPN / Tailscale | `dig +short <HostName>`; `tailscale status`; put a reachable IP in `HostName` |
+| `Connection refused` | The host answers but nothing listens: sshd stopped, wrong port, or a firewall reject | On the remote `sudo systemctl status ssh` (macOS: enable Remote Login); `nc -vz <Host> <port>`; open the security group |
+| `Operation timed out` | No response at all: unreachable address, dropped packets, or a hung login shell | `ping -c 2 <Host>`, `nc -vz <Host> <port>`; remove anything that waits for input from `~/.bashrc` |
+| `No route to host` / `Network is unreachable` | No route to that address from this machine | Change networks, bring up Tailscale / VPN, or use a public IP / domain |
+| `kex_exchange_identification: Connection closed by remote host` | The handshake was closed: sshd not really running, an IP ban, or `hosts.deny` | Wait a few minutes; on the remote `sudo systemctl status ssh`; check `hosts.allow` / `hosts.deny` |
+| `no matching key exchange method found. Their offer: ...` | Old sshd offering only ssh-rsa / legacy KEX | Try `ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa <Host> true`, then put those options in `~/.ssh/config` |
+| `bash: ...` / probe output missing `FARAGENT_PROBE_V1` | SSH works, but the remote login shell did not run bash | `ssh <Host> -- bash -lc 'echo ok'`; make sure bash exists and `~/.bashrc` / `~/.bash_profile` has no `read` / `ssh-add` style blocking command |
+
+Pressing `y` on the error screen copies **the cause + the raw output + the steps above** to your clipboard, ready to paste to a colleague or into an issue.
+
+---
+
 ## After SSH works
 
 ```bash
@@ -459,10 +534,19 @@ faragent doctor --host home-mac
 faragent
 ```
 
-Everyday flow: [User guide](user-guide.md). SSH into the machine is full access to that user’s agents and repos — protect keys, sshd, and the Tailscale account accordingly.
+Password-only server? Two more steps:
+
+```bash
+faragent auth --host home-mac --mode password   # or press g in the TUI host list
+faragent login --host home-mac                  # type the password once (FarAgent stores nothing)
+```
+
+Everyday flow: [User guide](user-guide.md). SSH into the machine is full access to that user’s agents and repos — protect keys, passwords, sshd, and the Tailscale account accordingly.
 
 ## See also
 
+- [Password-only servers (optional)](#password-only-servers-optional)
+- [When it fails: error, cause, fix](#when-it-fails-error-cause-fix)
 - [User guide · SSH config](user-guide.md#ssh-config)
 - [Security](security.md)
 - [Tailscale download](https://tailscale.com/download) · [Linux install](https://tailscale.com/docs/install/linux) · [macOS install](https://tailscale.com/docs/install/mac) · [MagicDNS](https://tailscale.com/docs/features/magicdns)

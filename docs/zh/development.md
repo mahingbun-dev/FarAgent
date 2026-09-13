@@ -43,7 +43,7 @@ faragent/
                                                       └──────────────────────────┘
 ```
 
-**不自己实现 SSH。** 固定带 `BatchMode=yes`、`ControlMaster=auto`、`ControlPath=~/.faragent/cm/%r@%h:%p`。
+**不自己实现 SSH。** 固定带 `ControlMaster=auto`、`ControlPath=~/.faragent/cm/%r@%h:%p`；`args_for()` 按 `AuthMode` 选认证参数：`key` 是 `BatchMode=yes` + 公钥，`password` 允许交互提示并在登录后复用同一条多路复用连接。密码只进系统 ssh，FarAgent 不读不存。
 
 **不自己实现 coding UI。** attach 之后就是厂商 TUI 的字节流。
 
@@ -77,7 +77,8 @@ faragent-<agent>-<shortid>
 
 | 文件 | 约定 |
 | --- | --- |
-| `ssh.rs` | 通配 Host 跳过；遇到 `Match` 停止；`base_args` 含 BatchMode |
+| `ssh.rs` | 通配 Host 跳过；遇到 `Match` 停止；`args_for`/`Flavor` 决定认证参数；`SshError` 保留原始输出 |
+| `diagnose.rs` | 原始报错 → `Problem`（有序匹配）→ 文案与修复命令，`diagnosis_of` 决定 TUI 是否开报错页 |
 | `agents.rs` | resume 参数表与 `remote.rs` start_script 对齐 |
 | `remote.rs` | 探测/列表/启动文本协议；JSONL 元数据；脚本里不能有 python |
 | `install.rs` | 官方 URL 常量；plan_for 夹具；`bash_login_command` 必须把 `|` 引起来 |
@@ -114,11 +115,11 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 
 1. Windows 原生远程和客户端（OpenSSH + ConPTY，不依赖 WSL）
 2. 围绕主机 / agent / 会话的 App 前端样式
+3. 认证模式：`auto` / `key` / `password` 已支持；之后可考虑系统钥匙串与更省事的跳板机体验
 
 没有单独立项就不要做：
 
 - OpenClaw 式网关
-- 密码 / 键盘交互 SSH
 - 经 SSH 安装 tmux 或 agent
 - 把协议端口绑到 `0.0.0.0`
 - 把 API key 拷到笔记本
