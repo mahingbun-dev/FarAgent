@@ -1,0 +1,22 @@
+[package]
+name = "faragent-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent CLI: the `faragent` binary (TUI picker plus doctor/probe/sessions/auth/login)"
+
+[[bin]]
+name = "faragent"
+path = "src/main.rs"
+
+[dependencies]
+faragent-core = { path = "../faragent-core" }
+faragent-service = { path = "../faragent-service" }
+faragent-transport = { path = "../faragent-transport" }
+faragent-tui = { path = "../faragent-tui" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true

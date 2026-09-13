@@ -1,18 +1,14 @@
-// Every module now lives in a workspace crate; aliased at the crate root so
-// the CLI code below keeps its `crate::tui::…` / `crate::ssh::…` paths.
-pub use faragent_core::{agents, config, text};
-pub use faragent_install as install;
-pub use faragent_remote::{remote, win};
-pub use faragent_service::sessions as runtime;
-pub use faragent_service::{diagnose, doctor, probe};
-pub use faragent_transport as ssh;
-pub use faragent_transport::askpass;
-pub use faragent_tui::{chrome, pty, tui};
-
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use ssh::AuthMode;
-use text::Lang;
+use faragent_core::agents;
+use faragent_core::config;
+use faragent_core::text::Lang;
+use faragent_service::sessions as runtime;
+use faragent_service::{diagnose, doctor, probe};
+use faragent_transport::{
+    askpass, auth_saved, host_os, login_ok, AuthMode, OpenSshTransport, REMOTE_PING,
+};
+use faragent_tui::{pty, tui};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -111,7 +107,7 @@ fn probe_json(host: &str) -> Result<()> {
 
 fn sessions_json(host: &str, agent: &str) -> Result<()> {
     let kind = agents::AgentKind::parse(agent)?;
-    let os = ssh::host_os(host)?;
+    let os = host_os(host)?;
     let rows = runtime::list_sessions(host, kind, os)?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
@@ -120,16 +116,13 @@ fn sessions_json(host: &str, agent: &str) -> Result<()> {
 fn auth(host: &str, mode: Option<&str>) -> Result<()> {
     let lang = lang();
     let Some(mode) = mode else {
-        println!(
-            "{}",
-            ssh::auth_saved(host, config::auth_for(host)).pick(lang)
-        );
+        println!("{}", auth_saved(host, config::auth_for(host)).pick(lang));
         return Ok(());
     };
     let parsed = AuthMode::parse(mode)
         .ok_or_else(|| anyhow!("unknown auth mode '{mode}': use auto | key | password"))?;
     config::set_auth(host, parsed)?;
-    println!("{}", ssh::auth_saved(host, parsed).pick(lang));
+    println!("{}", auth_saved(host, parsed).pick(lang));
     Ok(())
 }
 
@@ -137,11 +130,11 @@ fn auth(host: &str, mode: Option<&str>) -> Result<()> {
 fn login(host: &str) -> Result<()> {
     let lang = lang();
     let mode = config::auth_for(host);
-    let client = ssh::OpenSshTransport::connect(host)?;
+    let client = OpenSshTransport::connect(host)?;
     let code = pty::interactive_connect(host, mode, lang)?;
-    let out = client.exec_raw_line(ssh::REMOTE_PING)?;
+    let out = client.exec_raw_line(REMOTE_PING)?;
     if out.success() {
-        println!("{}", ssh::login_ok(host).pick(lang));
+        println!("{}", login_ok(host).pick(lang));
         return Ok(());
     }
     let mut d = diagnose::Diagnosis::of(&client.error_for(&out));

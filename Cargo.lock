@@ -272,14 +272,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "faragent"
+name = "faragent-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
  "faragent-core",
- "faragent-install",
- "faragent-remote",
  "faragent-service",
  "faragent-transport",
  "faragent-tui",

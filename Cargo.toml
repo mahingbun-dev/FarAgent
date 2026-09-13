@@ -10,6 +10,13 @@ repository = "https://github.com/mahingbun-dev/FarAgent"
 rust-version = "1.80"
 
 [workspace.dependencies]
+faragent-core = { path = "crates/faragent-core" }
+faragent-install = { path = "crates/faragent-install" }
+faragent-remote = { path = "crates/faragent-remote" }
+faragent-service = { path = "crates/faragent-service" }
+faragent-transport = { path = "crates/faragent-transport" }
+faragent-tui = { path = "crates/faragent-tui" }
+
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
@@ -23,27 +30,3 @@ uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 pretty_assertions = "1"
 tempfile = "3"
-
-[package]
-name = "faragent"
-version.workspace = true
-edition.workspace = true
-description = "FarAgent: attach to coding agents on your own machines over SSH"
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
-
-[[bin]]
-name = "faragent"
-path = "src/main.rs"
-
-[dependencies]
-faragent-core = { path = "crates/faragent-core" }
-faragent-install = { path = "crates/faragent-install" }
-faragent-remote = { path = "crates/faragent-remote" }
-faragent-service = { path = "crates/faragent-service" }
-faragent-transport = { path = "crates/faragent-transport" }
-faragent-tui = { path = "crates/faragent-tui" }
-anyhow.workspace = true
-clap.workspace = true
-serde_json.workspace = true
