@@ -2,10 +2,15 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Kill a hung remote login shell instead of freezing the TUI forever.
+pub const EXEC_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshHost {
@@ -234,6 +239,10 @@ pub fn base_args(control_path: &str) -> Vec<String> {
         "-o".into(),
         "BatchMode=yes".into(),
         "-o".into(),
+        "PreferredAuthentications=publickey".into(),
+        "-o".into(),
+        "GSSAPIAuthentication=no".into(),
+        "-o".into(),
         "ControlMaster=auto".into(),
         "-o".into(),
         format!("ControlPath={control_path}"),
@@ -241,6 +250,10 @@ pub fn base_args(control_path: &str) -> Vec<String> {
         "ControlPersist=600".into(),
         "-o".into(),
         "ConnectTimeout=8".into(),
+        "-o".into(),
+        "ServerAliveInterval=5".into(),
+        "-o".into(),
+        "ServerAliveCountMax=2".into(),
     ]
 }
 
@@ -268,30 +281,31 @@ impl Client {
     }
 
     pub fn exec(&self, remote: &[&str]) -> Result<Output> {
+        let joined = remote
+            .iter()
+            .map(|a| shell_single_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         let mut cmd = self.command();
         cmd.arg("--");
-        for a in remote {
-            cmd.arg(a);
-        }
-        cmd.output().context("failed to spawn ssh")
+        cmd.arg(&joined);
+        cmd.stdin(Stdio::null());
+        run_cmd_timeout(cmd, EXEC_TIMEOUT)
     }
 
     /// Login-shell so nvm / Homebrew / ~/.local/bin are visible.
     pub fn exec_login(&self, script: &str) -> Result<Output> {
         let mut cmd = self.command();
         cmd.arg("--");
-        cmd.arg("bash");
-        cmd.arg("-lc");
-        cmd.arg(script);
-        cmd.output().context("failed to spawn ssh")
+        cmd.arg(bash_login_command(script));
+        cmd.stdin(Stdio::null());
+        run_cmd_timeout(cmd, EXEC_TIMEOUT)
     }
 
     pub fn exec_login_stdin(&self, bash_lc: &str, stdin: &[u8]) -> Result<Output> {
         let mut cmd = self.command();
         cmd.arg("--");
-        cmd.arg("bash");
-        cmd.arg("-lc");
-        cmd.arg(bash_lc);
+        cmd.arg(bash_login_command(bash_lc));
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -299,7 +313,7 @@ impl Client {
         if let Some(mut s) = child.stdin.take() {
             s.write_all(stdin).ok();
         }
-        child.wait_with_output().context("ssh wait")
+        wait_child_timeout(child, EXEC_TIMEOUT)
     }
 
     pub fn output_text(output: &Output) -> String {
@@ -345,6 +359,62 @@ pub fn shell_single_quote(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+/// Single remote argv. OpenSSH joins extra args with spaces and does **not**
+/// re-quote, so `ssh host -- bash -lc 'printf hi'` must be one string
+/// or the remote shell runs `bash -lc printf` and drops `hi`.
+pub fn bash_login_command(script: &str) -> String {
+    format!("bash -lc {}", shell_single_quote(script))
+}
+
+fn run_cmd_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let child = cmd.spawn().context("failed to spawn ssh")?;
+    wait_child_timeout(child, timeout)
+}
+
+fn wait_child_timeout(mut child: std::process::Child, timeout: Duration) -> Result<Output> {
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_h = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = stdout_pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_h = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = stderr_pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait().context("ssh wait")? {
+            Some(st) => break st,
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(anyhow!(
+                    "SSH command timed out after {}s. Host unreachable, or the remote login shell hung.",
+                    timeout.as_secs()
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(40)),
+        }
+    };
+    let stdout = stdout_h.join().unwrap_or_default();
+    let stderr = stderr_h.join().unwrap_or_default();
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 #[cfg(test)]
@@ -405,5 +475,28 @@ Host ignored
         assert_eq!(shell_single_quote("abc"), "abc");
         assert_eq!(shell_single_quote("a b"), "'a b'");
         assert_eq!(shell_single_quote("a'b"), "'a'\"'\"'b'");
+    }
+
+    #[test]
+    fn bash_login_command_is_one_ssh_argv() {
+        let cmd = bash_login_command(r#"printf 'FARSSH_PROBE_V1\n'"#);
+        assert!(cmd.starts_with("bash -lc "));
+        assert!(
+            cmd.contains("'printf"),
+            "script must be single-quoted so OpenSSH cannot split it: {cmd}"
+        );
+        assert!(cmd.contains("FARSSH_PROBE_V1"));
+        assert_ne!(cmd, r#"bash -lc printf 'FARSSH_PROBE_V1\n'"#);
+    }
+
+    #[test]
+    fn base_args_include_alive_and_pubkey() {
+        let args = base_args("/tmp/cm/%r@%h:%p");
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-o" && w[1] == "ServerAliveInterval=5"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-o" && w[1] == "GSSAPIAuthentication=no"));
     }
 }

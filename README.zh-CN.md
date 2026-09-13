@@ -82,7 +82,7 @@ flowchart LR
 
 **本机：** macOS 或 Linux，OpenSSH，对该 Host **密钥免密**（BatchMode，不能弹密码）。
 
-**远程：** `sshd`、`tmux`、`python3`，以及至少一个已登录的 agent。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
+**远程：** `sshd`、`bash`、`tmux`，以及至少一个已登录的 agent。不需要 python3。Windows 主机：SSH 进 **WSL2**，不要走 Win32 OpenSSH。
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarSSH.git

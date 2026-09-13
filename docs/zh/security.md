@@ -8,7 +8,7 @@
 
 - 你已经信任以该用户执行 `ssh <host>`。
 - 认证只有 **密钥 / ssh-agent**（`BatchMode`）。工具不会弹出密码框。
-- 远程助手（`~/.farssh/remote.py`、tmux socket `farssh`）以 SSH 用户身份运行，不是 root。
+- 远程命令（`bash -lc`、tmux socket `farssh`）以 SSH 用户身份运行，不是 root。
 
 ## 我们不会做的事
 

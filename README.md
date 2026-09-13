@@ -82,7 +82,7 @@ flowchart LR
 
 **Laptop:** macOS or Linux, OpenSSH, key-based login to the host (`BatchMode`, no password prompt).
 
-**Remote:** `sshd`, `tmux`, `python3`, and at least one agent already logged in. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
+**Remote:** `sshd`, `bash`, `tmux`, and at least one agent already logged in. No python3. Windows hosts: SSH into **WSL2**, not Win32 OpenSSH.
 
 ```bash
 git clone https://github.com/mahingbun-dev/FarSSH.git

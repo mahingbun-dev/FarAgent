@@ -38,7 +38,6 @@ impl AgentKind {
         }
     }
 
-    #[allow(dead_code)]
     pub fn bin(self) -> &'static str {
         self.slug()
     }
@@ -52,14 +51,12 @@ impl AgentKind {
         }
     }
 
-    /// Native CLI argv to start a new conversation (kept in sync with remote.py).
-    #[allow(dead_code)]
+    /// Native CLI argv to start a new conversation.
     pub fn new_argv(self) -> Vec<String> {
         vec![self.bin().to_string()]
     }
 
     /// Native CLI argv to resume a disk session. Never used when tmux is live.
-    #[allow(dead_code)]
     pub fn resume_argv(self, session_id: &str) -> Vec<String> {
         match self {
             Self::Claude => vec!["claude".into(), "--resume".into(), session_id.into()],

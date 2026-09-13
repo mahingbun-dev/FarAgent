@@ -60,25 +60,20 @@ pub fn run(host: Option<&str>) -> Result<()> {
                 println!("  {}", probe::format_agent_line(kind, &p));
             }
             println!("PATH (login shell): {}", p.path);
-        }
-        Err(e) => println!("probe: {e}"),
-    }
-
-    match runtime::remote_json(&client, &["doctor"]) {
-        Ok(v) => {
-            if let Some(notes) = v.get("notes").and_then(|n| n.as_array()) {
-                println!("\nnotes:");
-                for n in notes {
-                    if let Some(s) = n.as_str() {
-                        println!("  - {s}");
-                    }
+            if p.tmux.found {
+                if let Err(e) = runtime::ensure_tmux_conf(&client) {
+                    println!("tmux.conf: {e}");
+                } else {
+                    println!("tmux conf: {}/.farssh/tmux.conf", p.home);
                 }
             }
-            if let Some(conf) = v.get("tmux_conf").and_then(|s| s.as_str()) {
-                println!("tmux conf: {conf}");
-            }
+            println!("\nnotes:");
+            println!("  - Coding is the native agent TUI inside tmux socket 'farssh'.");
+            println!("  - Detach with C-g d (prefix C-g). This does not kill the agent.");
+            println!("  - Do not resume a live session; attach the existing tmux session.");
+            println!("  - Remote needs bash + tmux + agents. No python3.");
         }
-        Err(e) => println!("doctor helper: {e}"),
+        Err(e) => println!("probe: {e}"),
     }
     Ok(())
 }

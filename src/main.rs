@@ -1,7 +1,10 @@
 mod agents;
+mod config;
 mod doctor;
+mod i18n;
 mod probe;
 mod pty;
+mod remote;
 mod runtime;
 mod ssh;
 mod tui;
