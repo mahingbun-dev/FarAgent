@@ -317,8 +317,14 @@ impl HelperManager {
         if let HelperMode::ScriptFallback(FallbackReason::WindowsRemote) = &mode {
             // No silent failure, and no pretending: `bash -lc` — the fallback's
             // own channel — does not exist on a Windows remote either.
-            return Err(CommandError::Plain {
-                message: FallbackReason::WindowsRemote.message().en,
+            //
+            // Carried bilingually rather than lifted to `.en`: this sentence is
+            // a `LocalizedText` (the TUI renders it too), and flattening it here
+            // was the third English-only string on this branch to reach a
+            // Chinese reader. `CommandError::Localized` is the carrier the
+            // frontend picks from — see `asLocalized` in `lib/ipc.ts`.
+            return Err(CommandError::Localized {
+                message: FallbackReason::WindowsRemote.message().into(),
             });
         }
 
@@ -712,8 +718,18 @@ pub async fn helper_close(
     state: tauri::State<'_, HelperManager>,
     id: u64,
 ) -> Result<(), CommandError> {
-    state.close(id);
-    Ok(())
+    // Off the async worker: `close` is blocking work. It takes the writer lock
+    // (which a call parked in `write_all` on a wedged remote may hold), closes
+    // the remote's stdin and then kills the child — exactly the shape that must
+    // not run on a runtime thread. `helper_call` already blocks its own work off
+    // the runtime for the same reason; this is the sibling that was missed.
+    let manager = state.inner().clone();
+    match tauri::async_runtime::spawn_blocking(move || manager.close(id)).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(CommandError::Plain {
+            message: format!("internal task failed: {e}"),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,6 +1069,60 @@ mod tests {
             }
             HelperModeDto::Native => panic!("a fallback must not serialize as native"),
         }
+    }
+
+    #[test]
+    fn a_bilingual_refusal_keeps_both_languages_on_the_wire() {
+        // Finding I4's mechanism, pinned at the wire. `helper_open` used to lift
+        // only `.message().en` out of `FallbackReason::WindowsRemote` and ship it
+        // as `CommandError::Plain`, so the Chinese half never left the backend.
+        let refusal = CommandError::Localized {
+            message: FallbackReason::WindowsRemote.message().into(),
+        };
+        let wire = serde_json::to_value(&refusal).unwrap();
+        assert_eq!(wire["kind"], json!("localized"));
+        let message = &wire["message"];
+        assert!(
+            message["zh"].as_str().unwrap().contains("仅支持 POSIX"),
+            "the Chinese half must reach the wire: {message}"
+        );
+        assert!(
+            message["en"].as_str().unwrap().contains("POSIX-only"),
+            "the English half must reach the wire: {message}"
+        );
+
+        // The same words the mode tag carries, so a panel rendering the refusal
+        // and a panel rendering the fallback notice cannot drift apart.
+        let mode = serde_json::to_value(HelperModeDto::from(&HelperMode::ScriptFallback(
+            FallbackReason::WindowsRemote,
+        )))
+        .unwrap();
+        assert_eq!(message, &mode["reason"]["message"]);
+    }
+
+    #[test]
+    fn a_bilingual_sentence_survives_the_start_error_map() {
+        // The class, not the one string: `shape_start_error` maps a
+        // `CommandError` onto `StartError`, and `Localized` is the arm that keeps
+        // a two-language sentence two-language. Nothing emits one on a start path
+        // today, so this goes through `start_error` directly — the guard is that
+        // the arm exists and carries both halves, not that some caller uses it.
+        let wire = serde_json::to_value(crate::dto::start_error(CommandError::Localized {
+            message: FallbackReason::WindowsRemote.message().into(),
+        }))
+        .unwrap();
+        assert_eq!(wire["kind"], json!("localized"));
+        assert!(wire["message"]["zh"].is_string());
+        assert!(wire["message"]["en"].is_string());
+
+        // And the other two arms still map as they did.
+        assert_eq!(
+            serde_json::to_value(crate::dto::start_error(CommandError::Plain {
+                message: "boom".into(),
+            }))
+            .unwrap(),
+            json!({"kind": "plain", "message": "boom"})
+        );
     }
 
     #[test]

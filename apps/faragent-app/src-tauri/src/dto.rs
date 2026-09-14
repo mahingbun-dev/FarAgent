@@ -299,11 +299,28 @@ impl DiagnosisDto {
 
 /// Every command's error shape. `diagnosis` opens the full report screen
 /// (same gate as the TUI: only connection problems get one).
+///
+/// `Localized` exists so a failure the backend can already phrase in both
+/// languages — a `LocalizedText` it would otherwise flatten to `.en` — reaches a
+/// Chinese reader in Chinese. It is the `Text`-carrying twin of the diagnosis's
+/// own bilingual `summary`: both are picked by the frontend, which is the only
+/// side that knows the user's setting. `Plain` stays for the failures that have
+/// no second language to offer (a shell error, a serde message).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandError {
-    Diagnosis { diagnosis: Box<DiagnosisDto> },
-    Plain { message: String },
+    Diagnosis {
+        diagnosis: Box<DiagnosisDto>,
+    },
+    /// A sentence the backend has in both languages, for a failure that is not a
+    /// connection diagnosis. The first user is the Windows-remote refusal, whose
+    /// wording comes from `FallbackReason::WindowsRemote`.
+    Localized {
+        message: Text,
+    },
+    Plain {
+        message: String,
+    },
 }
 
 pub fn shape_error(err: &anyhow::Error, host: &str) -> CommandError {
@@ -319,11 +336,17 @@ pub fn shape_error(err: &anyhow::Error, host: &str) -> CommandError {
 
 /// Starting a session can also mean "the working directory is missing" — a
 /// question, not an error (same as the TUI's create-directory screen).
+///
+/// `Localized` mirrors [`CommandError`]'s, so a bilingual sentence survives the
+/// `shape_start_error` map instead of being flattened to one language. No start
+/// failure is phrased bilingually today; the variant is here so that adding one
+/// does not silently reintroduce the English-only class this branch closed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StartError {
     CwdMissing { dir: String },
     Diagnosis { diagnosis: Box<DiagnosisDto> },
+    Localized { message: Text },
     Plain { message: String },
 }
 
@@ -331,8 +354,18 @@ pub fn shape_start_error(err: &anyhow::Error, host: &str) -> StartError {
     if let Some(SessionError::CwdMissing { dir }) = err.downcast_ref::<SessionError>() {
         return StartError::CwdMissing { dir: dir.clone() };
     }
-    match shape_error(err, host) {
+    start_error(shape_error(err, host))
+}
+
+/// [`CommandError`] → [`StartError`], the map `shape_start_error` applies.
+///
+/// Its own function so the `Localized` arm can be tested directly: no start path
+/// produces a bilingual sentence today, so a test that went through
+/// `shape_start_error` could not reach the arm it is meant to guard.
+pub fn start_error(err: CommandError) -> StartError {
+    match err {
         CommandError::Diagnosis { diagnosis } => StartError::Diagnosis { diagnosis },
+        CommandError::Localized { message } => StartError::Localized { message },
         CommandError::Plain { message } => StartError::Plain { message },
     }
 }
