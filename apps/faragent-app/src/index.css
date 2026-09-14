@@ -125,7 +125,11 @@
 
   /* --- motion ---
      Theme-independent: declared once here, inherited by `.dark` (the class
-     lands on <html>, which is also :root). Same for --radius below. */
+     lands on <html>, which is also :root). Same for --radius below.
+     These are also mapped on the utility side — `--ease-*` in the @theme block
+     below, `--duration-*` as static @utility rules (Tailwind has no duration
+     namespace). Deleting them here would break `animate-pop-in` just below,
+     which reads them through var(). */
   --duration-fast: 120ms;
   --duration-base: 180ms;
   --duration-slow: 260ms;
@@ -312,11 +316,19 @@
   --spacing-sidebar: 16rem; /* the session rail */
   --spacing-titlebar: 2.5rem; /* top bar above the canvas */
 
-  /* reading measure — the reference centres its body at ~1100px */
+  /* reading measure — the reference centres its body at ~1100px.
+     `content` has no Tailwind default, so it resolves from the --container-*
+     namespace; `prose` DOES (`--max-width-prose: 65ch`), and a default in the
+     --max-width-* namespace wins over a same-named --container-* entry — so the
+     override has to be declared there or `max-w-prose` silently keeps 65ch. */
   --container-content: 68rem;
-  --container-prose: 44rem;
+  --max-width-prose: 44rem;
 
-  /* motion */
+  /* motion — the utility side of `--ease-*`. The equivalent for `--duration-*`
+     cannot live here: Tailwind has no `--duration-*` namespace (only
+     `--default-transition-duration`), and a `--duration-fast` entry in @theme
+     is emitted as a self-referential `--duration-fast: var(--duration-fast)`.
+     Durations are therefore registered as static `@utility` rules below. */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
@@ -383,6 +395,22 @@ body {
 
 .animate-fade-in {
   animation: fg-fade-in var(--duration-base) var(--ease-standard) both;
+}
+
+/* Duration utilities. Tailwind exposes no `--duration-*` theme namespace, so
+   `duration-fast` would otherwise be an unknown class that silently leaves the
+   150ms default in place. Registered here against the :root tokens, so the
+   tempo still has exactly one source of truth. */
+@utility duration-fast {
+  transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+  transition-duration: var(--duration-base);
+}
+
+@utility duration-slow {
+  transition-duration: var(--duration-slow);
 }
 
 @media (prefers-reduced-motion: reduce) {

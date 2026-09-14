@@ -71,8 +71,11 @@ export const EASING = {
 } as const;
 
 /**
- * Reading measures, in px: the centred conversation column
- * (`--container-content`) and its prose width (`--container-prose`).
+ * Reading measures, in px: the centred conversation column (`--container-content`,
+ * i.e. `max-w-content`) and its prose width (`--max-width-prose`, i.e.
+ * `max-w-prose`). The two live in different Tailwind namespaces because
+ * `prose` collides with a Tailwind default that the `--container-*` namespace
+ * does not override.
  */
 export const CONTENT_WIDTH = {
   content: 1088,
