@@ -1,6 +1,7 @@
 mod attach;
 mod commands;
 mod dto;
+mod helper;
 
 /// The app entry point. The askpass short-circuit MUST stay the first thing
 /// that happens: when ssh runs the GUI binary as its askpass helper
@@ -16,6 +17,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(attach::SessionManager::default())
+        .manage(helper::HelperManager::default())
         .invoke_handler(tauri::generate_handler![
             commands::list_hosts,
             commands::host_auth,
@@ -40,6 +42,9 @@ pub fn run() {
             attach::attach_write,
             attach::attach_resize,
             attach::attach_close,
+            helper::helper_open,
+            helper::helper_call,
+            helper::helper_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

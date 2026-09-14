@@ -1152,6 +1152,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "faragent-core",
+ "faragent-helper",
  "faragent-install",
  "faragent-remote",
  "faragent-service",
