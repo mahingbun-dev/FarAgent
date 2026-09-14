@@ -292,7 +292,7 @@ faragent
 | **Agents** | 已安装显示版本；未安装显示「未安装 · 回车安装」 |
 | **确认屏** | 列出安装/升级/卸载的完整命令。回车后 SSH PTY 直播 |
 | **Sessions** | `[live]` 是还在跑的 tmux；`[idle]` 是磁盘上的历史会话 |
-| **新建会话** | 按 `n`，输入 agent 的**工作目录**（不是新建文件夹）。不存在时问你是否创建 |
+| **新建会话** | 按 `n`，从最近目录 / `..` / 子目录里选（回车进入，`s` 启动）。不存在时问你是否创建 |
 
 管理界面快捷键：
 
@@ -301,9 +301,11 @@ faragent
 | `j` / `k` 或方向键 | 移动 |
 | Enter | 探测 / 进入 / attach；agent 或 tmux 缺失时进入 **安装** |
 | `g` | 切换该主机的登录方式：`auto` → `key` → `password`（主机列表） |
+| `G` | 把本机 `gh` 登录同步到该主机（主机列表；会先确认） |
 | `U` | 升级当前 agent（助手列表） |
 | `X` | 卸载当前 agent 的 CLI（保留 `~/.claude` 等配置） |
 | `n` | 新建会话 |
+| `p` | 切换完全权限 / 需确认（会话列表、新建会话；写入 `~/.faragent/config.json`） |
 | `r` | 刷新 |
 | `L` | 重新选择界面语言 |
 | `?` | 短帮助 |
@@ -342,11 +344,21 @@ tmux 前缀是 **`Ctrl-g`**，不是默认的 `Ctrl-b`，减少和 agent 抢键�
 
 1. 进入某个 agent 的会话列表
 2. 按 `n`
-3. 输入这个会话的 **工作目录**（agent 读写代码的根目录；`~` 会按远程家目录展开）
-4. 目录已存在 → 直接回车，登录壳里启动 `claude` / `codex` / `grok` / `pi`
-5. 目录不存在 → 会切到确认屏，**显示将要执行的 `mkdir -p`**；回车创建并开始，Esc 返回改路径
+3. 上方仍是 `cwd>`，可直接改路径（`~` 按远程家目录展开）。下方列出 **最近用过的工作目录**（当前会话列表里去重后的 `cwd`）、`..`、以及当前路径的子目录
+4. `j` / `k` 在列表里移动；**回车进入** 选中的最近目录 / `..` / 子目录（只刷新列表，不启动）
+5. **`s` 在当前 `cwd>` 启动**（以前回车启动的行为改到了 `s`）。Tab 按当前输入重新列目录
+6. 目录已存在 → 登录壳里启动 `claude` / `codex` / `grok` / `pi`
+7. 目录不存在 → 会切到确认屏，**显示将要执行的 `mkdir -p`**；回车创建并开始，Esc 返回改路径
 
-这一步不是文件夹浏览器，也不会在你没点确认前动远程磁盘：只有确认屏上按了回车，FarAgent 才会 `mkdir -p`。
+列目录**不会**创建文件夹。只有确认屏上按了回车，FarAgent 才会 `mkdir -p`。
+
+`p` 切换 **完全权限**（默认开：Claude `bypassPermissions`、Codex `--dangerously-bypass-approvals-and-sandbox`、Grok `--always-approve`；Pi 不变）和 **需确认**。只作用于新会话和 idle 恢复；已经在跑的 tmux 窗格只 attach，不会带这些 flag 再 exec 一遍。
+
+### 同步 GitHub 登录
+
+在主机列表按 **`G`**（小写 `g` 仍是切换 SSH 登录方式）。确认后 FarAgent 用本机 `gh auth token` 写入远程 `~/.config/gh/hosts.yml`（0600），必要时生成 ed25519 密钥并把公钥登记到 GitHub（标题 `faragent-<host>`），再把远程 `https://github.com/` 改写成 `git@github.com:`。本机未登录时请先在这台电脑运行 `gh auth login`。**界面和日志里都不会出现 token。**
+
+命令行等价：`faragent github-sync --host <alias>`。
 
 ## 安装、升级、卸载
 
@@ -389,6 +401,7 @@ faragent sessions --host home-mac --agent grok
 faragent auth --host home-mac                  # 看该主机的登录方式
 faragent auth --host home-mac --mode password  # auto | key | password
 faragent login --host home-mac                 # 交互式登录一次（密码/指纹），之后复用
+faragent github-sync --host home-mac           # 把本机 gh 登录写到远程
 ```
 
 `probe` 和 `sessions` 输出 JSON。agent 名：`claude`、`codex`、`grok`、`pi`。连不上时这些命令会打印和 TUI 相同的报错说明并以非零码退出。

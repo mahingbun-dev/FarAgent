@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   DiagnosisDialog,
   DirMissingDialog,
+  GithubSyncDialog,
   InstallDialog,
   NewSessionDialog,
   PasswordDialog,
@@ -53,6 +54,12 @@ export function HostsPage() {
   const { selectHost, openTab } = useStore();
   const [problem, setProblem] = useState<ProblemState | null>(null);
   const [passwordFor, setPasswordFor] = useState<string | null>(null);
+  const [githubFor, setGithubFor] = useState<string | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [githubReport, setGithubReport] = useState<
+    Awaited<ReturnType<typeof ipc.githubSync>> | null
+  >(null);
 
   const hosts = useQuery({ queryKey: ["hosts"], queryFn: ipc.listHosts });
 
@@ -137,16 +144,68 @@ export function HostsPage() {
                   </button>
                 ) : null}
               </span>
-              {probe.isPending && probe.variables?.alias === h.alias ? (
-                <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("hosts.probing", { host: h.alias })}
-                </span>
-              ) : null}
+              <span className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setGithubError(null);
+                    setGithubReport(null);
+                    setGithubFor(h.alias);
+                  }}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-secondary hover:text-secondary-foreground"
+                >
+                  {t("hosts.githubSync")}
+                </button>
+                {probe.isPending && probe.variables?.alias === h.alias ? (
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {t("hosts.probing", { host: h.alias })}
+                  </span>
+                ) : null}
+              </span>
             </button>
           </li>
         ))}
       </ul>
+
+      {githubFor ? (
+        <GithubSyncDialog
+          host={githubFor}
+          lang={useStore.getState().lang}
+          busy={githubBusy}
+          error={githubError}
+          report={githubReport}
+          onCancel={() => {
+            setGithubFor(null);
+            setGithubError(null);
+            setGithubReport(null);
+          }}
+          onConfirm={async () => {
+            const host = githubFor;
+            setGithubBusy(true);
+            setGithubError(null);
+            try {
+              const report = await ipc.githubSync(host);
+              setGithubReport(report);
+            } catch (e) {
+              const diag = asDiagnosis(e);
+              if (diag) {
+                setGithubFor(null);
+                setProblem({
+                  host,
+                  diagnosis: diag,
+                  message: null,
+                });
+              } else {
+                setGithubError(errorMessage(e));
+              }
+            } finally {
+              setGithubBusy(false);
+            }
+          }}
+        />
+      ) : null}
 
       {passwordFor ? (
         <PasswordDialog
@@ -531,7 +590,15 @@ export function SessionsPage() {
       {newSession ? (
         <NewSessionDialog
           lang={lang}
+          host={hostAlias}
           defaultCwd={defaultCwd}
+          recents={Array.from(
+            new Set(
+              (sessions.data ?? [])
+                .map((s) => s.cwd?.trim())
+                .filter((c): c is string => !!c),
+            ),
+          )}
           busy={busy}
           error={newError}
           onCancel={() => {

@@ -4,6 +4,7 @@
 //! none of it is terminal- or window-specific.
 
 pub mod diagnose;
+pub mod dirs;
 pub mod doctor;
 pub mod github;
 pub mod probe;

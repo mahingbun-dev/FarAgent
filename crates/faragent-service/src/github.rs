@@ -23,6 +23,101 @@ pub struct GitHubSyncReport {
     pub warnings: Vec<LocalizedText<String>>,
 }
 
+pub const CONFIRM_TITLE: LocalizedText<&'static str> = LocalizedText::new(
+    "FarAgent · 同步 GitHub 登录",
+    "FarAgent · sync GitHub login",
+);
+
+pub const CONFIRM_KEYS: LocalizedText<&'static str> = LocalizedText::new(
+    "回车 写入远程并登记 SSH 公钥 · Esc 取消",
+    "enter write to the remote and register an SSH key · esc cancel",
+);
+
+pub const CONFIRM_LIST_TITLE: LocalizedText<&'static str> = LocalizedText::new(
+    "将写入远程 gh 凭据并登记 SSH 公钥",
+    "will write remote gh credentials and register an SSH key",
+);
+
+pub const SYNCING: LocalizedText<&'static str> = LocalizedText::new(
+    "正在把本机 GitHub 登录同步到远程…",
+    "syncing this machine's GitHub login onto the remote…",
+);
+
+/// Body of the TUI/App confirm screen. Never mentions the token value.
+pub fn confirm_lines(host: &str) -> LocalizedText<Vec<String>> {
+    LocalizedText::new(
+        vec![
+            format!("把本机 `gh` 登录写入 {host} 上的 ~/.config/gh/hosts.yml（权限 0600），"),
+            "如缺少 SSH 密钥则生成 ed25519，并把公钥登记到 GitHub（标题 faragent-<host>）。".into(),
+            String::new(),
+            "本机未登录时请先在这台电脑运行 `gh auth login`（浏览器留在本机）。".into(),
+            "凭据不会出现在界面、日志或命令行上。".into(),
+            String::new(),
+            "回车执行 · Esc 取消。".into(),
+        ],
+        vec![
+            format!("Write this machine's `gh` login to ~/.config/gh/hosts.yml on {host} (mode 0600),"),
+            "create an ed25519 SSH key if missing, and register the public key with GitHub (title faragent-<host>).".into(),
+            String::new(),
+            "If this laptop is not logged in, run `gh auth login` here first (the browser stays local).".into(),
+            "The credential is never shown in the UI, logs, or argv.".into(),
+            String::new(),
+            "Enter runs · Esc cancels.".into(),
+        ],
+    )
+}
+
+impl GitHubSyncReport {
+    /// User-facing summary. Never includes the token.
+    pub fn lines(&self, host: &str) -> LocalizedText<Vec<String>> {
+        let gh_zh = if self.remote_gh {
+            "已安装"
+        } else {
+            "未安装"
+        };
+        let gh_en = if self.remote_gh {
+            "installed"
+        } else {
+            "not installed"
+        };
+        let key_zh = if self.ssh_key_added {
+            "已登记到 GitHub"
+        } else {
+            "未登记"
+        };
+        let key_en = if self.ssh_key_added {
+            "registered with GitHub"
+        } else {
+            "not registered"
+        };
+        let mut zh = vec![
+            format!("GitHub 已同步到 {host}"),
+            format!("  用户: {}", self.user),
+            format!("  远程 gh: {gh_zh}"),
+            format!("  SSH 公钥: {key_zh}"),
+        ];
+        let mut en = vec![
+            format!("GitHub synced onto {host}"),
+            format!("  user: {}", self.user),
+            format!("  remote gh: {gh_en}"),
+            format!("  SSH key: {key_en}"),
+        ];
+        if !self.warnings.is_empty() {
+            zh.push("  警告:".into());
+            en.push("  warnings:".into());
+            for w in &self.warnings {
+                zh.push(format!("    {}", w.zh));
+                en.push(format!("    {}", w.en));
+            }
+        }
+        LocalizedText::new(zh, en)
+    }
+
+    pub fn plain(&self, host: &str, lang: faragent_core::text::Lang) -> String {
+        self.lines(host).pick(lang).join("\n")
+    }
+}
+
 pub fn hosts_yml(user: &str, token: &str) -> String {
     format!(
         "github.com:\n    git_protocol: https\n    users:\n        {user}:\n            oauth_token: {token}\n    user: {user}\n"
@@ -265,7 +360,7 @@ fn install_on_remote(
 fn add_ssh_key(host: &str, pubkey: &str, warnings: &mut Vec<LocalizedText<String>>) -> bool {
     let title = format!("faragent-{host}");
     let mut payload = pubkey.as_bytes().to_vec();
-    if !payload.ends_with(&[b'\n']) {
+    if !payload.ends_with(b"\n") {
         payload.push(b'\n');
     }
     let out = match spawn_gh(&["ssh-key", "add", "--title", &title, "-"], Some(&payload)) {
@@ -476,6 +571,33 @@ ok
             "",
             "HTTP 401: Bad credentials"
         ));
+    }
+
+    #[test]
+    fn report_and_confirm_never_include_a_token() {
+        let report = GitHubSyncReport {
+            user: "octocat".into(),
+            remote_gh: true,
+            ssh_key_added: true,
+            warnings: vec![],
+        };
+        let text = format!(
+            "{}\n{}",
+            report.plain("home", faragent_core::text::Lang::Zh),
+            report.plain("home", faragent_core::text::Lang::En)
+        );
+        assert!(text.contains("octocat"));
+        assert!(text.contains("home"));
+        assert!(!text.contains("gho_"));
+        assert!(!text.contains("oauth_token"));
+        let confirm = format!(
+            "{:?}{:?}",
+            confirm_lines("home").zh,
+            confirm_lines("home").en
+        );
+        assert!(!confirm.contains("gho_"));
+        assert!(!confirm.contains("oauth_token"));
+        assert!(confirm.contains("hosts.yml"));
     }
 
     #[test]

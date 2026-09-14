@@ -81,10 +81,10 @@ impl SessionManager {
                 cwd,
                 session_id,
             } => {
-                let argv = match session_id {
-                    Some(id) => agent.resume_argv(id),
-                    None => agent.new_argv(),
-                };
+                let argv = agent.launch_argv(
+                    session_id.as_deref(),
+                    faragent_core::config::full_permissions(),
+                );
                 (win::attach_launcher(cwd, &argv), true)
             }
             AttachSpec::Install { script, os } => match os {
