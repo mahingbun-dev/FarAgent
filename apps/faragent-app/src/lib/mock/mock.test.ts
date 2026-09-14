@@ -123,6 +123,60 @@ test("handlers read the payload keys ipc.ts actually sends", async () => {
   );
 });
 
+test("expand_home mirrors faragent_core::paths::expand_home", async () => {
+  // A case-for-case restatement of the Rust function's own tests
+  // (`crates/faragent-core/src/paths.rs`: `tilde_expands_against_the_remote_home_only_as_a_prefix`
+  // and `tilde_expands_windows_style_home`), plus the three places an earlier
+  // draft of the mock drifted from it. The new-session picker compares the path
+  // it displays against this answer, so a divergence here makes a later UI check
+  // pass while proving nothing — which is the whole reason these are pinned.
+  type Case = [typed: string, home: string, os: "posix" | "windows", want: string];
+  const cases: Case[] = [
+    // --- posix, verbatim from the Rust test
+    ["~", "/home/me", "posix", "/home/me"],
+    ["~/code/app", "/home/me", "posix", "/home/me/code/app"],
+    ["/srv/app", "/home/me", "posix", "/srv/app"],
+    ["/srv/~weird", "/home/me", "posix", "/srv/~weird"],
+    ["~bob/app", "/home/me", "posix", "~bob/app"],
+
+    // (a) a trailing separator on `home` must not double up. The `~` branch
+    // returns `home` untouched; only the `~/…` branch strips.
+    ["~/code/app", "/home/me/", "posix", "/home/me/code/app"],
+    ["~/code/app", "/home/me///", "posix", "/home/me/code/app"],
+    ["~", "/home/me/", "posix", "/home/me/"],
+
+    // (b) the input is matched exactly, so neither end is trimmed: `" ~/x"` does
+    // not expand (the backend returns it literally), and a trailing space is
+    // part of the path.
+    [" ~/x", "/home/me", "posix", " ~/x"],
+    ["~/x ", "/home/me", "posix", "/home/me/x "],
+    ["\t~", "/home/me", "posix", "\t~"],
+
+    // --- windows, verbatim from the Rust test
+    ["~", "C:\\Users\\me", "windows", "C:\\Users\\me"],
+    ["~\\code\\app", "C:\\Users\\me", "windows", "C:\\Users\\me\\code\\app"],
+    ["~/code/app", "C:\\Users\\me", "windows", "C:\\Users\\me\\code\\app"],
+    ["C:\\srv\\app", "C:\\Users\\me", "windows", "C:\\srv\\app"],
+    ["~bob", "C:\\Users\\me", "windows", "~bob"],
+    ["~\\x", "C:\\Users\\me\\", "windows", "C:\\Users\\me\\x"],
+
+    // (c) windows always joins with `\` and rewrites inner `/` *in the typed
+    // rest*, even for a `~/` input, and strips trailing `/` *and* `\` from the
+    // home. Note the home itself is otherwise passed through verbatim: only its
+    // trailing separators are trimmed, so an inner `/` in the home survives.
+    ["~/a/b", "C:/Users/me", "windows", "C:/Users/me\\a\\b"],
+    ["~/a/b", "C:\\Users\\me\\\\", "windows", "C:\\Users\\me\\a\\b"],
+  ];
+
+  for (const [typed, home, os, want] of cases) {
+    assert.equal(
+      await ipc.expandHome(typed, home, os),
+      want,
+      `expand_home(${JSON.stringify(typed)}, ${JSON.stringify(home)}, ${os})`,
+    );
+  }
+});
+
 // ------------------------------------------------------------------ fixtures
 
 type Mark = "live" | "running" | "scheduled" | "idle";

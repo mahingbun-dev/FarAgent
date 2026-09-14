@@ -271,13 +271,37 @@ export function listDirs(path: string): DirListing {
   return { cwd, parent: parentOf(cwd), dirs: [...(DIRS[cwd] ?? [])] };
 }
 
-/** `~` / `~/x` / `~\x` against a remote home — prefix only, as
- *  `faragent_core::paths::expand_home` does. */
+/**
+ * `~` / `~/x` (or `~\x`) against a remote home, in that host's separator style.
+ * Prefix only: `~bob` and mid-path tildes stay literal.
+ *
+ * This mirrors `faragent_core::paths::expand_home` (`crates/faragent-core/src/
+ * paths.rs`) line for line, because a UI check of the new-session picker
+ * compares what the picker shows against what *this* returns — if the two
+ * disagree, the check passes while proving nothing. The three details below are
+ * easy to get subtly wrong, and each has a test (`mock.test.ts`) and a matching
+ * case in the Rust `paths.rs` tests:
+ *
+ * - `home` gets its trailing separators stripped (`/` for posix, `/` *and* `\`
+ *   for windows), so a home ending in a separator does not double up.
+ * - Input is matched exactly. `"~"` is not trimmed, so `" ~/x"` does **not**
+ *   expand — the backend would return it literally, and so must this.
+ * - Windows always joins with `\` and rewrites every inner `/` to `\`, even when
+ *   the input was written `~/`.
+ */
 export function expandHome(path: string, home: string, os: "posix" | "windows"): string {
-  const input = path.trim();
-  if (input === "~") return home;
-  for (const sep of os === "windows" ? ["\\", "/"] : ["/"]) {
-    if (input.startsWith(`~${sep}`)) return home + sep + input.slice(2);
+  if (path === "~") return home;
+  if (os === "windows") {
+    for (const prefix of ["~/", "~\\"]) {
+      if (path.startsWith(prefix)) {
+        const rest = path.slice(prefix.length).replaceAll("/", "\\");
+        return `${home.replace(/[\\/]+$/, "")}\\${rest}`;
+      }
+    }
+    return path;
+  }
+  if (path.startsWith("~/")) {
+    return `${home.replace(/\/+$/, "")}/${path.slice(2)}`;
   }
   return path;
 }
