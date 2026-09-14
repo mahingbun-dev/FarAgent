@@ -630,8 +630,33 @@ impl OpenSshTransport {
         self.exec_stdio(&bash_login_command(bash_lc), stdin)
     }
 
+    /// [`exec_login_stdin`](Self::exec_login_stdin) with a caller-chosen
+    /// deadline. A multi-megabyte payload (the `faragent-helper` binary) can
+    /// need far longer than [`EXEC_TIMEOUT`] to cross a slow link; the short
+    /// timeout stays the default so nothing else changes.
+    pub fn exec_login_stdin_timeout(
+        &self,
+        bash_lc: &str,
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<ExecOutput> {
+        self.exec_stdio_timeout(&bash_login_command(bash_lc), stdin, timeout)
+    }
+
     /// Run a caller-built remote command line, piping `stdin` into it.
     pub fn exec_stdio(&self, remote: &str, stdin: &[u8]) -> Result<ExecOutput> {
+        self.exec_stdio_timeout(remote, stdin, EXEC_TIMEOUT)
+    }
+
+    /// [`exec_stdio`](Self::exec_stdio) with a caller-chosen deadline. Piped
+    /// input and output make a large `stdin` safe on the wire; the deadline is
+    /// the only knob that changes.
+    pub fn exec_stdio_timeout(
+        &self,
+        remote: &str,
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<ExecOutput> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
@@ -644,7 +669,7 @@ impl OpenSshTransport {
         if let Some(mut s) = child.stdin.take() {
             s.write_all(stdin).ok();
         }
-        self.wait_child(child, &line, EXEC_TIMEOUT)
+        self.wait_child(child, &line, timeout)
     }
 
     /// Run a PowerShell script on a Windows remote: the default shell (cmd)
@@ -1185,6 +1210,20 @@ Host ignored
         assert!(line.ends_with(" -- bash -lc 'run helper'"), "{line}");
     }
 
+    /// `PATH` is process-global, so two tests that shadow `ssh` at once would
+    /// see each other's stand-in. Every test that installs a [`PathGuard`]
+    /// holds this first. Poisoning is ignored: a failed test must not wedge
+    /// the rest of the suite.
+    #[cfg(unix)]
+    static SSH_STUB_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    fn lock_ssh_stub() -> std::sync::MutexGuard<'static, ()> {
+        SSH_STUB_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Puts a directory in front of `PATH` for the duration of a test and
     /// restores it even if the test panics. Only ever used by tests that
     /// shadow `ssh`, and the shadow directory contains nothing else.
@@ -1224,6 +1263,7 @@ Host ignored
         use std::io::{BufRead, BufReader};
         use std::os::unix::fs::PermissionsExt;
 
+        let _stub = lock_ssh_stub();
         let dir = tempfile::tempdir().unwrap();
         let argv_file = dir.path().join("argv");
         let pid_file = dir.path().join("pid");
@@ -1309,6 +1349,92 @@ while IFS= read -r _l; do printf 'echo:%s\n' "$_l"; done
             thread::sleep(Duration::from_millis(20));
         }
         assert!(reaped, "dropping CommandStream left child {pid} running");
+    }
+
+    /// The deadline is the only thing that changed for large uploads, so it is
+    /// tested directly against a real child: no ssh, no `PATH`, no stub.
+    #[cfg(unix)]
+    #[test]
+    fn wait_child_timeout_kills_a_hung_child_at_the_caller_deadline() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let started = Instant::now();
+        let result = wait_child_timeout(child, Duration::from_millis(200));
+        assert!(
+            matches!(result, Err(WaitError::Timeout)),
+            "a child that outlives the deadline must be killed, not awaited"
+        );
+        // The 25s default would not have returned yet; a caller-chosen deadline
+        // must be the one that applies.
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the custom deadline did not apply: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// End to end through the real spawn path: the payload reaches the remote
+    /// command's stdin, and a custom deadline shorter than the default still
+    /// applies. This is the shape the `faragent-helper` upload rides.
+    #[cfg(unix)]
+    #[test]
+    fn exec_login_stdin_timeout_pipes_the_payload_and_honours_its_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _stub = lock_ssh_stub();
+        let dir = tempfile::tempdir().unwrap();
+        let out_file = dir.path().join("payload");
+        // A stand-in `ssh`: `cat` the piped payload out (for the delivery half)
+        // and hang when the remote line says `sleep` (for the deadline half).
+        let script = format!(
+            r#"#!/bin/sh
+case " $* " in
+  *sleep*) sleep 30 ;;
+esac
+cat > '{out}'
+exit 0
+"#,
+            out = out_file.display()
+        );
+        let fake = dir.path().join("ssh");
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _path = PathGuard::prepend(dir.path());
+        let t = test_transport("fake.invalid");
+
+        // Every byte value survives the pipe: an upload is not text.
+        let payload: Vec<u8> = (0u8..=255).collect();
+        let out = t
+            .exec_login_stdin_timeout("upload", &payload, Duration::from_secs(20))
+            .expect("the upload run should finish");
+        assert!(out.success(), "{:?}", out.code);
+        assert_eq!(
+            std::fs::read(&out_file).unwrap(),
+            payload,
+            "the payload must reach the remote's stdin byte for byte"
+        );
+
+        // The same call with a short deadline gives up quickly instead of
+        // waiting out the 25s default.
+        let started = Instant::now();
+        let error = t
+            .exec_login_stdin_timeout("sleep", b"payload", Duration::from_millis(300))
+            .expect_err("a hung remote must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the caller's deadline must be the one enforced: {:?}",
+            started.elapsed()
+        );
+        let typed = error
+            .downcast_ref::<TransportError>()
+            .expect("a timeout must stay a typed TransportError");
+        assert!(typed.timed_out);
     }
 
     #[test]
