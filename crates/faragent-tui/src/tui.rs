@@ -1265,6 +1265,8 @@ fn session_line(s: &SessionSummary) -> String {
         runtime::MARK_LIVE
     } else if s.running {
         runtime::MARK_RUNNING
+    } else if s.scheduled {
+        runtime::MARK_SCHEDULED
     } else {
         runtime::MARK_IDLE
     };
@@ -1792,6 +1794,7 @@ mod tests {
             live,
             running,
             tmux: None,
+            scheduled: false,
         };
         assert!(session_line(&mk(true, false)).starts_with("[live]"));
         assert!(session_line(&mk(false, true)).starts_with("[running]"));
@@ -1832,6 +1835,7 @@ mod tests {
             live: false,
             running: false,
             tmux: None,
+            scheduled: false,
         }
     }
 

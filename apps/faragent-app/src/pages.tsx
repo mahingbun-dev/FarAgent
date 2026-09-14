@@ -261,9 +261,15 @@ export function AgentsPage() {
     enabled: !!host,
   });
 
-  if (!host) return null;
+  if (!host) {
+    return (
+      <Page title={t("agents.title")} back={() => setView("hosts")}>
+        <Empty>{t("hosts.empty")}</Empty>
+      </Page>
+    );
+  }
   const p: Probe | undefined = probe.data;
-  const sessionsSupported = !!p && (p.os === "windows" || p.tmux.found);
+  const sessionsSupported = !!p && (p.os === "windows" || !!p.tmux?.found);
 
   return (
     <Page
@@ -280,7 +286,12 @@ export function AgentsPage() {
       }
       hint={t("hosts.hint")}
     >
-      {probe.isLoading ? <Spinner /> : null}
+      {probe.isLoading || (probe.isFetching && !p) ? (
+        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t("hosts.probing", { host: host.alias })}
+        </div>
+      ) : null}
       {probe.error && !p ? (
         <ProblemInline
           host={host.alias}
@@ -448,7 +459,36 @@ export function SessionsPage() {
     [sessions.data, probe.data],
   );
 
-  if (!host || !probe.data) return null;
+  if (!host) {
+    return (
+      <Page title={t("sessions.title")} back={() => setView("hosts")}>
+        <Empty>{t("hosts.empty")}</Empty>
+      </Page>
+    );
+  }
+  if (!probe.data) {
+    return (
+      <Page
+        title={`${t("sessions.title")} · ${host.alias} · ${AGENT_TITLES[agent]}`}
+        back={() => setView("agents")}
+      >
+        {probe.isLoading || probe.isFetching ? (
+          <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t("hosts.probing", { host: host.alias })}
+          </div>
+        ) : probe.error ? (
+          <ProblemInline
+            host={host.alias}
+            error={probe.error}
+            onOpen={openTab}
+          />
+        ) : (
+          <Empty>{t("sessions.empty")}</Empty>
+        )}
+      </Page>
+    );
+  }
   const hostAlias = host.alias;
 
   /**
@@ -552,13 +592,32 @@ export function SessionsPage() {
       }
       hint={t("hosts.hint")}
     >
-      {sessions.isLoading ? <Spinner /> : null}
-      {sessions.data?.length === 0 ? (
-        <Empty>{t("sessions.empty")}</Empty>
+      {sessions.isLoading || (sessions.isFetching && !sessions.data) ? (
+        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t("sessions.listing")}
+        </div>
       ) : null}
-      <ul className="space-y-1">
-        {sessions.data?.map((s) => {
-          const mark = s.live ? "live" : s.running ? "running" : "idle";
+      {sessions.error && !sessions.data ? (
+        <ProblemInline
+          host={hostAlias}
+          error={sessions.error}
+          onOpen={openTab}
+        />
+      ) : null}
+      {(() => {
+        const rows = sessions.data ?? [];
+        const interactive = rows.filter((s) => !s.scheduled);
+        const scheduled = rows.filter((s) => s.scheduled);
+        const showScheduled = scheduled.length > 0 || agent === "codex";
+        const renderRow = (s: Session) => {
+          const mark = s.live
+            ? "live"
+            : s.running
+              ? "running"
+              : s.scheduled
+                ? "sched"
+                : "idle";
           return (
             <li key={`${s.agent}-${s.id}`}>
               <button
@@ -570,7 +629,7 @@ export function SessionsPage() {
                     "w-16 font-mono text-[11px] uppercase tracking-wide",
                     mark === "live" && "text-mark-live",
                     mark === "running" && "text-mark-running",
-                    mark === "idle" && "text-mark-idle",
+                    (mark === "idle" || mark === "sched") && "text-mark-idle",
                   )}
                 >
                   {mark}
@@ -584,8 +643,44 @@ export function SessionsPage() {
               </button>
             </li>
           );
-        })}
-      </ul>
+        };
+        if (
+          interactive.length === 0 &&
+          scheduled.length === 0 &&
+          !sessions.isLoading &&
+          !sessions.error
+        ) {
+          return <Empty>{t("sessions.empty")}</Empty>;
+        }
+        return (
+          <>
+            {showScheduled ? (
+              <h2 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {t("sessions.interactive")}
+              </h2>
+            ) : null}
+            {interactive.length === 0 && showScheduled ? (
+              <Empty>{t("sessions.empty")}</Empty>
+            ) : (
+              <ul className="space-y-1">{interactive.map(renderRow)}</ul>
+            )}
+            {showScheduled ? (
+              <>
+                <h2 className="mb-1 mt-6 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("sessions.scheduled")}
+                </h2>
+                {scheduled.length === 0 ? (
+                  <p className="py-2 text-xs text-muted-foreground">
+                    {t("sessions.scheduledEmpty")}
+                  </p>
+                ) : (
+                  <ul className="space-y-1">{scheduled.map(renderRow)}</ul>
+                )}
+              </>
+            ) : null}
+          </>
+        );
+      })()}
 
       {newSession ? (
         <NewSessionDialog

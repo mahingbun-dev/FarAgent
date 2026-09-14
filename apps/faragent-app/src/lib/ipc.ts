@@ -59,6 +59,8 @@ export interface Session {
   live: boolean;
   running: boolean;
   tmux?: string | null;
+  /** Codex `codex exec` / launchd rollouts. */
+  scheduled?: boolean;
 }
 
 export interface Plan {
@@ -178,12 +180,13 @@ export const ipc = {
     sessionId: string | null,
     createCwd: boolean,
   ) =>
+    // Tauri 2 command args are camelCase (`create_cwd` → `createCwd`).
     invoke<string>("ensure_session", {
       host,
       agent,
       cwd,
-      session_id: sessionId,
-      create_cwd: createCwd,
+      sessionId,
+      createCwd,
     }),
   getLanguage: () => invoke<Lang>("get_language"),
   setLanguage: (lang: string) => invoke<void>("set_language", { lang }),
@@ -214,7 +217,7 @@ export const ipc = {
       spec: args.spec,
       cols: args.cols,
       rows: args.rows,
-      on_event: args.onEvent,
+      onEvent: args.onEvent,
     }),
   attachWrite: (id: number, data: string) =>
     invoke<void>("attach_write", { id, data }),

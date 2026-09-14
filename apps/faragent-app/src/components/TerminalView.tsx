@@ -13,6 +13,11 @@ import "@xterm/xterm/css/xterm.css";
 import { asDiagnosis, errorMessage, ipc } from "@/lib/ipc";
 import type { AttachEvent, AttachSpec, Diagnosis } from "@/lib/ipc";
 import { b64ToBytes, bytesToB64 } from "@/lib/bytes";
+import { createAttachLease } from "@/lib/attach-lease";
+
+/** Survive React StrictMode's immediate unmount/remount without SIGHUP-ing ssh. */
+const attachLease = createAttachLease();
+let live: { key: string; channel: Channel<AttachEvent> } | null = null;
 
 /** Read a CSS custom property so the terminal shares the app's palette. */
 function cssVar(name: string, fallback: string): string {
@@ -20,6 +25,10 @@ function cssVar(name: string, fallback: string): string {
     .getPropertyValue(name)
     .trim();
   return v || fallback;
+}
+
+function writePty(id: number, data: string) {
+  ipc.attachWrite(id, bytesToB64(new TextEncoder().encode(data))).catch(() => {});
 }
 
 export function TerminalView({
@@ -40,6 +49,7 @@ export function TerminalView({
     const el = container.current;
     if (!el) return;
 
+    const key = `${host}\0${specKey}`;
     const background = cssVar("--background", "#faf9f5");
     const foreground = cssVar("--foreground", "#2d2a26");
     const accent = cssVar("--primary", "#c96442");
@@ -61,7 +71,6 @@ export function TerminalView({
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(el);
-    // Let layout settle before the first fit (fonts/metrics).
     requestAnimationFrame(() => {
       try {
         fit.fit();
@@ -72,8 +81,19 @@ export function TerminalView({
 
     let sessionId: number | null = null;
     let disposed = false;
+    const pending: string[] = [];
 
-    const channel = new Channel<AttachEvent>();
+    term.onData((data) => {
+      if (sessionId === null) {
+        pending.push(data);
+        return;
+      }
+      writePty(sessionId, data);
+    });
+
+    const channel =
+      live && live.key === key ? live.channel : new Channel<AttachEvent>();
+    live = { key, channel };
     channel.onmessage = (event) => {
       if (event.kind === "data") {
         term.write(b64ToBytes(event.b64));
@@ -87,34 +107,32 @@ export function TerminalView({
       }
     };
 
-    (async () => {
-      try {
-        const id = await ipc.attachOpen({
+    void attachLease
+      .acquire(key, () =>
+        ipc.attachOpen({
           host,
           spec: JSON.parse(specKey) as AttachSpec,
-          cols: term.cols,
-          rows: term.rows,
+          cols: Math.max(term.cols, 80),
+          rows: Math.max(term.rows, 24),
           onEvent: channel,
-        });
-        if (disposed) {
-          await ipc.attachClose(id).catch(() => {});
-          return;
-        }
+        }),
+      )
+      .then((id) => {
+        if (disposed) return;
         sessionId = id;
+        for (const data of pending) writePty(id, data);
+        pending.length = 0;
+        if (term.cols >= 2 && term.rows >= 2) {
+          ipc.attachResize(id, term.cols, term.rows).catch(() => {});
+        }
         term.focus();
-        term.onData((data) => {
-          const id = sessionId;
-          if (id === null) return;
-          ipc
-            .attachWrite(id, bytesToB64(new TextEncoder().encode(data)))
-            .catch(() => {});
-        });
-      } catch (e) {
+      })
+      .catch((e) => {
+        if (disposed) return;
         const d = asDiagnosis(e);
         if (d) onDiagnosis(d);
         else term.write(`\r\n\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
-      }
-    })();
+      });
 
     const observer = new ResizeObserver(() => {
       try {
@@ -122,19 +140,19 @@ export function TerminalView({
       } catch {
         return;
       }
-      if (sessionId !== null) {
-        ipc.attachResize(sessionId, term.cols, term.rows).catch(() => {});
-      }
+      if (sessionId === null || term.cols < 2 || term.rows < 2) return;
+      ipc.attachResize(sessionId, term.cols, term.rows).catch(() => {});
     });
     observer.observe(el);
 
     return () => {
       disposed = true;
       observer.disconnect();
-      if (sessionId !== null) {
-        ipc.attachClose(sessionId).catch(() => {});
-      }
       term.dispose();
+      attachLease.release(key, (id) => {
+        live = null;
+        ipc.attachClose(id).catch(() => {});
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [host, specKey]);
