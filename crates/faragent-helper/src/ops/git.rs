@@ -128,11 +128,29 @@ fn git_failed(status: &std::process::ExitStatus, stderr: &[u8]) -> ProtoError {
     if detail.is_empty() {
         detail = format!("git exited with {status}");
     }
-    if detail.len() > MAX_ERROR_BYTES {
-        detail.truncate(MAX_ERROR_BYTES);
-        detail.push('…');
-    }
+    clamp_detail(&mut detail);
     ProtoError::new(ErrorCode::GitFailed, detail)
+}
+
+/// Clamp a git failure message to `MAX_ERROR_BYTES`, ending on a char boundary.
+///
+/// `String::truncate` panics when the index is not a char boundary, and `detail`
+/// is lossy-decoded git stderr that may hold multibyte bytes — git emits raw
+/// non-ASCII in its messages even under `LC_ALL=C` (e.g. a bad ref name). A
+/// panic here would be fatal: the crate is built with `panic = "abort"`, so a
+/// long, multibyte failure message would kill the process instead of returning
+/// an error frame. Back up to the nearest boundary first. (`str::floor_char_boundary`
+/// would say this directly but it is newer than the crate's MSRV, so scan.)
+fn clamp_detail(detail: &mut String) {
+    if detail.len() <= MAX_ERROR_BYTES {
+        return;
+    }
+    let mut end = MAX_ERROR_BYTES;
+    while end > 0 && !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail.truncate(end);
+    detail.push('…');
 }
 
 /// Run git and return its stdout whole. Used for the ops whose output is
@@ -305,19 +323,26 @@ fn parse_status(raw: &[u8]) -> (StatusHead, Vec<FileEntry>, bool) {
             break;
         }
         match rec[0] {
-            // Ordinary and unmerged changes: 9 fields, path last (it may
-            // contain spaces, which is why this is a splitn).
-            b'1' | b'u' => {
+            // Ordinary change: 9 fields, path last (it may contain spaces,
+            // which is why this is a splitn).
+            b'1' => {
                 let parts = split_fields(rec, 9);
                 if parts.len() < 9 {
                     continue;
                 }
-                files.push(entry_from_xy(
-                    parts[1],
-                    parts[8].to_vec(),
-                    None,
-                    rec[0] == b'u',
-                ));
+                files.push(entry_from_xy(parts[1], parts[8].to_vec(), None, false));
+            }
+            // Unmerged (conflicted) change: 11 fields —
+            // `u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`.
+            // Its arity is different from the ordinary record, so splitting it
+            // on nine fields would leave `<h2> <h3> <path>` as the "path" and
+            // hand the client a name that does not exist. The path is field 11.
+            b'u' => {
+                let parts = split_fields(rec, 11);
+                if parts.len() < 11 {
+                    continue;
+                }
+                files.push(entry_from_xy(parts[1], parts[10].to_vec(), None, true));
             }
             // Rename/copy: 10 fields (the score is its own field), and the
             // original path is the *next* NUL-terminated token.
@@ -746,7 +771,8 @@ mod tests {
                     # branch.ab +2 -3\0\
                     1 .M N... 100644 100644 100644 aaa bbb a.txt\0\
                     2 R. N... 100644 100644 100644 aaa bbb R100 renamed.txt\0b.txt\0\
-                    ? untracked.txt\0";
+                    ? untracked.txt\0\
+                    u UU N... 100644 100644 100644 100644 aaa bbb ccc f.txt\0";
         let (head, files, truncated) = parse_status(raw);
         assert!(!truncated);
         assert_eq!(head.branch.as_deref(), Some("main"));
@@ -756,7 +782,7 @@ mod tests {
         assert!(!head.detached);
 
         let plain: Vec<Value> = files.iter().map(FileEntry::to_value).collect();
-        assert_eq!(plain.len(), 3);
+        assert_eq!(plain.len(), 4);
         assert_eq!(plain[0]["status"], "modified");
         assert_eq!(plain[0]["index"], ".");
         assert_eq!(plain[0]["worktree"], "M");
@@ -767,6 +793,10 @@ mod tests {
         assert_eq!(plain[1]["path_b64"], proto::b64_encode(b"renamed.txt"));
         assert_eq!(plain[1]["orig_path_b64"], proto::b64_encode(b"b.txt"));
         assert_eq!(plain[2]["status"], "untracked");
+        // The unmerged record is the odd one out: 11 fields, not 9. Its path
+        // must be the last field, not `<h2> <h3> <path>`.
+        assert_eq!(plain[3]["status"], "conflicted");
+        assert_eq!(plain[3]["path_b64"], proto::b64_encode(b"f.txt"));
     }
 
     #[test]
@@ -830,5 +860,35 @@ mod tests {
         std::fs::remove_file(repo.join(".git")).unwrap();
         std::fs::create_dir(repo.join(".git")).unwrap();
         assert_eq!(git_dir(&repo), repo.join(".git"));
+    }
+
+    #[test]
+    fn a_git_failure_message_is_truncated_on_a_char_boundary() {
+        // `detail` is lossy-decoded git stderr and git emits raw multibyte
+        // bytes even under `LC_ALL=C`. Put a two-byte character so that it
+        // straddles byte `MAX_ERROR_BYTES`: a naive `truncate(MAX_ERROR_BYTES)`
+        // panics here, and `panic = "abort"` turns that into a dead helper.
+        let mut detail = "x".repeat(MAX_ERROR_BYTES - 1);
+        detail.push('é'); // spans bytes [MAX-1, MAX+1)
+        detail.push_str("tail");
+        assert_eq!(detail.len(), MAX_ERROR_BYTES + 1 + 4);
+        assert!(
+            !detail.is_char_boundary(MAX_ERROR_BYTES),
+            "the test fixture must straddle the cap, or it proves nothing"
+        );
+
+        clamp_detail(&mut detail);
+
+        let body = detail.len() - '…'.len_utf8();
+        assert!(detail.ends_with('…'), "the cut is marked: {detail:?}");
+        assert_eq!(body, MAX_ERROR_BYTES - 1, "backed up to the boundary");
+        assert_eq!(&detail[..body], "x".repeat(MAX_ERROR_BYTES - 1).as_str());
+    }
+
+    #[test]
+    fn a_short_git_failure_message_is_left_alone() {
+        let mut detail = String::from("fatal: nope");
+        clamp_detail(&mut detail);
+        assert_eq!(detail, "fatal: nope");
     }
 }

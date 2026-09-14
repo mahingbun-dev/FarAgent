@@ -751,6 +751,59 @@ fn git_status_reports_branch_and_every_change_kind() {
 }
 
 #[test]
+fn git_status_names_a_conflicted_file_exactly() {
+    // The unmerged (`u`) porcelain-v2 record has a different arity from the
+    // ordinary (`1`) record — 11 fields, not 9. Splitting it as an ordinary
+    // record leaves `<h2> <h3> <path>` as the "path", so a conflicted file is
+    // reported under a name that does not exist and "show the conflicted file"
+    // fails with a bogus git error. Build a real conflict: the defect is byte
+    // layout, so a synthetic string would not have caught it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main", "."]);
+    git(root, &["config", "user.email", "helper@example.test"]);
+    git(root, &["config", "user.name", "Helper Test"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("f.txt"), b"base\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "base"]);
+    git(root, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(root.join("f.txt"), b"other\n").unwrap();
+    git(root, &["commit", "-qam", "other side"]);
+    git(root, &["checkout", "-q", "main"]);
+    std::fs::write(root.join("f.txt"), b"main\n").unwrap();
+    git(root, &["commit", "-qam", "main side"]);
+    // The merge must fail for the conflict to be left in the index.
+    let merge = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge", "--no-edit", "other"])
+        .output()
+        .expect("run git merge");
+    assert!(!merge.status.success(), "the merge must conflict");
+
+    let mut helper = Helper::start();
+    let status = helper.call_ok("git.status", json!({ "root_b64": path_b64(root) }));
+    let files = status["files"].as_array().unwrap();
+    let conflicted: Vec<&Value> = files
+        .iter()
+        .filter(|entry| entry["status"] == json!("conflicted"))
+        .collect();
+    assert_eq!(
+        conflicted.len(),
+        1,
+        "exactly one conflicted file: {files:?}"
+    );
+    assert_eq!(
+        decode(&conflicted[0]["path_b64"]),
+        b"f.txt",
+        "the unmerged record's path is its 11th field, not `<h2> <h3> <path>`"
+    );
+    let (exit, _, _) = helper.finish();
+    assert!(exit.success());
+}
+
+#[test]
 fn git_branches_and_log_describe_the_history() {
     let dir = repo_fixture();
     let root = dir.path();
