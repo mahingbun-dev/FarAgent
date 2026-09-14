@@ -2,7 +2,7 @@
 
 [English](../en/acceptance.md) · **中文**
 
-这份清单是**这个分支（任务 11 + 12：实时刷新、缓存、i18n 收口）中，只有在真机上才能确认的部分**。
+这份清单是**这个分支（应用外壳、只读面板、实时刷新、缓存、i18n 收口）中，只有在真机上才能确认的部分**。
 
 写它的原因很直接：本分支的开发机是 macOS，工作面版（面板 / 文件树 / Git）是通过 `src/lib/mock/` 这套假后端验证的，`cargo test` 与 `node --test` 跑的是纯逻辑。下面这些条目**在开发机上无论如何都测不出来**，所以它们不是"待办"，而是"必须有人在真机器上做一次"。
 
@@ -16,7 +16,9 @@
 ```bash
 ssh -o BatchMode=yes <Host> true     # 零交互成功
 cargo test -p faragent-service        # 76 项
-cd apps/faragent-app && npm test      # 184 项
+cargo test -p faragent-app            # 17 项
+cargo test -p faragent-helper         # 54 项（lib 30 + main 2 + protocol 22）
+cd apps/faragent-app && npm test      # 211 项
 ```
 
 ---
@@ -92,6 +94,8 @@ sudo mount -t tmpfs -o noexec,size=64m tmpfs /tmp/noexec-home
 # 让远端的 HOME 落在 noexec 上（或直接把安装目录指过去）
 ssh -t <Host> 'HOME=/tmp/noexec-home faragent-helper --version'   # 预期：126 / Permission denied
 ```
+
+这个 126 来自挂载点本身，不是来自 `--version`：在可写挂载点上 `--version` 会直接打印并退出 0（见第 14 节），所以这里出现 126 是内核拒绝 exec 这个文件。
 
 **应该看到什么**：面板 / TUI 显示"远端 helper 无法执行（退出码 126）：可能是 noexec 挂载点或架构不符，改用脚本模式。"，即 `HelperMode::ScriptFallback(FallbackReason::NotExecutable { .. })`，**并且会话仍然可用**（脚本模式兜底），不是直接失败。
 
@@ -373,7 +377,7 @@ uname -s -m                                    # Linux/aarch64、Darwin/x86_64
 ~/.faragent/bin/faragent-helper --version      # 或任意一条 helper 的只读 op
 ```
 
-**应该看到什么**：helper 能启动、能应答 `ping`，架构不匹配的报错**不**出现。
+**应该看到什么**：helper 打印 `faragent-helper <版本号>` 并退出 0 —— 版本号与它 `ping` 回复里的一致 —— 架构不匹配的报错**不**出现。（`--version` 与 `--help` 都在读取 stdin 之前就答完，所以这一行不会卡住。）
 
 **什么算失败**：`Exec format error`；启动即崩；musl 静态链接在目标发行版上缺符号。
 
@@ -381,7 +385,7 @@ uname -s -m                                    # Linux/aarch64、Darwin/x86_64
 
 ## 15. Windows 远端的环境判定文案 —— 未验证
 
-任务 12 改掉了 `FallbackReason::WindowsRemote` 的措辞：以前它暗示"降级到脚本模式"，但 helper 通道是 POSIX 专用的，Windows 上**根本开不了 helper 会话**，所以现在是一句明确的失败说明：
+本分支改掉了 `FallbackReason::WindowsRemote` 的措辞：以前它暗示"降级到脚本模式"，但 helper 通道是 POSIX 专用的，Windows 上**根本开不了 helper 会话**，所以现在是一句明确的失败说明；而且它以**双语** `localized` 错误传到前端（不是拍平成一句英文），中文读者看到的就是中文那半：
 
 > the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it.
 > 远程是 Windows：helper 通道仅支持 POSIX，无法在这些远端打开 helper 会话。
@@ -392,13 +396,40 @@ mock 里已经按这句对齐（`win-builder` 这个主机名会返回它），R
 
 ```bash
 # 在一台开着 OpenSSH Server 的 Windows 机器上
-ssh <WinHost> 'cmd /c ver'          # 确认必应
+ssh <WinHost> 'cmd /c ver'          # 确认是 Windows
 # 然后在 FarAgent 里选这台主机
 ```
 
-**应该看到什么**：明确的"Windows / helper 只支持 POSIX / 无法建立会话"，而不是"已改用脚本模式"。
+**应该看到什么**：明确的"Windows / helper 只支持 POSIX / 无法建立会话"，而不是"已改用脚本模式"；中文界面下这句话是中文。
 
-**什么算失败**：文案说"已降级到脚本模式"（不真实）；或者给出一个用户无法理解的原始报错。
+**什么算失败**：文案说"已降级到脚本模式"（不真实）；中文界面显示英文那句；或者给出一个用户无法理解的原始报错。
+
+---
+
+## 16. 脚本兜底的 op 缺口被点名，而不是悄悄失败 —— 开发机已验（mock）
+
+bash 兜底（`crates/faragent-remote/src/{fs,git}.rs`）只会七个 op —— `ping`、`fs.list`、`fs.read`、`fs.stat`、`git.discover`、`git.status`、`git.log`。它**不会** `git.diff`、`git.branches`、`watch.subscribe`。本分支之前，面板默认这三个都有：改动标签报 `unknown op git.diff`，分支列表没法用，实时刷新按设计被静默吞掉。
+
+修它的机制本来就在协议里，只是以前没人用：`ping` 的回复带着 `ops` 列表，面板在连接打开时 ping 一次，然后只禁用远端确实供不了的那几项 —— 每一项都用双语理由顶替内容，绝不留空、也绝不撒谎。因为判定是**按 op** 而不是"原生 vs 脚本"，将来某个兜底补上了 `git.diff`，这个功能不用改代码就自动回来。
+
+**怎么操作**
+
+用第 3、4 节里的任一手段，或把安装目录指到没有 `sha256sum`/`shasum` 的挂载点，把兜底逼出来；然后在那台主机上打开面板，走下表。开发机上可以用 mock 的 `gpu-box`（`src/lib/mock/helper.ts` 把它建模成 `script_fallback`，它的 `opCall` 对七个之外的 op 返回 `unknown op`，与真实 shell 脚本一致）。
+
+**应该看到什么** —— 逐项：
+
+| 面板入口 | 兜底下的表现 | 原因 |
+| --- | --- | --- |
+| 文件标签：树、预览、stat | **可用** | `fs.list`、`fs.read`、`fs.stat` 都在词表里 |
+| 改动标签：改动文件列表 | **可用** | `git.status` 在 |
+| 改动标签：点开某文件的 diff | **禁用** | 没有 `git.diff`；该行不可展开，并显示 `changes.noDiffOp` |
+| Git 标签：仓库 / status / log | **可用** | `git.discover`、`git.status`、`git.log` 都在 |
+| Git 标签：分支列表 | **禁用** | 没有 `git.branches`；该区显示 `git.branchesUnsupported`，**不是**"没有分支" |
+| 实时刷新 | **关闭** | 没有 `watch.subscribe`；面板顶部一行显示 `panel.watchUnsupported`，且不再发订阅 |
+
+同时确认**反面**：兜底下，`git.diff`、`git.branches`、`watch.subscribe` 这三个请求一次都不该发出（照附录那样包一层 `window.__TAURI_INTERNALS__.invoke` 记录命令名）。再确认**正面**：原生主机（mock 里的 `build-01.farm.internal`）上以上六项都跟以前一样 —— 能力门禁不能把 helper 供得了的功能也关掉。
+
+**什么算失败**：被禁用的入口渲染成空列表或转圈，而不是给出理由；中文界面下理由是英文；那三个不支持的 op 仍在发；或者原生主机丢掉了它本可以提供的功能。
 
 ---
 

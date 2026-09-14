@@ -2,7 +2,7 @@
 
 **English** · [中文](../zh/acceptance.md)
 
-This checklist lists **the parts of this branch (tasks 11 + 12: live refresh, caching, i18n close-out) that can only be confirmed on a real machine.**
+This checklist lists **the parts of this branch (the app shell, the read-only panel, live refresh, caching, the i18n close-out) that can only be confirmed on a real machine.**
 
 The reason it exists is simple: this branch was developed on macOS, and the panel (file tree / preview / Git) was verified against the fake backend in `src/lib/mock/`, while `cargo test` and `node --test` exercise pure logic. The items below **cannot be tested on a development machine at all**, so they are not a "todo list" — they are "someone has to do this once, on real hardware."
 
@@ -16,7 +16,9 @@ Confirm the baseline first:
 ```bash
 ssh -o BatchMode=yes <Host> true     # succeeds with no interaction
 cargo test -p faragent-service        # 76 tests
-cd apps/faragent-app && npm test      # 184 tests
+cargo test -p faragent-app            # 17 tests
+cargo test -p faragent-helper         # 54 tests (30 lib + 2 main + 22 protocol)
+cd apps/faragent-app && npm test      # 211 tests
 ```
 
 ---
@@ -92,6 +94,8 @@ sudo mount -t tmpfs -o noexec,size=64m tmpfs /tmp/noexec-home
 # Either put the remote HOME on the noexec mount, or point the install dir at it
 ssh -t <Host> 'HOME=/tmp/noexec-home faragent-helper --version'   # expect 126 / Permission denied
 ```
+
+The 126 comes from the mount, not from the flag: `--version` prints and exits 0 on any writable mount (see §14), so a 126 here is the kernel refusing to exec the file at all.
 
 **What to expect**: the panel / TUI says "the remote helper cannot be executed (exit 126): likely a noexec mount or a wrong architecture; using the script mode." — i.e. `HelperMode::ScriptFallback(FallbackReason::NotExecutable { .. })` — **and the session still works** (script mode is the fallback), rather than failing outright.
 
@@ -373,7 +377,7 @@ uname -s -m                                    # Linux/aarch64, Darwin/x86_64
 ~/.faragent/bin/faragent-helper --version      # or any read-only helper op
 ```
 
-**What to expect**: the helper starts and answers a `ping`, with no architecture-mismatch error.
+**What to expect**: the helper prints `faragent-helper <version>` and exits 0 — the same version its `ping` reply carries — with no architecture-mismatch error. (`--version` and `--help` are answered before stdin is ever read, so this line cannot hang.)
 
 **What counts as failure**: `Exec format error`; a crash on startup; the musl static link missing symbols on the target distribution.
 
@@ -381,10 +385,10 @@ uname -s -m                                    # Linux/aarch64, Darwin/x86_64
 
 ## 15. The Windows-remote environment wording — Not verified
 
-Task 12 changed the wording of `FallbackReason::WindowsRemote`: it used to imply "falling back to script mode", but the helper channel is POSIX-only, so on Windows **no helper session can be opened at all**. It is now a plain failure statement:
+Task 12 changed the wording of `FallbackReason::WindowsRemote`: it used to imply "falling back to script mode", but the helper channel is POSIX-only, so on Windows **no helper session can be opened at all**. It is now a plain failure statement, and it travels to the front end as a bilingual `localized` error (not a flattened English string), so a Chinese reader sees the Chinese half:
 
 > the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it.
-> 远端是 Windows：helper 通道只支持 POSIX，无法在其上建立 helper 会话。
+> 远程是 Windows：helper 通道仅支持 POSIX，无法在这些远端打开 helper 会话。
 
 The mock is aligned with that sentence (`win-builder` as a host name returns it), and `cargo test -p faragent-service` (76 tests) passes. What a real machine adds is **that on a real Windows OpenSSH host the user sees this, and not a script-fallback claim.**
 
@@ -396,9 +400,36 @@ ssh <WinHost> 'cmd /c ver'          # confirm it is Windows
 # Then pick that host in FarAgent
 ```
 
-**What to expect**: a plain "Windows / the helper is POSIX-only / no session can be opened", not "falling back to script mode".
+**What to expect**: a plain "Windows / the helper is POSIX-only / no session can be opened", not "falling back to script mode" — and in a Chinese UI, that sentence in Chinese.
 
-**What counts as failure**: the wording claims "falling back to script mode" (which is untrue); or a raw error the user cannot act on.
+**What counts as failure**: the wording claims "falling back to script mode" (which is untrue); the Chinese UI shows the English sentence; or a raw error the user cannot act on.
+
+---
+
+## 16. The script fallback's op shortfall is named, not silent — Verified on the dev machine (mock)
+
+The bash fallback (`crates/faragent-remote/src/{fs,git}.rs`) speaks a seven-op vocabulary — `ping`, `fs.list`, `fs.read`, `fs.stat`, `git.discover`, `git.status`, `git.log`. It does **not** speak `git.diff`, `git.branches`, or `watch.subscribe`. Before this branch, the panel assumed all three: the Changes tab failed with `unknown op git.diff`, the branch list was unusable, and live refresh failed silently by design.
+
+The mechanism that fixes this is already in the protocol and no longer unused: `ping`'s reply carries an `ops` list, and the panel pings once when its connection opens, then disables exactly the entries the remote cannot serve — each with a bilingual reason in place of the content, never a blank or a lie. Because the decision is per-op rather than "native vs. script", a *future* fallback that grows `git.diff` regains the feature without a code change.
+
+**How to perform**
+
+Force the fallback by any of the means in §3, §4, or by pointing the install dir at a mount without `sha256sum`/`shasum`; then open the panel on that host and walk the list below. On a dev machine the same walk is done against the mock's `gpu-box` host (`src/lib/mock/helper.ts` models it as `script_fallback`, and its `opCall` returns `unknown op` for anything outside the seven, exactly as the shell script does).
+
+**What to expect** — item by item:
+
+| Panel entry | On the fallback | Why |
+| --- | --- | --- |
+| Files tab: tree, preview, stat | **Works** | `fs.list`, `fs.read`, `fs.stat` are all in the vocabulary |
+| Changes tab: the changed-file list | **Works** | `git.status` is |
+| Changes tab: opening a file's diff | **Disabled** | no `git.diff`; the row is not expandable and says `changes.noDiffOp` |
+| Git tab: repository / status / log | **Works** | `git.discover`, `git.status`, `git.log` are |
+| Git tab: the branch list | **Disabled** | no `git.branches`; the section says `git.branchesUnsupported`, *not* "no branches" |
+| Live refresh | **Off** | no `watch.subscribe`; a panel-level line says `panel.watchUnsupported` and no subscribe is sent |
+
+Also confirm the **negative**: with the fallback forced, no request for `git.diff`, `git.branches`, or `watch.subscribe` is ever sent (wrap `window.__TAURI_INTERNALS__.invoke` and record the command names, as in the Appendix). And confirm the **positive**: on a native host (`build-01.farm.internal` in the mock) all six entries above behave as before — the capability gate must not disable anything the helper can serve.
+
+**What counts as failure**: a disabled entry renders as an empty list or a spinner instead of the reason; the reason is English in a Chinese UI; any of the three unsupported ops is still sent; or a native host loses a feature it can serve.
 
 ---
 
