@@ -12,7 +12,8 @@
  * What comes back is capped twice before it is rendered: `sliceDiff` bounds the
  * rows one patch may mount, and past `HIGHLIGHT_MAX_CHARS` the rows are shown
  * without syntax colouring. Neither is silent — the truncation notice is
- * rendered under the rows, outside the horizontal scroller.
+ * rendered *above* the rows and repeated where they stop, and both copies sit
+ * outside the horizontal scroller.
  */
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -44,6 +45,9 @@ export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string })
   // are shown as plain text — the file preview's own rule, applied to a patch.
   // The rows themselves are still shown.
   const highlight = parsed.length <= HIGHLIGHT_MAX_CHARS;
+  const truncationNotice = slice.truncated
+    ? t("changes.diffTruncated", { lines: slice.shown, total: slice.total })
+    : null;
 
   return (
     <div className="border-b border-border last:border-b-0">
@@ -91,6 +95,17 @@ export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string })
           </p>
         ) : slice.files.length > 0 ? (
           <div className="pb-1">
+            {/* Above the rows, not only after them. The panel scrolls
+                vertically: a notice that sits below up to 2000 rows is a notice
+                the reader reaches only after the diff has stopped making sense,
+                which is exactly when they stop reading. It is still outside the
+                horizontal scroller — that part of the old reasoning holds, a
+                notice that scrolls sideways can be missed too. */}
+            {truncationNotice ? (
+              <p className="border-b border-border px-2 py-1 text-xs text-warning">
+                {truncationNotice}
+              </p>
+            ) : null}
             <div className="overflow-x-auto">
               <div className="min-w-fit">
                 {slice.files.map((diffFile, i) => (
@@ -104,14 +119,16 @@ export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string })
                 ))}
               </div>
             </div>
-            {/* Outside the scroller on purpose: a truncation notice that can be
-                scrolled out of sight is a notice the reader may never see. */}
-            {slice.truncated ? (
-              <p className="border-t border-border px-2 py-1 text-xs text-warning">
-                {t("changes.diffTruncated", {
-                  lines: slice.shown,
-                  total: slice.total,
-                })}
+            {/* Repeated where the rows actually stop, so the cut is explained at
+                the point the reader meets it. Hidden from assistive tech: the
+                copy above is the announcement, and two identical alerts for one
+                fact is noise. */}
+            {truncationNotice ? (
+              <p
+                aria-hidden
+                className="border-t border-border px-2 py-1 text-xs text-warning"
+              >
+                {truncationNotice}
               </p>
             ) : null}
           </div>
