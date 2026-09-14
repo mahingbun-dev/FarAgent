@@ -16,6 +16,8 @@ import type { InvokeArgs } from "@tauri-apps/api/core";
 import type { AttachEvent } from "../ipc.ts";
 import { bytesToB64 } from "../bytes.ts";
 import type { AgentKind } from "../agents.ts";
+import { channelId, emit, forgetChannel } from "./channel.ts";
+import { helperHandlers } from "./helper.ts";
 import * as fx from "./fixtures.ts";
 
 export type MockHandler = (args: Record<string, unknown>) => unknown;
@@ -33,40 +35,11 @@ function boolArg(args: Record<string, unknown>, key: string): boolean {
   return args[key] === true;
 }
 
-// ---------------------------------------------------------------- channels
+// ---------------------------------------------------------------- attach
 
 /**
- * Tauri's `Channel` reaches the handler as the object itself under `mockIPC`
- * (only a real invoke serialises it to `__CHANNEL__:<id>`), so accept both.
+ * What the terminal shows instead of a blank screen: there is no remote PTY.
  */
-function channelId(value: unknown): number | null {
-  if (typeof value === "string" && value.startsWith("__CHANNEL__:")) {
-    const id = Number(value.slice("__CHANNEL__:".length));
-    return Number.isInteger(id) ? id : null;
-  }
-  if (value && typeof value === "object" && "id" in value) {
-    const id = (value as { id: unknown }).id;
-    return typeof id === "number" ? id : null;
-  }
-  return null;
-}
-
-/** Per-channel message counter — `Channel` drops anything out of order. */
-const nextIndex = new Map<number, number>();
-
-function emit(id: number, event: AttachEvent): void {
-  const internals = (
-    globalThis as {
-      window?: { __TAURI_INTERNALS__?: { runCallback?: (id: number, data: unknown) => void } };
-    }
-  ).window?.__TAURI_INTERNALS__;
-  if (typeof internals?.runCallback !== "function") return;
-  const index = nextIndex.get(id) ?? 0;
-  nextIndex.set(id, index + 1);
-  internals.runCallback(id, { index, message: event });
-}
-
-/** What the terminal shows instead of a blank screen: there is no remote PTY. */
 function attachBanner(
   host: string,
   spec: unknown,
@@ -177,9 +150,15 @@ export const handlers: Record<string, MockHandler> = {
   attach_resize: () => undefined,
   attach_close: (a) => {
     const id = Number(a.id);
-    if (Number.isInteger(id)) nextIndex.delete(id);
+    if (Number.isInteger(id)) forgetChannel(id);
     return undefined;
   },
+
+  // helper: the framed channel's three commands, in their own module because
+  // they carry a whole virtual remote with them. They are registered here — the
+  // spread is what keeps `mockedCommands()` the single coverage list — and an
+  // unregistered *command* still throws, exactly as before.
+  ...helperHandlers,
 };
 
 /** Registered command names — the coverage list `mock.test.ts` asserts against. */

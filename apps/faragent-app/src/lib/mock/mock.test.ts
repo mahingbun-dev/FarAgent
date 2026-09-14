@@ -16,6 +16,7 @@ import { after, before, test } from "node:test";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { b64ToBytes } from "../bytes.ts";
 import type { AttachEvent, Session } from "../ipc.ts";
+import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
 import * as fx from "./fixtures.ts";
@@ -67,6 +68,7 @@ test("every command lib/ipc.ts can send is registered", async () => {
   );
 
   const channel = new Channel<AttachEvent>();
+  const helperChannel = new Channel<HelperEvent>();
   const sent: Array<[string, Promise<unknown>]> = [
     ["listHosts", ipc.listHosts()],
     ["hostAuth", ipc.hostAuth(HOST)],
@@ -100,6 +102,7 @@ test("every command lib/ipc.ts can send is registered", async () => {
     ["attachWrite", ipc.attachWrite(1, "")],
     ["attachResize", ipc.attachResize(1, 80, 24)],
     ["attachClose", ipc.attachClose(1)],
+    ["helperOpen", ipc.helperOpen({ host: HOST, onEvent: helperChannel })],
   ];
 
   for (const [name, promise] of sent) {
@@ -257,6 +260,40 @@ test("attach_open answers the caller's channel with a mock banner", async () => 
     assert.match(text, /spec=login/);
   }
   await ipc.attachClose(id);
+});
+
+test("the helper commands answer through the mock's virtual remote", async () => {
+  // The count guard above proves the three commands are registered; this proves
+  // they are *wired*. `helper_call` needs an id, so it cannot go in the eager
+  // list above — it has to await the open first.
+  const channel = new Channel<HelperEvent>();
+  const { id, native } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  assert.equal(native, true);
+
+  const pong = (await ipc.helperCall(id, "ping")) as { pong: boolean; ops: string[] };
+  assert.equal(pong.pong, true);
+  assert.equal(pong.ops.length, 12);
+
+  // An unknown *op* is a protocol error with the helper's own code — never a
+  // silent `undefined`, which a panel would render as an empty list.
+  await ipc.helperCall(id, "fs.chmod").then(
+    () => {
+      throw new Error("an unknown op must reject");
+    },
+    (e: { kind: string; code: string }) => {
+      assert.equal(e.kind, "remote");
+      assert.equal(e.code, "bad_request");
+    },
+  );
+
+  await ipc.helperClose(id);
+  // And the session is really gone afterwards.
+  await ipc.helperCall(id, "ping").then(
+    () => {
+      throw new Error("a closed session must reject");
+    },
+    (e: { kind: string }) => assert.equal(e.kind, "disconnected"),
+  );
 });
 
 test("installMocks refuses to clobber a live Tauri runtime", () => {
