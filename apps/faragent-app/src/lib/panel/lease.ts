@@ -1,66 +1,23 @@
 /**
- * Hold a shared resource across React StrictMode's immediate unmount/remount.
+ * The panel's helper connection, as a lease.
  *
- * `TerminalView` needed exactly this for the ssh attach and got its own
- * `createAttachLease` (typed to the numeric session id). The panel needs the
- * same for the helper connection, so this is the generic form: a second
- * `acquire` with the same key joins the first caller's promise instead of
- * opening a second connection, and the close is deferred by a macrotask so a
- * remount that lands in the same tick re-acquires the slot before it is torn
- * down.
+ * The implementation — and the invariant that keeps a released slot closeable —
+ * lives in `lib/lease.ts`. This module is the panel's spelling of it, so
+ * `helper-context.tsx` keeps importing "the panel lease".
  *
- * That deferral is the whole point. Without it, `pnpm dev`'s StrictMode
- * remount would open a helper channel, immediately close it, and open another
- * — which on the real backend means an ssh child spawned and killed on every
- * panel mount, and a remote log full of noise.
+ * It used to be a second copy with a single `slot`: `acquire` replaced a slot
+ * that still had a holder whenever the key differed, and `release` then
+ * early-returned on the key mismatch — so `acquire("hA")`, `acquire("hB")`,
+ * `release("hA")` closed nothing and hA's helper was leaked. The comment here
+ * claimed the opposite ("a released slot whose key was replaced in the meantime
+ * has no holder left and is closed by the same callback"); it described an
+ * earlier arrangement of the code, not the one below it. That is the failure
+ * mode worth naming: a comment asserting a guarantee the code does not provide
+ * is how the next person ships the bug, and it is why this file no longer has
+ * its own copy of the algorithm to drift out of step with the attach lease's.
  *
- * The deferral must not become a leak, though: a released slot whose key was
- * replaced in the meantime (host changed, retry pressed) has no holder left and
- * is closed by the same callback. See `release`.
- *
- * Pure: no DOM, no React. `schedule` is injectable so a test can flush it.
+ * `PanelHelperProvider` keys it by `` `${host}#${attempt}` ``: one channel per
+ * host, and a fresh one per retry, because the lease caches a rejected open
+ * exactly as it caches a resolved one.
  */
-
-export type Schedule = (fn: () => void) => void;
-
-export interface Lease<T> {
-  acquire(key: string, open: () => Promise<T>): Promise<T>;
-  release(key: string, close: (value: T) => void): void;
-}
-
-export function createLease<T>(
-  schedule: Schedule = (fn) => setTimeout(fn, 0),
-): Lease<T> {
-  let slot: { key: string; holders: number; value: Promise<T> } | null = null;
-
-  return {
-    acquire(key, open) {
-      if (slot && slot.key === key) {
-        slot.holders += 1;
-        return slot.value;
-      }
-      slot = { key, holders: 1, value: open() };
-      return slot.value;
-    },
-
-    release(key, close) {
-      if (!slot || slot.key !== key) return;
-      slot.holders -= 1;
-      const captured = slot;
-      if (captured.holders > 0) return;
-      schedule(() => {
-        // A remount may have re-acquired *this* slot between the release and
-        // this callback; closing then would kill a live connection. Only the
-        // same slot object can have a holder again (an acquire with a matching
-        // key returns the slot it found), so this is the whole test.
-        if (captured.holders > 0) return;
-        // A *different* key took the slot in the meantime. `captured` is then
-        // orphaned with nobody to release it, and its connection would never be
-        // closed — an ssh child leaked on every tab switch or retry. It has to
-        // be closed here, and it is the one case the old guard got backwards.
-        if (slot === captured) slot = null;
-        void captured.value.then((value) => close(value)).catch(() => {});
-      });
-    },
-  };
-}
+export { createLease, type Lease, type Schedule } from "../lease.ts";

@@ -108,15 +108,30 @@ test("a different key opens its own connection", async () => {
   assert.equal(opens, 2);
 });
 
-// The leak. `PanelHelperProvider` keys the lease by `${host}#${attempt}`, so
-// switching the panel to another host — or pressing retry — releases the old
-// key and acquires a new one in the same tick. The old slot has no holder left
-// and nothing else will ever release it, so the deferred close is the only
-// chance to close it. Returning early because "the slot is not ours any more"
-// leaks the connection: on the desktop app, a helper process still holding an
-// ssh child.
+// The multi-key half, which is what the single-slot version of this lease got
+// wrong. `PanelHelperProvider` keys the lease by `${host}#${attempt}`, so a
+// retry releases `host#0` and acquires `host#1`, and switching hosts does the
+// same with two different hosts. Each key is its own slot, so the release finds
+// its own: the connection it drops has no holder left, and this callback is the
+// only thing that will ever close it. With one `slot` variable the second
+// acquire replaced the first and the release then matched nothing — on the
+// desktop app, a helper process still holding an ssh child.
 
-test("a release whose slot was taken by another key still closes its connection", async () => {
+test("two keys held at once: the first one's release closes the first one", async () => {
+  const { schedule, flush } = manual();
+  const lease = createLease<string>(schedule);
+  const closed: string[] = [];
+
+  await lease.acquire("host-a#0", () => Promise.resolve("conn-a"));
+  await lease.acquire("host-b#0", () => Promise.resolve("conn-b"));
+  lease.release("host-a#0", (value) => closed.push(value));
+  flush();
+  await Promise.resolve();
+
+  assert.deepEqual(closed, ["conn-a"], "host A's connection was leaked");
+});
+
+test("a release closes its connection even when another key acquires in the same turn", async () => {
   const { schedule, flush } = manual();
   const lease = createLease<string>(schedule);
   const closed: string[] = [];

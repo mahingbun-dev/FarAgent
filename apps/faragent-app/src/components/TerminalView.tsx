@@ -17,7 +17,30 @@ import { createAttachLease } from "@/lib/attach-lease";
 
 /** Survive React StrictMode's immediate unmount/remount without SIGHUP-ing ssh. */
 const attachLease = createAttachLease();
-let live: { key: string; channel: Channel<AttachEvent> } | null = null;
+
+/**
+ * The event channel of every live attach, keyed exactly like the lease.
+ *
+ * This has to be one channel **per key**, for the same reason the lease has to
+ * be one slot per key. A `Channel` is bound to a callback id at construction
+ * and the backend sends to *that* id, so a remount must re-bind `onmessage` on
+ * the channel the attach was opened with — a fresh one is a channel nothing
+ * will ever be delivered to. As a single module-level slot this was overwritten
+ * by the second tab that mounted, and the first tab's next re-run then went
+ * deaf; as a map, a remount finds its own entry however many tabs are open.
+ *
+ * The entry's lifetime is the lease's: created by the mount that opens the
+ * attach, dropped in the same close callback that closes it.
+ */
+const channels = new Map<string, Channel<AttachEvent>>();
+
+function channelFor(key: string): Channel<AttachEvent> {
+  const live = channels.get(key);
+  if (live) return live;
+  const channel = new Channel<AttachEvent>();
+  channels.set(key, channel);
+  return channel;
+}
 
 /** Read a CSS custom property so the terminal shares the app's palette. */
 function cssVar(name: string, fallback: string): string {
@@ -91,9 +114,7 @@ export function TerminalView({
       writePty(sessionId, data);
     });
 
-    const channel =
-      live && live.key === key ? live.channel : new Channel<AttachEvent>();
-    live = { key, channel };
+    const channel = channelFor(key);
     channel.onmessage = (event) => {
       if (event.kind === "data") {
         term.write(b64ToBytes(event.b64));
@@ -150,7 +171,7 @@ export function TerminalView({
       observer.disconnect();
       term.dispose();
       attachLease.release(key, (id) => {
-        live = null;
+        channels.delete(key);
         ipc.attachClose(id).catch(() => {});
       });
     };
