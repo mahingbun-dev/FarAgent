@@ -436,10 +436,12 @@ function fallbackText(e: unknown): string {
  * `message`; neither does `HelperError::Timeout`.
  *
  * A diagnosis is quoted in its own words (its English summary — the same
- * sentence [`helperErrorText`] localises) rather than summarised here, and a
- * timeout is assembled from the two fields it does carry. Nothing is invented:
- * a shape that is neither still falls through to [`fallbackText`], so a caller
- * sees the same string it saw before rather than a worse one.
+ * sentence [`helperErrorText`] localises) rather than summarised here, a timeout
+ * is assembled from the two fields it does carry, and a tag with no prose beside
+ * it is named by its tag. Nothing is invented along the way, and the two cases
+ * that still carry a string — a bare string rejection, an `Error` — fall through
+ * to [`fallbackText`] untouched, so a caller sees what it saw before rather than
+ * a worse string.
  */
 function missingMessage(
   v: { kind: string; op?: unknown; seconds?: unknown },
