@@ -186,16 +186,24 @@ export function HostSwitcher() {
                       <span className="min-w-0 truncate text-sm font-medium">
                         {h.label}
                       </span>
-                      <RowAction
-                        title={t("hosts.hint")}
-                        disabled={cycleAuth.isPending}
-                        onActivate={() =>
-                          cycleAuth.mutate({ target: h, mode: nextAuth(h.auth) })
-                        }
-                        className="bg-secondary font-mono text-secondary-foreground"
-                      >
-                        {pick(h.authTag, lang).trim()}
-                      </RowAction>
+                      {/* `auth_tag()` is the tag-or-nothing API: auto mode
+                          returns an empty string, and the old hosts page
+                          rendered no tag at all in that case. Render the pill
+                          only when the backend actually has something to say —
+                          otherwise it is an empty grey box whose only meaning
+                          is in its tooltip. */}
+                      {pick(h.authTag, lang).trim() ? (
+                        <RowAction
+                          title={t("hosts.hint")}
+                          disabled={cycleAuth.isPending}
+                          onActivate={() =>
+                            cycleAuth.mutate({ target: h, mode: nextAuth(h.auth) })
+                          }
+                          className="bg-secondary font-mono text-secondary-foreground"
+                        >
+                          {pick(h.authTag, lang).trim()}
+                        </RowAction>
+                      ) : null}
                     </span>
                     <span className="mt-0.5 flex items-center gap-1.5 text-micro text-muted-foreground">
                       {probing ? (
