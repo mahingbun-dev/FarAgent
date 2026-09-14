@@ -16,7 +16,7 @@ import { after, before, test } from "node:test";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { b64ToBytes } from "../bytes.ts";
 import type { AttachEvent, Session } from "../ipc.ts";
-import { HelperError, helperErrorText } from "../helper.ts";
+import { HelperError, decodeText, encodePath, helperErrorText } from "../helper.ts";
 import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
@@ -345,5 +345,53 @@ test("installMocks refuses to clobber a live Tauri runtime", () => {
   } finally {
     delete w.window.__TAURI_INTERNALS__;
     assert.equal(installMocks({ force: true }), true, "and the mock is restorable");
+  }
+});
+
+test("a git.diff target is repository-relative, the shape git.status hands out", async () => {
+  // The regression this pins: git runs with the repository as its cwd, so
+  // `git.status` names files *relative to the repository root*, and the panel
+  // hands one of those names straight back to `git.diff`. If the mock
+  // normalises that relative path into an absolute one on the way in, the
+  // target matches no file, the patch comes back as the empty string, and the
+  // UI tells the user "this file has no text diff" for a file that plainly
+  // has one. `crates/faragent-helper/src/ops/git.rs` passes `path_b64` to
+  // `git diff -- <path>` verbatim for exactly this reason.
+  const channel = new Channel<HelperEvent>();
+  const { id } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  try {
+    const root = encodePath("/srv/data");
+    const status = (await ipc.helperCall(id, "git.status", { root_b64: root })) as {
+      files: Array<{ path_b64: string; staged: boolean }>;
+    };
+    const target = status.files.find(
+      (file) => decodeText(b64ToBytes(file.path_b64)) === "src/app.rs",
+    );
+    assert.ok(target, "the fixture still names src/app.rs among the changes");
+    // Repo-relative, byte for byte what git itself prints.
+    assert.equal(decodeText(b64ToBytes(target.path_b64)), "src/app.rs");
+
+    const diff = (await ipc.helperCall(id, "git.diff", {
+      root_b64: root,
+      path_b64: target.path_b64,
+      staged: target.staged,
+    })) as { diff_b64: string | null; files: unknown[] };
+    assert.equal(diff.files.length, 1, "the target must match its own file");
+    assert.ok(diff.diff_b64, "a modified file has a patch, not the empty string");
+    assert.match(
+      decodeText(b64ToBytes(diff.diff_b64)),
+      /^diff --git a\/src\/app\.rs b\/src\/app\.rs/m,
+    );
+
+    // And the other accepted spelling — an absolute path under the root — finds
+    // the same file, because `git diff -- <path>` accepts both.
+    const absolute = (await ipc.helperCall(id, "git.diff", {
+      root_b64: root,
+      path_b64: encodePath("/srv/data/src/app.rs"),
+      staged: target.staged,
+    })) as { diff_b64: string | null };
+    assert.ok(absolute.diff_b64, "an absolute path under the root still resolves");
+  } finally {
+    await ipc.helperClose(id);
   }
 });

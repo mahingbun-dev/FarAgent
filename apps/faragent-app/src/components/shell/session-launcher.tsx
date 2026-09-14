@@ -107,6 +107,7 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
         title: `${AGENT_TITLES[forAgent]} · ${sess?.title ?? sess?.id ?? name}`,
         subtitle: target,
         host: target,
+        cwd: cwd || null,
         spec:
           os === "windows"
             ? { kind: "win_agent", agent: forAgent, cwd, session_id: sess?.id ?? null }

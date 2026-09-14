@@ -6,11 +6,12 @@
  * (and never re-attaches) just because you looked at another one.
  */
 import { useState } from "react";
-import { PanelRight, PanelRightClose, Plus, X } from "lucide-react";
+import { PanelRight, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TerminalView } from "@/components/TerminalView";
 import { DiagnosisDialog } from "@/components/dialogs";
+import { RightPanel } from "@/components/panel/right-panel";
 import { RowAction } from "@/components/shell/row-action";
 import { useSessionLauncher } from "@/components/shell/session-launcher";
 import { cn } from "@/lib/utils";
@@ -126,9 +127,13 @@ export function WorkspaceTabs() {
 }
 
 /**
- * The right-hand slot. Task 9 renders the file tree, the changes list and the
- * git panel into the empty body; all this step owns is the per-tab state, the
- * width and the toggle.
+ * The right-hand slot. It owns the collapse state (a collapsed panel still has
+ * to leave a visible way back in) and nothing else: the width, the tabs and the
+ * three views all live in `RightPanel`.
+ *
+ * `key={tab.id}` is load-bearing. The panel holds the tree root and the selected
+ * file in its own state, and without a per-tab key React would carry one
+ * session's root over to the next tab.
  */
 function PanelSlot({ tab, onToggle }: { tab: Tab; onToggle: (open: boolean) => void }) {
   const t = useT();
@@ -151,25 +156,5 @@ function PanelSlot({ tab, onToggle }: { tab: Tab; onToggle: (open: boolean) => v
     );
   }
 
-  return (
-    <aside
-      style={{ width: tab.panel.width }}
-      className="flex shrink-0 flex-col border-l border-sidebar-border bg-background"
-    >
-      <div className="flex h-8 shrink-0 items-center justify-end px-1">
-        <Button
-          variant="ghost"
-          size="icon"
-          title={t("panel.toggle")}
-          aria-label={t("panel.toggle")}
-          aria-expanded
-          className="h-6 w-6"
-          onClick={() => onToggle(false)}
-        >
-          <PanelRightClose />
-        </Button>
-      </div>
-      <div className="min-h-0 flex-1" />
-    </aside>
-  );
+  return <RightPanel key={tab.id} tab={tab} onClose={() => onToggle(false)} />;
 }

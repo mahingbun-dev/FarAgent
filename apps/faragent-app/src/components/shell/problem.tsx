@@ -90,6 +90,8 @@ export function ProblemInline({
               title: translate(lang, "diag.login"),
               subtitle: host,
               host,
+              // A login shell is not a session: there is no cwd to root at.
+              cwd: null,
               spec: { kind: "login" },
             })
           }

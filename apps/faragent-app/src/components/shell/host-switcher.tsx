@@ -308,6 +308,8 @@ export function HostSwitcher() {
               title: t("diag.login"),
               subtitle: problem.host,
               host: problem.host,
+              // A login shell is not a session: there is no cwd to root a tree at.
+              cwd: null,
               spec: { kind: "login" },
             });
           }}

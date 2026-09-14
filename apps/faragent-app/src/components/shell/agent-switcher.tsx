@@ -176,6 +176,8 @@ export function AgentSwitcher() {
               title: `${AGENT_TITLES[install.agent]} · ${pick(plan.title, lang)}`,
               subtitle: host.alias,
               host: host.alias,
+              // An install run is not a session: no cwd to root a tree at.
+              cwd: null,
               spec: { kind: "install", script: plan.script, os: p.os },
             });
           }}

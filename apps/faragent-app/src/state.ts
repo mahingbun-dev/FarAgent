@@ -43,6 +43,15 @@ export interface Tab {
   subtitle: string;
   host: string;
   spec: AttachSpec;
+  /**
+   * The session's working directory on the host, or `null` for a tab that has
+   * none (the login and install tabs are not sessions).
+   *
+   * The right panel roots its file tree here: what a session's panel should
+   * show is the code that session is working in, not the remote's `/`. A
+   * `null` cwd makes the panel fall back to the host's home directory.
+   */
+  cwd: string | null;
   panel: PanelState;
 }
 
@@ -122,7 +131,9 @@ export const useStore = create<Store>((set) => ({
         return {
           view: "workspace",
           activeTabId: existing.id,
-          // Titles drift (a session gets renamed); keep the tab honest.
+          // Titles drift (a session gets renamed); keep the tab honest. The cwd
+          // is kept when the re-open does not name one, so a session opened
+          // again from a surface that does not know it does not lose its root.
           tabs: state.tabs.map((tab) =>
             tab.id === existing.id
               ? {
@@ -130,6 +141,7 @@ export const useStore = create<Store>((set) => ({
                   title: input.title,
                   subtitle: input.subtitle,
                   spec: input.spec,
+                  cwd: input.cwd ?? tab.cwd,
                 }
               : tab,
           ),

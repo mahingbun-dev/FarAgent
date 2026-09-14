@@ -375,6 +375,85 @@ function seedFilesystem(): void {
   );
   addLink(`${APP}/target`, `${APP}/out`);
 
+  // --- the two directories the session fixtures use as their cwd, so the
+  // panel's tree has a root that exists: `attach` roots the tree at the
+  // session's cwd and `fs.list` on a missing directory is `not_found`, which
+  // would make the default panel state an error box in the mock.
+  //
+  // `/srv/app/faragent` deliberately sits *inside* the repo at `/srv/app` and
+  // has no `.git` of its own, so `git.discover` from a session here exercises
+  // the walk-up path rather than a `.git` in the first directory tried.
+  addFile(`${APP}/faragent/package.json`, () =>
+    textBytes(
+      '{\n  "name": "faragent-app",\n  "private": true,\n  "version": "0.2.0",\n  "type": "module",\n  "scripts": {\n    "dev": "vite",\n    "build": "tsc -b && vite build",\n    "test": "node --test \\"src/**/*.test.ts\\""\n  }\n}\n',
+    ),
+  );
+  addFile(`${APP}/faragent/tsconfig.json`, () =>
+    textBytes(
+      '{\n  "compilerOptions": {\n    "strict": true,\n    "noUnusedLocals": true,\n    "target": "ES2022",\n    "moduleResolution": "bundler"\n  },\n  "include": ["src"]\n}\n',
+    ),
+  );
+  addFile(`${APP}/faragent/.gitignore`, () =>
+    textBytes("node_modules\ndist\n.vite\n*.local\n"),
+  );
+  addFile(`${APP}/faragent/README.md`, () =>
+    textBytes("# faragent-app\n\nThe Tauri desktop shell. `pnpm dev` for the webview.\n"),
+  );
+  addFile(`${APP}/faragent/src/main.tsx`, () =>
+    textBytes(
+      'import { StrictMode } from "react";\nimport { createRoot } from "react-dom/client";\nimport { App } from "./app";\n\nconst root = document.getElementById("root");\nif (!root) throw new Error("no #root");\n\ncreateRoot(root).render(\n  <StrictMode>\n    <App />\n  </StrictMode>,\n);\n',
+    ),
+  );
+  addFile(`${APP}/faragent/src/app.tsx`, () =>
+    textBytes(
+      'export function App() {\n  // The shell owns the rail, the workspace and the settings view.\n  return <div className="flex h-full" />;\n}\n',
+    ),
+  );
+  addFile(`${APP}/faragent/src/lib/helper.ts`, () =>
+    textBytes(
+      "// the NDJSON helper channel\nconst MAX_FRAME_BYTES = 8 * 1024 * 1024;\n\nexport function decodeText(bytes: Uint8Array): string {\n  return new TextDecoder().decode(bytes);\n}\n",
+    ),
+  );
+  addFile(`${APP}/faragent/src/components/panel/right-panel.tsx`, () =>
+    textBytes(
+      'export function RightPanel() {\n  return <aside className="h-full" />;\n}\n',
+    ),
+  );
+  addFile(`${APP}/faragent/src/components/panel/file-tree.tsx`, () =>
+    textBytes(
+      "// lazy: children are fetched on expand, never eagerly\n  export function FileTree() {\n  return null;\n}\n",
+    ),
+  );
+  addFile(`${APP}/faragent/public/favicon.svg`, () =>
+    textBytes('<svg xmlns="http://www.w3.org/2000/svg"><circle r="8" /></svg>\n'),
+  );
+  addFile(`${APP}/faragent/vite.config.ts`, () =>
+    textBytes(
+      'import { defineConfig } from "vite";\n\nexport default defineConfig({\n  server: { port: 1420, strictPort: true },\n});\n',
+    ),
+  );
+
+  // --- a loose scratch cwd: no repository above it all the way to `/`, which
+  // is what makes the Git tab's "not a repository" state reachable from a real
+  // session instead of only by typing a path.
+  addFile("/home/deploy/code/scratch/notes.md", () =>
+    textBytes(
+      "## scratch\n\n- parse the probe output\n- try `tmux -CC` against the win-builder\n",
+    ),
+  );
+  addFile("/home/deploy/code/scratch/probe.sh", () =>
+    textBytes("#!/usr/bin/env bash\nset -euo pipefail\nssh -G \"$1\" | sort\n"),
+  );
+  addFile("/home/deploy/code/scratch/probe.out", () =>
+    textBytes("hostname build-01.farm.internal\nuser deploy\nport 22\nidentityfile ~/.ssh/id_ed25519\n"),
+  );
+  addFile("/home/deploy/code/scratch/report.csv", () =>
+    textBytes("host,os,mode\nbuild-01.farm.internal,linux,native\ngpu-box,linux,script_fallback\n"),
+  );
+  addFile("/home/deploy/code/scratch/archive/2026-08/old-notes.txt", () =>
+    textBytes("august notes\n"),
+  );
+
   // --- a directory that is not a repository, for `not_a_repo`
   addFile("/srv/scratch/notes.md", () => textBytes("scratch notes\n"));
   addFile("/srv/scratch/data.csv", () => textBytes("id,name\n1,alpha\n2,beta\n"));
@@ -703,6 +782,25 @@ function opGitBranches(args: Record<string, unknown>): unknown {
   };
 }
 
+/**
+ * A `git.diff` target, read the way git itself reads one: relative to the
+ * repository root.
+ *
+ * This is the shape `git.status` hands out and the shape the panel passes
+ * straight back, so the common case is already relative — `normalise` would
+ * turn `src/app.rs` into `/src/app.rs` and match nothing, which is exactly the
+ * bug this function exists to prevent. An absolute path under the root is
+ * accepted too, because `git diff -- <path>` run with the repository as its cwd
+ * accepts both.
+ */
+function repoRelative(repo: Repo, raw: string): string | null {
+  const path = normalise(raw);
+  if (path === repo.root) return null;
+  if (path.startsWith(repo.root + "/")) return path.slice(repo.root.length + 1);
+  const relative = path.replace(/^\//, "");
+  return relative === "" ? null : relative;
+}
+
 /** The files a diff of one side would name, capped the way the helper caps it. */
 function diffFiles(repo: Repo, staged: boolean, path: string | null): Dirty[] {
   const side = repo.dirty.filter((file) => {
@@ -753,7 +851,7 @@ function opGitDiff(args: Record<string, unknown>): unknown {
   const filesOnly = optionalBool(args, "files_only") ?? false;
   const path = optionalString(args, "path_b64") === undefined
     ? null
-    : normalise(new TextDecoder().decode(b64ToBytes(wire(args, "path_b64"))));
+    : repoRelative(repo, new TextDecoder().decode(b64ToBytes(wire(args, "path_b64"))));
 
   const all = diffFiles(repo, staged, path);
   const truncated = all.length > MAX_LIST_ENTRIES;
