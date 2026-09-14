@@ -1,5 +1,6 @@
 use anyhow::Result;
 use faragent_core::agents::{self, AgentKind};
+use faragent_core::config;
 use faragent_core::text::LocalizedText;
 use faragent_core::vocab::HostOs;
 use faragent_remote::remote::{self, DiskFile, ListDump, StartOutcome};
@@ -122,7 +123,14 @@ pub fn ensure_tmux_session(
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
     let cwd_s = cwd.to_string_lossy();
-    let script = remote::start_script(agent, cwd_s.as_ref(), session_id, &name, create_cwd);
+    let script = remote::start_script(
+        agent,
+        cwd_s.as_ref(),
+        session_id,
+        &name,
+        create_cwd,
+        config::full_permissions(),
+    );
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
         StartOutcome::Ok { name } => Ok(name),

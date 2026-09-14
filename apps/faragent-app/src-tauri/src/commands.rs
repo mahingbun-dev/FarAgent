@@ -3,8 +3,8 @@
 //! blocking pool; the UI thread never waits on ssh.
 
 use crate::dto::{
-    host_dto, shape_error, shape_start_error, CommandError, HostDto, PlanDto, PreflightDto,
-    ProbeDto, StartError,
+    host_dto, shape_error, shape_start_error, CommandError, DirListingDto, GitHubSyncDto, HostDto,
+    PlanDto, PreflightDto, ProbeDto, StartError,
 };
 use faragent_core::agents::AgentKind;
 use faragent_core::vocab::{AuthMode, HostOs};
@@ -201,4 +201,53 @@ pub async fn install_plan(
         Ok(PlanDto::new(&plan, &host))
     })
     .await
+}
+
+// ---------------------------------------------------------------- dirs
+
+/// Expand `~` / `~/x` / `~\x` against a remote home. Prefix only; same rules
+/// as the TUI. Pure — no SSH.
+#[tauri::command]
+pub async fn expand_home(path: String, home: String, os: HostOs) -> String {
+    faragent_core::paths::expand_home(&path, &home, os)
+}
+
+/// List child directories of `path` on the remote. Never creates directories.
+/// The caller expands `~`.
+#[tauri::command]
+pub async fn list_dirs(host: String, path: String) -> Result<DirListingDto, CommandError> {
+    blocking(move || {
+        let os = transport::host_os(&host).map_err(|e| shape_error(&e, &host))?;
+        faragent_service::dirs::list_dirs(&host, os, &path)
+            .map(DirListingDto::from)
+            .map_err(|e| shape_error(&e, &host))
+    })
+    .await
+}
+
+// ------------------------------------------------------------- github
+
+/// Copy this machine's `gh` login onto the remote. The token is never returned.
+#[tauri::command]
+pub async fn github_sync(host: String) -> Result<GitHubSyncDto, CommandError> {
+    blocking(move || {
+        faragent_service::github::sync_to_host(&host)
+            .map(|report| GitHubSyncDto::new(&host, report))
+            .map_err(|e| shape_error(&e, &host))
+    })
+    .await
+}
+
+// ------------------------------------------------------- permissions
+
+#[tauri::command]
+pub async fn get_full_permissions() -> bool {
+    faragent_core::config::full_permissions()
+}
+
+#[tauri::command]
+pub async fn set_full_permissions(on: bool) -> Result<(), CommandError> {
+    faragent_core::config::set_full_permissions(on).map_err(|e| CommandError::Plain {
+        message: format!("{e:#}"),
+    })
 }

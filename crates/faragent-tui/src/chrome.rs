@@ -31,6 +31,11 @@ pub trait Chrome {
     fn agents_list_title(self) -> &'static str;
     fn sessions_list_title(self, os: HostOs) -> &'static str;
     fn cwd_block_title(self) -> &'static str;
+    fn dir_picker_title(self) -> &'static str;
+    fn dir_recent_label(self, path: &str) -> String;
+    fn new_cwd_keys_hint(self) -> &'static str;
+    fn full_permissions_status(self, on: bool) -> &'static str;
+    fn full_permissions_tag(self, on: bool) -> &'static str;
     fn language_list_title(self) -> &'static str;
     fn keys_hint(self) -> &'static str;
     /// Footer for the session screens. On Windows remotes the agent runs in
@@ -209,15 +214,58 @@ impl Chrome for Lang {
         }
     }
 
+    fn dir_picker_title(self) -> &'static str {
+        match self {
+            Self::Zh => "最近目录 · .. 上级 · 子目录",
+            Self::En => "recent · .. parent · children",
+        }
+    }
+
+    fn dir_recent_label(self, path: &str) -> String {
+        match self {
+            Self::Zh => format!("最近  {path}"),
+            Self::En => format!("recent  {path}"),
+        }
+    }
+
+    fn new_cwd_keys_hint(self) -> &'static str {
+        match self {
+            Self::Zh => "j/k 选择 · 回车进入目录 · s 在此启动 · Tab 刷新 · p 完全权限 · Esc 返回",
+            Self::En => {
+                "j/k select · enter open dir · s start here · tab refresh · p full permissions · esc back"
+            }
+        }
+    }
+
+    fn full_permissions_status(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Self::Zh, true) => "完全权限（新会话跳过确认）",
+            (Self::En, true) => "full permissions (new sessions skip prompts)",
+            (Self::Zh, false) => "需确认（新会话走 agent 默认权限）",
+            (Self::En, false) => "confirm required (new sessions use the agent's default prompts)",
+        }
+    }
+
+    fn full_permissions_tag(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Self::Zh, true) => "完全权限",
+            (Self::En, true) => "full permissions",
+            (Self::Zh, false) => "需确认",
+            (Self::En, false) => "confirm required",
+        }
+    }
+
     fn language_list_title(self) -> &'static str {
         "Select language / 选择语言"
     }
 
     fn keys_hint(self) -> &'static str {
         match self {
-            Self::Zh => "回车 打开 · n 新建会话 · r 刷新 · L 语言 · q 返回 · 助手内断开: C-g d",
+            Self::Zh => {
+                "回车 打开 · n 新建会话 · p 完全权限 · r 刷新 · L 语言 · q 返回 · 助手内断开: C-g d"
+            }
             Self::En => {
-                "enter open · n new session · r refresh · L language · q back · agent detach: C-g d"
+                "enter open · n new session · p full permissions · r refresh · L language · q back · agent detach: C-g d"
             }
         }
     }
@@ -227,10 +275,10 @@ impl Chrome for Lang {
             HostOs::Posix => self.keys_hint(),
             HostOs::Windows => match self {
                 Self::Zh => {
-                    "回车 打开 · n 新建会话 · r 刷新 · L 语言 · q 返回 · 退出助手即结束（可 resume 恢复）"
+                    "回车 打开 · n 新建会话 · p 完全权限 · r 刷新 · L 语言 · q 返回 · 退出助手即结束（可 resume 恢复）"
                 }
                 Self::En => {
-                    "enter open · n new session · r refresh · L language · q back · quitting the agent ends it (resume later)"
+                    "enter open · n new session · p full permissions · r refresh · L language · q back · quitting the agent ends it (resume later)"
                 }
             },
         }
@@ -238,9 +286,11 @@ impl Chrome for Lang {
 
     fn hosts_keys_hint(self) -> &'static str {
         match self {
-            Self::Zh => "回车 探测 · g 登录方式（密钥/密码）· r 刷新 · L 语言 · q 退出",
+            Self::Zh => {
+                "回车 探测 · g 登录方式（密钥/密码）· G 同步 GitHub · r 刷新 · L 语言 · q 退出"
+            }
             Self::En => {
-                "enter probe · g auth mode (key/password) · r refresh · L language · q quit"
+                "enter probe · g auth mode (key/password) · G sync GitHub · r refresh · L language · q quit"
             }
         }
     }
@@ -271,9 +321,11 @@ impl Chrome for Lang {
 
     fn status_ready(self) -> &'static str {
         match self {
-            Self::Zh => "回车探测 · g 登录方式（密钥/密码）· r 刷新 · L 语言 · q 退出",
+            Self::Zh => {
+                "回车探测 · g 登录方式（密钥/密码）· G 同步 GitHub · r 刷新 · L 语言 · q 退出"
+            }
             Self::En => {
-                "enter probe · g auth mode (key/password) · r refresh · L language · q quit"
+                "enter probe · g auth mode (key/password) · G sync GitHub · r refresh · L language · q quit"
             }
         }
     }
@@ -281,10 +333,10 @@ impl Chrome for Lang {
     fn status_help(self) -> &'static str {
         match self {
             Self::Zh => {
-                "j/k 移动 · 回车打开 · n 新会话 · g 登录方式 · r 刷新 · L 语言 · q 返回 · 助手内断开: C-g d"
+                "j/k 移动 · 回车打开 · n 新会话 · p 完全权限 · g 登录方式 · G 同步 GitHub · r 刷新 · L 语言 · q 返回 · 助手内断开: C-g d"
             }
             Self::En => {
-                "j/k move · enter open · n new session · g auth mode · r refresh · L language · q back · detach in agent: C-g d"
+                "j/k move · enter open · n new session · p full permissions · g auth mode · G sync GitHub · r refresh · L language · q back · detach in agent: C-g d"
             }
         }
     }
@@ -326,8 +378,10 @@ impl Chrome for Lang {
 
     fn sessions_status(self) -> &'static str {
         match self {
-            Self::Zh => "回车接入/恢复 · n 新建会话 · live 会话只 attach",
-            Self::En => "enter attach/resume · n new session · live sessions attach only",
+            Self::Zh => "回车接入/恢复 · n 新建会话 · p 完全权限 · live 会话只 attach",
+            Self::En => {
+                "enter attach/resume · n new session · p full permissions · live sessions attach only"
+            }
         }
     }
 
@@ -349,9 +403,11 @@ impl Chrome for Lang {
         match os {
             HostOs::Posix => self.sessions_status(),
             HostOs::Windows => match self {
-                Self::Zh => "回车启动/恢复 · n 新建会话 · running 表示可能有进程在跑",
+                Self::Zh => {
+                    "回车启动/恢复 · n 新建会话 · p 完全权限 · running 表示可能有进程在跑"
+                }
                 Self::En => {
-                    "enter start/resume · n new session · running means a process may be alive"
+                    "enter start/resume · n new session · p full permissions · running means a process may be alive"
                 }
             },
         }
@@ -415,9 +471,11 @@ impl Chrome for Lang {
 
     fn type_cwd(self) -> &'static str {
         match self {
-            Self::Zh => "输入 agent 的工作目录后回车；不存在会问你是否创建（Esc 取消）",
+            Self::Zh => {
+                "j/k 选择目录，回车进入，s 在当前路径启动；不存在会问你是否创建（Esc 取消）"
+            }
             Self::En => {
-                "type the agent's working directory; if it is missing you will be asked to create it (esc cancels)"
+                "j/k select a directory, enter opens it, s starts in the current path; if missing you will be asked to create it (esc cancels)"
             }
         }
     }

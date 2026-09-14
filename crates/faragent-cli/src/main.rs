@@ -57,6 +57,11 @@ enum Command {
         #[arg(long)]
         host: String,
     },
+    /// Copy this machine's `gh` login onto a remote host
+    GithubSync {
+        #[arg(long)]
+        host: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -77,6 +82,7 @@ fn main() -> Result<()> {
         Some(Command::Sessions { host, agent }) => report(&host, sessions_json(&host, &agent)),
         Some(Command::Auth { host, mode }) => auth(&host, mode.as_deref()),
         Some(Command::Login { host }) => login(&host),
+        Some(Command::GithubSync { host }) => report(&host, github_sync(&host)),
     }
 }
 
@@ -127,6 +133,12 @@ fn auth(host: &str, mode: Option<&str>) -> Result<()> {
 }
 
 /// One interactive login, then verify that later commands can reuse it.
+fn github_sync(host: &str) -> Result<()> {
+    let report = faragent_service::github::sync_to_host(host)?;
+    println!("{}", report.plain(host, lang()));
+    Ok(())
+}
+
 fn login(host: &str) -> Result<()> {
     let lang = lang();
     let mode = config::auth_for(host);

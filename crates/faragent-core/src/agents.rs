@@ -65,6 +65,31 @@ impl AgentKind {
             Self::Pi => vec!["pi".into(), "--session".into(), session_id.into()],
         }
     }
+
+    /// Argv for a new or idle-resume launch. When `full_permissions` is true,
+    /// appends that agent's bypass flag (Codex inserts it before `resume`).
+    pub fn launch_argv(self, session_id: Option<&str>, full_permissions: bool) -> Vec<String> {
+        let mut argv = match session_id {
+            None => self.new_argv(),
+            Some(id) => self.resume_argv(id),
+        };
+        if !full_permissions {
+            return argv;
+        }
+        match self {
+            Self::Claude => {
+                argv.extend(["--permission-mode".into(), "bypassPermissions".into()]);
+            }
+            Self::Codex => {
+                argv.insert(1, "--dangerously-bypass-approvals-and-sandbox".into());
+            }
+            Self::Grok => {
+                argv.push("--always-approve".into());
+            }
+            Self::Pi => {}
+        }
+        argv
+    }
 }
 
 impl fmt::Display for AgentKind {
@@ -168,5 +193,51 @@ mod tests {
         for agent in AgentKind::ALL {
             assert_eq!(agent.new_argv(), vec![agent.bin()]);
         }
+    }
+
+    #[test]
+    fn launch_argv_bare_matches_new_and_resume() {
+        for agent in AgentKind::ALL {
+            assert_eq!(agent.launch_argv(None, false), agent.new_argv());
+            assert_eq!(agent.launch_argv(Some("abc"), false), agent.resume_argv("abc"));
+        }
+    }
+
+    #[test]
+    fn launch_argv_full_permissions_per_agent() {
+        assert_eq!(
+            AgentKind::Claude.launch_argv(None, true),
+            vec!["claude", "--permission-mode", "bypassPermissions"]
+        );
+        assert_eq!(
+            AgentKind::Claude.launch_argv(Some("abc"), true),
+            vec!["claude", "--resume", "abc", "--permission-mode", "bypassPermissions"]
+        );
+        assert_eq!(
+            AgentKind::Codex.launch_argv(None, true),
+            vec!["codex", "--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert_eq!(
+            AgentKind::Codex.launch_argv(Some("abc"), true),
+            vec![
+                "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "resume",
+                "abc"
+            ]
+        );
+        assert_eq!(
+            AgentKind::Grok.launch_argv(None, true),
+            vec!["grok", "--always-approve"]
+        );
+        assert_eq!(
+            AgentKind::Grok.launch_argv(Some("abc"), true),
+            vec!["grok", "--resume", "abc", "--always-approve"]
+        );
+        assert_eq!(AgentKind::Pi.launch_argv(None, true), vec!["pi"]);
+        assert_eq!(
+            AgentKind::Pi.launch_argv(Some("abc"), true),
+            vec!["pi", "--session", "abc"]
+        );
     }
 }

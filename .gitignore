@@ -1,6 +1,9 @@
 # Local interview / execution plans (not published)
 /plans/
 
+# Isolated git worktrees
+.worktrees/
+
 # Rust
 /target/
 **/*.rs.bk
@@ -23,6 +26,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Keep the Tauri frontend helpers; the Python `lib/` rule would hide them.
+!apps/faragent-app/src/lib/
+!apps/faragent-app/src/lib/**
 lib64/
 parts/
 sdist/

@@ -9,14 +9,32 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
     /// `"zh"` or `"en"`. Absent on first run so the TUI can ask once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// When true (the default), new and idle-resume launches pass that agent's
+    /// bypass / full-permission flag. Live attach does not re-exec.
+    #[serde(default = "default_true")]
+    pub full_permissions: bool,
     /// Per-host overrides keyed by the `Host` alias from `~/.ssh/config`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hosts: BTreeMap<String, HostConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            language: None,
+            full_permissions: true,
+            hosts: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +85,16 @@ pub fn language_or_default() -> Lang {
 pub fn set_language(lang: Lang) -> Result<()> {
     let mut cfg = load();
     cfg.language = Some(lang.code().to_string());
+    save(&cfg)
+}
+
+pub fn full_permissions() -> bool {
+    load().full_permissions
+}
+
+pub fn set_full_permissions(on: bool) -> Result<()> {
+    let mut cfg = load();
+    cfg.full_permissions = on;
     save(&cfg)
 }
 
@@ -177,5 +205,13 @@ mod tests {
         assert_eq!(old.hosts["devbox"].os, None);
         let json = serde_json::to_string(&Config::default()).unwrap();
         assert!(!json.contains("\"os\""));
+    }
+
+    #[test]
+    fn full_permissions_defaults_true_when_absent() {
+        let cfg: Config = serde_json::from_str("{}").unwrap();
+        assert!(cfg.full_permissions);
+        let off: Config = serde_json::from_str(r#"{"full_permissions":false}"#).unwrap();
+        assert!(!off.full_permissions);
     }
 }

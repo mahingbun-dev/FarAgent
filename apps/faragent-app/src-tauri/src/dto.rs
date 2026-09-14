@@ -336,3 +336,46 @@ pub fn shape_start_error(err: &anyhow::Error, host: &str) -> StartError {
         CommandError::Plain { message } => StartError::Plain { message },
     }
 }
+
+// --------------------------------------------------------------- dirs / github
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListingDto {
+    pub cwd: String,
+    pub parent: String,
+    pub dirs: Vec<String>,
+}
+
+impl From<faragent_remote::dirs::DirListing> for DirListingDto {
+    fn from(l: faragent_remote::dirs::DirListing) -> Self {
+        Self {
+            cwd: l.cwd,
+            parent: l.parent,
+            dirs: l.dirs,
+        }
+    }
+}
+
+/// GitHub sync result. The token is never included.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSyncDto {
+    pub user: String,
+    pub remote_gh: bool,
+    pub ssh_key_added: bool,
+    pub warnings: Vec<Text>,
+    pub lines: Lines,
+}
+
+impl GitHubSyncDto {
+    pub fn new(host: &str, report: faragent_service::github::GitHubSyncReport) -> Self {
+        Self {
+            user: report.user.clone(),
+            remote_gh: report.remote_gh,
+            ssh_key_added: report.ssh_key_added,
+            warnings: report.warnings.iter().cloned().map(Text::from).collect(),
+            lines: report.lines(host).into(),
+        }
+    }
+}

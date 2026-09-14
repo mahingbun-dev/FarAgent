@@ -1,10 +1,10 @@
 /** Modal dialogs mirroring the TUI's confirmation screens. */
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { pick, pickLines } from "@/lib/ipc";
-import type { Diagnosis, Lang, Plan } from "@/lib/ipc";
+import { ipc, pick, pickLines } from "@/lib/ipc";
+import type { Diagnosis, DirListing, GitHubSync, Lang, Plan } from "@/lib/ipc";
 import { translate } from "@/lib/i18n";
 
 function Modal({
@@ -217,14 +217,22 @@ export function PasswordDialog({
 
 export function NewSessionDialog({
   lang,
+  host,
+  home,
+  os,
   defaultCwd,
+  recents,
   busy,
   error,
   onStart,
   onCancel,
 }: {
   lang: Lang;
+  host: string;
+  home: string;
+  os: "posix" | "windows";
   defaultCwd: string;
+  recents: string[];
   busy?: boolean;
   error?: string | null;
   onStart: (cwd: string) => void;
@@ -232,6 +240,55 @@ export function NewSessionDialog({
 }) {
   const t = (k: string) => translate(lang, k);
   const [cwd, setCwd] = useState(defaultCwd);
+  const [listing, setListing] = useState<DirListing | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [fullPerms, setFullPerms] = useState(true);
+
+  useEffect(() => {
+    ipc.getFullPermissions().then(setFullPerms).catch(() => {});
+  }, []);
+
+  const start = () => {
+    const typed = cwd.trim();
+    if (!typed) {
+      onStart(typed);
+      return;
+    }
+    void ipc.expandHome(typed, home, os).then(onStart);
+  };
+
+  useEffect(() => {
+    const path = cwd.trim();
+    if (!path) {
+      setListing(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      ipc
+        .expandHome(path, home, os)
+        .then((expanded) => ipc.listDirs(host, expanded))
+        .then((l) => {
+          if (cancelled) return;
+          setListing(l);
+          setListError(null);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setListing(null);
+          setListError(errorMessageFrom(e));
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [host, home, os, cwd]);
+
+  const go = (next: string) => {
+    setCwd(next);
+    setListError(null);
+  };
 
   return (
     <Modal
@@ -241,7 +298,7 @@ export function NewSessionDialog({
           <Button variant="outline" onClick={onCancel}>
             {t("cwd.cancel")}
           </Button>
-          <Button onClick={() => onStart(cwd.trim())} disabled={busy}>
+          <Button onClick={start} disabled={busy}>
             {busy ? <Loader2 className="animate-spin" /> : null}
             {t("cwd.start")}
           </Button>
@@ -255,11 +312,127 @@ export function NewSessionDialog({
         placeholder={t("cwd.placeholder")}
         onChange={(e) => setCwd(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") onStart(cwd.trim());
+          if (e.key === "Enter") start();
           if (e.key === "Escape") onCancel();
         }}
         className="mt-3 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring/40"
       />
+      <label className="mt-3 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={fullPerms}
+          onChange={(e) => {
+            const on = e.target.checked;
+            setFullPerms(on);
+            ipc.setFullPermissions(on).catch(() => {});
+          }}
+        />
+        {t("cwd.fullPermissions")}
+      </label>
+      <ul className="mt-3 max-h-48 space-y-0.5 overflow-y-auto rounded-md border border-border p-1 font-mono text-xs">
+        {recents.map((p) => (
+          <li key={`r-${p}`}>
+            <button
+              type="button"
+              onClick={() => go(p)}
+              className="w-full rounded px-2 py-1 text-left hover:bg-secondary"
+            >
+              {t("cwd.recent")}  {p}
+            </button>
+          </li>
+        ))}
+        <li>
+          <button
+            type="button"
+            onClick={() => go(listing?.parent || cwd)}
+            className="w-full rounded px-2 py-1 text-left hover:bg-secondary"
+          >
+            {t("cwd.parent")}
+          </button>
+        </li>
+        {listing?.dirs.map((name) => (
+          <li key={name}>
+            <button
+              type="button"
+              onClick={() =>
+                go(
+                  listing.cwd.endsWith("/") || listing.cwd.endsWith("\\")
+                    ? `${listing.cwd}${name}`
+                    : listing.cwd.includes("\\")
+                      ? `${listing.cwd}\\${name}`
+                      : `${listing.cwd}/${name}`,
+                )
+              }
+              className="w-full rounded px-2 py-1 text-left hover:bg-secondary"
+            >
+              {name}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {listError ? (
+        <p className="mt-2 text-xs text-muted-foreground">{listError}</p>
+      ) : null}
+      {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
+    </Modal>
+  );
+}
+
+function errorMessageFrom(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    return String((e as { message: unknown }).message);
+  }
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
+export function GithubSyncDialog({
+  host,
+  lang,
+  busy,
+  error,
+  report,
+  onConfirm,
+  onCancel,
+}: {
+  host: string;
+  lang: Lang;
+  busy?: boolean;
+  error?: string | null;
+  report?: GitHubSync | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const t = (k: string) => translate(lang, k);
+  return (
+    <Modal
+      title={t("hosts.githubSyncTitle")}
+      footer={
+        <>
+          <Button variant="outline" onClick={onCancel}>
+            {t("hosts.githubSyncCancel")}
+          </Button>
+          {!report ? (
+            <Button onClick={onConfirm} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : null}
+              {busy ? t("hosts.githubSyncing") : t("hosts.githubSyncRun")}
+            </Button>
+          ) : (
+            <Button onClick={onCancel}>{t("common.close")}</Button>
+          )}
+        </>
+      }
+    >
+      {report ? (
+        <pre className="whitespace-pre-wrap font-mono text-xs leading-5">
+          {pickLines(report.lines, lang).join("\n")}
+        </pre>
+      ) : (
+        <p className="text-sm leading-6 text-muted-foreground">
+          {t("hosts.githubSyncBody")}
+          <span className="mt-2 block font-mono text-xs">{host}</span>
+        </p>
+      )}
       {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
     </Modal>
   );

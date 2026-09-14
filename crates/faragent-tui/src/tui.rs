@@ -4,10 +4,14 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use faragent_core::agents::AgentKind;
 use faragent_core::config;
+use faragent_core::paths::expand_home;
 use faragent_core::text::Lang;
 use faragent_core::vocab::HostOs;
 use faragent_install::{self as install, Plan};
+use faragent_remote::dirs::{join_dir, DirListing};
 use faragent_service::diagnose::{self, Diagnosis};
+use faragent_service::dirs as dirsvc;
+use faragent_service::github;
 use faragent_service::probe::{self, Probe};
 use faragent_service::sessions::{self as runtime, SessionSummary};
 use faragent_transport::{self as ssh, askpass, AuthMode, SshHost};
@@ -30,6 +34,8 @@ enum Screen {
     NewCwd,
     /// The typed working directory does not exist: ask before creating it.
     NewDirConfirm,
+    /// Confirm writing local `gh` login onto the highlighted host.
+    GithubConfirm,
     Confirm,
     /// A connection problem: raw ssh output + cause + fixes.
     Problem,
@@ -72,6 +78,8 @@ struct App {
     probe: Option<Probe>,
     sessions: Vec<SessionSummary>,
     cwd_input: String,
+    dir_listing: Option<DirListing>,
+    dir_idx: usize,
     /// Session awaiting the "create the working directory?" confirmation.
     pending: Option<PendingStart>,
     plan: Option<Plan>,
@@ -113,6 +121,8 @@ impl App {
             probe: None,
             sessions: Vec::new(),
             cwd_input: String::new(),
+            dir_listing: None,
+            dir_idx: 0,
             pending: None,
             plan: None,
             status,
@@ -152,6 +162,12 @@ impl App {
         } else {
             self.session_idx = 0;
         }
+        let n = picker_rows(&unique_recents(&self.sessions), self.dir_listing.as_ref()).len();
+        if n == 0 {
+            self.dir_idx = 0;
+        } else {
+            self.dir_idx = self.dir_idx.min(n - 1);
+        }
     }
 
     fn move_sel(&mut self, delta: i32) {
@@ -179,6 +195,7 @@ impl App {
             }
             Screen::NewCwd
             | Screen::NewDirConfirm
+            | Screen::GithubConfirm
             | Screen::Confirm
             | Screen::Problem
             | Screen::Password
@@ -239,6 +256,9 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
     if matches!(app.screen, Screen::RunningConfirm) {
         return handle_running_confirm_key(app, key, terminal);
     }
+    if matches!(app.screen, Screen::GithubConfirm) {
+        return handle_github_key(app, key, terminal);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => match app.screen {
             Screen::Language | Screen::Hosts => app.quit = true,
@@ -254,6 +274,7 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
             }
             Screen::NewCwd
             | Screen::NewDirConfirm
+            | Screen::GithubConfirm
             | Screen::Confirm
             | Screen::Problem
             | Screen::Password
@@ -264,6 +285,10 @@ fn handle_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> R
         KeyCode::Up | KeyCode::Char('k') => app.move_sel(-1),
         KeyCode::Char('r') => refresh(app)?,
         KeyCode::Char('g') if matches!(app.screen, Screen::Hosts) => cycle_auth(app)?,
+        KeyCode::Char('G') if matches!(app.screen, Screen::Hosts) => begin_github_sync(app),
+        KeyCode::Char('p') | KeyCode::Char('P') if matches!(app.screen, Screen::Sessions) => {
+            toggle_full_permissions(app)?;
+        }
         KeyCode::Char('l') | KeyCode::Char('L')
             if matches!(app.screen, Screen::Hosts | Screen::Language) =>
         {
@@ -291,28 +316,16 @@ fn handle_cwd_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) 
             app.screen = Screen::Sessions;
             app.status = app.lang.cancelled().into();
         }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
         KeyCode::Backspace => {
             app.cwd_input.pop();
         }
-        KeyCode::Enter => {
-            let typed = app.cwd_input.trim().to_string();
-            if typed.is_empty() {
-                app.error = Some(app.lang.cwd_required().into());
-                return Ok(());
-            }
-            let host = app.host().map(|h| h.alias.clone());
-            let Some(host) = host else {
-                return Ok(());
-            };
-            let agent = app.agent();
-            // `~` only makes sense against the remote's home, so expand it here.
-            let (home, os) = match &app.probe {
-                Some(p) => (p.home.clone(), p.os),
-                None => ("/".into(), Default::default()),
-            };
-            let cwd = expand_home(&typed, &home, os);
-            start_session(app, terminal, &host, agent, &cwd, None, false)?;
-        }
+        KeyCode::Down | KeyCode::Char('j') => move_dir_sel(app, 1),
+        KeyCode::Up | KeyCode::Char('k') => move_dir_sel(app, -1),
+        KeyCode::Tab => refresh_dir_listing(app),
+        KeyCode::Char('p') | KeyCode::Char('P') => toggle_full_permissions(app)?,
+        KeyCode::Char('s') | KeyCode::Char('S') => start_from_cwd_input(app, terminal)?,
+        KeyCode::Enter => navigate_dir_sel(app),
         KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.cwd_input.push(c);
         }
@@ -368,30 +381,185 @@ fn probe_os(app: &App) -> HostOs {
     app.probe.as_ref().map(|p| p.os).unwrap_or_default()
 }
 
-/// `~` / `~/x` (or `~\x`) against the **remote** home, in the remote's own
-/// separator style. Anything else is left alone.
-fn expand_home(typed: &str, home: &str, os: HostOs) -> String {
-    if typed == "~" {
-        return home.to_string();
-    }
-    match os {
-        HostOs::Posix => match typed.strip_prefix("~/") {
-            Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
-            None => typed.to_string(),
-        },
-        HostOs::Windows => {
-            for prefix in ["~/", "~\\"] {
-                if let Some(rest) = typed.strip_prefix(prefix) {
-                    return format!(
-                        "{}\\{}",
-                        home.trim_end_matches(['/', '\\']),
-                        rest.replace('/', "\\")
-                    );
-                }
-            }
-            typed.to_string()
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PickerRow {
+    Recent(String),
+    Parent,
+    Child(String),
+}
+
+fn unique_recents(sessions: &[SessionSummary]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for s in sessions {
+        let Some(cwd) = s.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        if seen.insert(cwd.to_string()) {
+            out.push(cwd.to_string());
         }
     }
+    out
+}
+
+fn picker_rows(recents: &[String], listing: Option<&DirListing>) -> Vec<PickerRow> {
+    let mut rows: Vec<PickerRow> = recents.iter().cloned().map(PickerRow::Recent).collect();
+    rows.push(PickerRow::Parent);
+    if let Some(listing) = listing {
+        rows.extend(listing.dirs.iter().cloned().map(PickerRow::Child));
+    }
+    rows
+}
+
+fn picker_base(cwd_input: &str, listing: Option<&DirListing>) -> String {
+    listing
+        .map(|l| l.cwd.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(cwd_input)
+        .to_string()
+}
+
+fn navigate_picker(
+    cwd_input: &str,
+    row: &PickerRow,
+    listing: Option<&DirListing>,
+    os: HostOs,
+) -> String {
+    match row {
+        PickerRow::Recent(path) => path.clone(),
+        PickerRow::Parent => listing
+            .map(|l| l.parent.clone())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| join_dir(&picker_base(cwd_input, listing), "..", os)),
+        PickerRow::Child(name) => join_dir(&picker_base(cwd_input, listing), name, os),
+    }
+}
+
+fn move_dir_sel(app: &mut App, delta: i32) {
+    let rows = picker_rows(&unique_recents(&app.sessions), app.dir_listing.as_ref());
+    if rows.is_empty() {
+        return;
+    }
+    let n = rows.len() as i32;
+    app.dir_idx = (app.dir_idx as i32 + delta).rem_euclid(n) as usize;
+}
+
+fn navigate_dir_sel(app: &mut App) {
+    let recents = unique_recents(&app.sessions);
+    let rows = picker_rows(&recents, app.dir_listing.as_ref());
+    let Some(row) = rows.get(app.dir_idx).cloned() else {
+        return;
+    };
+    let os = probe_os(app);
+    app.cwd_input = navigate_picker(&app.cwd_input, &row, app.dir_listing.as_ref(), os);
+    app.dir_idx = 0;
+    refresh_dir_listing(app);
+}
+
+fn start_from_cwd_input(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let typed = app.cwd_input.trim().to_string();
+    if typed.is_empty() {
+        app.error = Some(app.lang.cwd_required().into());
+        return Ok(());
+    }
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    let agent = app.agent();
+    let (home, os) = match &app.probe {
+        Some(p) => (p.home.clone(), p.os),
+        None => ("/".into(), Default::default()),
+    };
+    let cwd = expand_home(&typed, &home, os);
+    start_session(app, terminal, &host, agent, &cwd, None, false)
+}
+
+fn refresh_dir_listing(app: &mut App) {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return;
+    };
+    let (home, os) = match &app.probe {
+        Some(p) => (p.home.clone(), p.os),
+        None => ("/".into(), Default::default()),
+    };
+    let typed = app.cwd_input.trim();
+    if typed.is_empty() {
+        app.dir_listing = None;
+        app.error = Some(app.lang.cwd_required().into());
+        return;
+    }
+    let path = expand_home(typed, &home, os);
+    match dirsvc::list_dirs(&host, os, &path) {
+        Ok(listing) => {
+            app.cwd_input = listing.cwd.clone();
+            app.dir_listing = Some(listing);
+            app.error = None;
+            app.status = app.lang.type_cwd().into();
+        }
+        Err(e) => {
+            app.dir_listing = None;
+            app.error = Some(e.to_string());
+        }
+    }
+    app.clamp();
+}
+
+fn toggle_full_permissions(app: &mut App) -> Result<()> {
+    let on = !config::full_permissions();
+    match config::set_full_permissions(on) {
+        Ok(()) => {
+            app.status = app.lang.full_permissions_status(on).into();
+            app.error = None;
+        }
+        Err(e) => {
+            app.error = Some(e.to_string());
+        }
+    }
+    Ok(())
+}
+
+fn begin_github_sync(app: &mut App) {
+    if app.host().is_none() {
+        return;
+    }
+    app.error = None;
+    app.screen = Screen::GithubConfirm;
+    app.status = github::CONFIRM_KEYS.pick(app.lang).into();
+}
+
+fn handle_github_key(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = Screen::Hosts;
+            app.status = app.lang.status_ready().into();
+            app.error = None;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit = true,
+        KeyCode::Enter => run_github_sync(app, terminal)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn run_github_sync(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
+    let Some(host) = app.host().map(|h| h.alias.clone()) else {
+        return Ok(());
+    };
+    app.status = github::SYNCING.pick(app.lang).into();
+    app.error = None;
+    terminal.draw(|f| draw(f, app))?;
+    match github::sync_to_host(&host) {
+        Ok(report) => {
+            app.screen = Screen::Hosts;
+            app.status = report.plain(&host, app.lang);
+            app.error = None;
+        }
+        Err(e) => {
+            app.screen = Screen::Hosts;
+            report_error(app, Retry::Probe, Screen::Hosts, &e);
+        }
+    }
+    Ok(())
 }
 
 /// One `*` per character (not per byte) — the password itself never reaches
@@ -447,8 +615,10 @@ fn begin_new(app: &mut App) {
         .unwrap_or_else(|| probe.home.clone());
     app.pending = None;
     app.error = None;
+    app.dir_idx = 0;
     app.screen = Screen::NewCwd;
     app.status = app.lang.type_cwd().into();
+    refresh_dir_listing(app);
 }
 
 fn refresh(app: &mut App) -> Result<()> {
@@ -463,6 +633,7 @@ fn refresh(app: &mut App) -> Result<()> {
         Screen::Confirm
         | Screen::Problem
         | Screen::NewDirConfirm
+        | Screen::GithubConfirm
         | Screen::Password
         | Screen::RunningConfirm => {}
     }
@@ -516,6 +687,7 @@ fn on_enter(app: &mut App, terminal: &mut DefaultTerminal) -> Result<()> {
         Screen::Confirm
         | Screen::Problem
         | Screen::NewDirConfirm
+        | Screen::GithubConfirm
         | Screen::Password
         | Screen::RunningConfirm => {}
         Screen::Sessions => {
@@ -1048,10 +1220,7 @@ fn drop_into_win_session(
     cwd: &str,
     session_id: Option<&str>,
 ) -> Result<()> {
-    let argv = match session_id {
-        Some(id) => agent.resume_argv(id),
-        None => agent.new_argv(),
-    };
+    let argv = agent.launch_argv(session_id, config::full_permissions());
     app.status = app.lang.attaching_resume(agent.title());
     ratatui::restore();
     let code = pty::attach_win(host, cwd, &argv);
@@ -1125,11 +1294,20 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Agents => app
             .lang
             .agents_title(app.host().map(|h| h.alias.as_str()).unwrap_or("?")),
-        Screen::Sessions => app.lang.sessions_title(
-            app.host().map(|h| h.alias.as_str()).unwrap_or("?"),
-            app.agent().title(),
+        Screen::Sessions => format!(
+            "{} · {}",
+            app.lang.sessions_title(
+                app.host().map(|h| h.alias.as_str()).unwrap_or("?"),
+                app.agent().title(),
+            ),
+            app.lang.full_permissions_tag(config::full_permissions())
         ),
-        Screen::NewCwd => app.lang.new_cwd_title().into(),
+        Screen::NewCwd => format!(
+            "{} · {}",
+            app.lang.new_cwd_title(),
+            app.lang.full_permissions_tag(config::full_permissions())
+        ),
+        Screen::GithubConfirm => github::CONFIRM_TITLE.pick(app.lang).into(),
         Screen::NewDirConfirm => app
             .lang
             .new_dir_title(app.pending.as_ref().map(|p| p.dir.as_str()).unwrap_or("?")),
@@ -1233,14 +1411,8 @@ fn draw(frame: &mut Frame, app: &App) {
                 idx,
             );
         }
-        Screen::NewCwd => {
-            let p = Paragraph::new(format!("cwd> {}_", app.cwd_input)).block(
-                Block::default()
-                    .title(app.lang.cwd_block_title())
-                    .borders(Borders::ALL),
-            );
-            frame.render_widget(p, chunks[1]);
-        }
+        Screen::NewCwd => draw_new_cwd(frame, chunks[1], app),
+        Screen::GithubConfirm => draw_github_confirm(frame, chunks[1], app),
         Screen::NewDirConfirm => draw_new_dir(frame, chunks[1], app),
         Screen::Confirm => draw_confirm(frame, chunks[1], app),
         Screen::Problem => draw_problem(frame, chunks[1], app),
@@ -1278,6 +1450,8 @@ fn draw(frame: &mut Frame, app: &App) {
         Screen::Language => app.lang.language_keys_hint(),
         Screen::Hosts => app.lang.hosts_keys_hint(),
         Screen::Agents => app.lang.agents_keys_hint(),
+        Screen::NewCwd => app.lang.new_cwd_keys_hint(),
+        Screen::GithubConfirm => github::CONFIRM_KEYS.pick(app.lang),
         Screen::NewDirConfirm => app.lang.new_dir_keys_hint(),
         Screen::Confirm => app
             .lang
@@ -1301,6 +1475,51 @@ fn draw(frame: &mut Frame, app: &App) {
         .wrap(Wrap { trim: true })
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
+}
+
+fn draw_new_cwd(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
+    let input = Paragraph::new(format!("cwd> {}_", app.cwd_input)).block(
+        Block::default()
+            .title(app.lang.cwd_block_title())
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(input, parts[0]);
+    let recents = unique_recents(&app.sessions);
+    let rows = picker_rows(&recents, app.dir_listing.as_ref());
+    let labels: Vec<String> = rows
+        .iter()
+        .map(|row| match row {
+            PickerRow::Recent(path) => app.lang.dir_recent_label(path),
+            PickerRow::Parent => "..".into(),
+            PickerRow::Child(name) => name.clone(),
+        })
+        .collect();
+    draw_list(
+        frame,
+        parts[1],
+        app.lang.dir_picker_title(),
+        &labels,
+        app.dir_idx,
+    );
+}
+
+fn draw_github_confirm(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let host = app.host().map(|h| h.alias.as_str()).unwrap_or("?");
+    let lines: Vec<Line> = github::confirm_lines(host)
+        .pick(app.lang)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .title(github::CONFIRM_LIST_TITLE.pick(app.lang))
+            .borders(Borders::ALL),
+    );
+    frame.render_widget(p, area);
 }
 
 /// "That directory is not on the remote yet" — show exactly what Enter will
@@ -1601,5 +1820,89 @@ mod tests {
         // With multiplexing, `faragent login` covers password hosts.
         assert!(!should_prompt_password(true, Some(Problem::NeedsPassword)));
         assert!(!should_prompt_password(false, None));
+    }
+
+    fn summary(cwd: Option<&str>) -> SessionSummary {
+        SessionSummary {
+            id: "x".into(),
+            agent: "claude".into(),
+            title: None,
+            cwd: cwd.map(|s| s.to_string()),
+            mtime: 0.0,
+            live: false,
+            running: false,
+            tmux: None,
+        }
+    }
+
+    #[test]
+    fn unique_recents_skips_empty_and_dedupes() {
+        let rows = unique_recents(&[
+            summary(Some("/a")),
+            summary(Some("")),
+            summary(None),
+            summary(Some(" /a ")),
+            summary(Some("/b")),
+        ]);
+        assert_eq!(rows, vec!["/a", "/b"]);
+    }
+
+    #[test]
+    fn picker_rows_are_recents_then_parent_then_children() {
+        let listing = DirListing {
+            cwd: "/home/me".into(),
+            parent: "/home".into(),
+            dirs: vec!["code".into(), "docs".into()],
+        };
+        let rows = picker_rows(&["/home/me/old".into()], Some(&listing));
+        assert_eq!(
+            rows,
+            vec![
+                PickerRow::Recent("/home/me/old".into()),
+                PickerRow::Parent,
+                PickerRow::Child("code".into()),
+                PickerRow::Child("docs".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn picker_navigation_joins_and_uses_listing_parent() {
+        let listing = DirListing {
+            cwd: "/home/me".into(),
+            parent: "/home".into(),
+            dirs: vec!["code".into()],
+        };
+        assert_eq!(
+            navigate_picker(
+                "/home/me",
+                &PickerRow::Parent,
+                Some(&listing),
+                HostOs::Posix
+            ),
+            "/home"
+        );
+        assert_eq!(
+            navigate_picker(
+                "/home/me",
+                &PickerRow::Child("code".into()),
+                Some(&listing),
+                HostOs::Posix
+            ),
+            "/home/me/code"
+        );
+        assert_eq!(
+            navigate_picker(
+                "/x",
+                &PickerRow::Recent("/srv".into()),
+                Some(&listing),
+                HostOs::Posix
+            ),
+            "/srv"
+        );
+        assert_eq!(
+            navigate_picker("C:\\Users\\me", &PickerRow::Parent, None, HostOs::Windows),
+            "C:\\Users"
+        );
     }
 }

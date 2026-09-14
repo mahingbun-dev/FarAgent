@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
-description = "FarAgent CLI: the `faragent` binary (TUI picker plus doctor/probe/sessions/auth/login)"
+description = "FarAgent CLI: the `faragent` binary (TUI picker plus doctor/probe/sessions/auth/login/github-sync)"
 
 [[bin]]
 name = "faragent"

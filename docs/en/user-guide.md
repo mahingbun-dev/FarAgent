@@ -292,7 +292,7 @@ faragent
 | **Agents** | Installed agents show a version. Missing ones say **not installed · enter to install**. |
 | **Confirm** | Exact commands for install / upgrade / uninstall. Enter runs them live over SSH PTY. |
 | **Sessions** | `[live]` is a tmux pane still running. `[idle]` is a transcript on disk. |
-| **New session** | `n` — type the agent's **working directory** (not a new folder). If it is missing, FarAgent asks before creating it. |
+| **New session** | `n` — pick from recents / `..` / children (Enter navigates, `s` starts). If the path is missing, FarAgent asks before creating it. |
 
 Keys (manager TUI):
 
@@ -303,6 +303,8 @@ Keys (manager TUI):
 | `U` | Upgrade the selected agent (agent list) |
 | `X` | Uninstall the selected agent CLI (keeps `~/.claude` and similar config) |
 | `n` | New session (remote cwd) |
+| `p` | Toggle full permissions / confirm required (session list and new-session screen; stored in `~/.faragent/config.json`) |
+| `G` | Sync this machine's `gh` login onto the host (hosts list; asks first). Lowercase `g` still cycles SSH auth |
 | `r` | Refresh |
 | `L` | Change UI language |
 | `?` | Short help |
@@ -341,11 +343,21 @@ Prefix is **`Ctrl-g`**, not tmux’s usual `Ctrl-b`, so it fights less with agen
 
 1. Open the agent’s session list.
 2. Press `n`.
-3. Type the **working directory** for this session — the root of the code the agent reads and writes (`~` expands against the remote home).
-4. Directory exists → Enter starts `claude` / `codex` / `grok` / `pi` in a login shell there.
-5. Directory missing → FarAgent switches to a confirmation screen that **shows the exact `mkdir -p`**; Enter creates it and starts, Esc goes back to the path.
+3. The `cwd>` field is still there — type to edit (`~` expands against the remote home). Below it: **recent working directories** (unique `cwd` values from the current session list), `..`, then child directories of the current path.
+4. `j` / `k` move in that list; **Enter navigates** into a recent / `..` / child (re-lists, does not start).
+5. **`s` starts** in the current `cwd>` (the old Enter-to-start binding). Tab re-lists the path in the input.
+6. Directory exists → starts `claude` / `codex` / `grok` / `pi` in a login shell there.
+7. Directory missing → FarAgent switches to a confirmation screen that **shows the exact `mkdir -p`**; Enter creates it and starts, Esc goes back to the path.
 
-This field is not a folder browser, and nothing is written on the remote until you press Enter on that confirmation screen.
+Listing **never** creates directories. Nothing is written on the remote until you press Enter on that confirmation screen.
+
+`p` toggles **full permissions** (on by default: Claude `bypassPermissions`, Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`; Pi unchanged) and **confirm required**. Flags apply to new sessions and idle resumes only; a live tmux attach does not re-exec the agent.
+
+### Sync GitHub login
+
+On the hosts list press **`G`** (lowercase `g` still cycles SSH auth). After a confirm screen, FarAgent copies this machine's `gh auth token` onto the remote `~/.config/gh/hosts.yml` (mode 0600), creates an ed25519 key if needed, registers the public key with GitHub (title `faragent-<host>`), and rewrites remote `https://github.com/` to `git@github.com:`. If this laptop is not logged in, run `gh auth login` here first. **The token is never shown in the UI or logs.**
+
+CLI equivalent: `faragent github-sync --host <alias>`.
 
 ## Install, upgrade, uninstall
 
@@ -388,6 +400,7 @@ faragent sessions --host home-mac --agent grok
 faragent auth --host home-mac                  # print this host's sign-in mode
 faragent auth --host home-mac --mode password  # auto | key | password
 faragent login --host home-mac                 # one interactive login (password / host key), reused afterwards
+faragent github-sync --host home-mac           # copy this machine's gh login onto the remote
 ```
 
 `probe` and `sessions` print JSON (automation / debugging). Agent names: `claude`, `codex`, `grok`, `pi`. When a connection fails they print the same report the TUI shows (raw ssh output + cause + fixes) and exit non-zero.

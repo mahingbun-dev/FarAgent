@@ -276,11 +276,9 @@ pub fn start_script(
     session_id: Option<&str>,
     tmux_name: &str,
     create_cwd: bool,
+    full_permissions: bool,
 ) -> String {
-    let argv = match session_id {
-        Some(id) => agent.resume_argv(id),
-        None => agent.new_argv(),
-    };
+    let argv = agent.launch_argv(session_id, full_permissions);
     let inner = format!(
         "exec {}",
         argv.iter()
@@ -691,16 +689,28 @@ mod tests {
     fn scripts_have_no_python() {
         assert!(!probe_script().contains("python"));
         assert!(!list_script(AgentKind::Grok).contains("python"));
-        assert!(
-            !start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc", false)
-                .contains("python")
-        );
+        assert!(!start_script(
+            AgentKind::Grok,
+            "/tmp",
+            None,
+            "faragent-grok-abc",
+            false,
+            false,
+        )
+        .contains("python"));
         assert!(probe_script().contains("FARAGENT_PROBE_V1"));
         assert!(TMUX_CONF.contains("prefix C-g"));
         assert_eq!(TMUX_SOCKET, "faragent");
         assert!(list_script(AgentKind::Grok).contains("tmux -L faragent"));
         assert!(list_script(AgentKind::Grok).contains("tmux -L farssh"));
-        let start = start_script(AgentKind::Grok, "/tmp", None, "faragent-grok-abc", false);
+        let start = start_script(
+            AgentKind::Grok,
+            "/tmp",
+            None,
+            "faragent-grok-abc",
+            false,
+            false,
+        );
         assert!(start.contains("$HOME/.faragent/tmux.conf"));
         assert!(start.contains("tmux -L farssh"));
     }
@@ -712,6 +722,7 @@ mod tests {
             "/home/me/app",
             None,
             "faragent-codex-abc",
+            false,
             false,
         );
         // The script is a raw string: `\t` reaches the remote and printf expands it.
@@ -727,6 +738,7 @@ mod tests {
             None,
             "faragent-codex-abc",
             true,
+            false,
         );
         assert!(create.contains("mkdir -p -- /home/me/app"), "{create}");
         assert!(create.contains(r"err\tmkdir_failed"));
@@ -740,11 +752,94 @@ mod tests {
             None,
             "faragent-codex-abc",
             true,
+            false,
         );
         assert!(
             quoted.contains("mkdir -p -- '/tmp/a b; rm -rf /'"),
             "{quoted}"
         );
+    }
+
+    #[test]
+    fn start_script_full_permissions_embeds_flags() {
+        let claude = start_script(
+            AgentKind::Claude,
+            "/tmp",
+            None,
+            "faragent-claude-abc",
+            false,
+            true,
+        );
+        assert!(
+            claude.contains("--permission-mode") && claude.contains("bypassPermissions"),
+            "{claude}"
+        );
+
+        let claude_resume = start_script(
+            AgentKind::Claude,
+            "/tmp",
+            Some("abc"),
+            "faragent-claude-abc",
+            false,
+            true,
+        );
+        assert!(
+            claude_resume.contains("--resume")
+                && claude_resume.contains("--permission-mode")
+                && claude_resume.contains("bypassPermissions"),
+            "{claude_resume}"
+        );
+
+        let codex = start_script(
+            AgentKind::Codex,
+            "/tmp",
+            None,
+            "faragent-codex-abc",
+            false,
+            true,
+        );
+        assert!(
+            codex.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "{codex}"
+        );
+
+        let codex_resume = start_script(
+            AgentKind::Codex,
+            "/tmp",
+            Some("abc"),
+            "faragent-codex-abc",
+            false,
+            true,
+        );
+        let inner = "exec codex --dangerously-bypass-approvals-and-sandbox resume abc";
+        assert!(
+            codex_resume.contains(inner),
+            "codex flag must sit before resume: {codex_resume}"
+        );
+
+        let grok = start_script(
+            AgentKind::Grok,
+            "/tmp",
+            None,
+            "faragent-grok-abc",
+            false,
+            true,
+        );
+        assert!(grok.contains("--always-approve"), "{grok}");
+
+        let grok_off = start_script(
+            AgentKind::Grok,
+            "/tmp",
+            None,
+            "faragent-grok-abc",
+            false,
+            false,
+        );
+        assert!(!grok_off.contains("--always-approve"), "{grok_off}");
+
+        let pi = start_script(AgentKind::Pi, "/tmp", None, "faragent-pi-abc", false, true);
+        assert!(!pi.contains("--yolo"), "{pi}");
+        assert!(!pi.contains("bypass"), "{pi}");
     }
 
     #[test]

@@ -3,5 +3,6 @@
 //! output. Pure data — no processes, no connection; the transport crate
 //! executes what this crate builds.
 
+pub mod dirs;
 pub mod remote;
 pub mod win;
