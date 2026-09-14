@@ -5,5 +5,6 @@
 
 pub mod diagnose;
 pub mod doctor;
+pub mod github;
 pub mod probe;
 pub mod sessions;
