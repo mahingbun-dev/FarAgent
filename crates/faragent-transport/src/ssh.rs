@@ -1162,7 +1162,10 @@ Host ignored
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(args.iter().any(|a| a == "-T"), "must disable the pty: {args:?}");
+        assert!(
+            args.iter().any(|a| a == "-T"),
+            "must disable the pty: {args:?}"
+        );
         assert!(
             !args.iter().any(|a| a == "-t" || a == "-tt"),
             "a command stream must never request a pty: {args:?}"
@@ -1311,7 +1314,10 @@ while IFS= read -r _l; do printf 'echo:%s\n' "$_l"; done
     #[test]
     fn stderr_tail_drops_the_oldest_bytes() {
         let sink = Arc::new(Mutex::new(Vec::new()));
-        drain_stderr(Some(std::io::Cursor::new(vec![b'x'; 40_000])), Arc::clone(&sink));
+        drain_stderr(
+            Some(std::io::Cursor::new(vec![b'x'; 40_000])),
+            Arc::clone(&sink),
+        );
         let buf = sink.lock().unwrap();
         assert_eq!(buf.len(), crate::STDERR_TAIL_LIMIT);
         assert!(buf.iter().all(|b| *b == b'x'));
