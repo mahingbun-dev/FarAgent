@@ -1,6 +1,9 @@
 # Local interview / execution plans (not published)
 /plans/
 
+# Isolated git worktrees
+.worktrees/
+
 # Rust
 /target/
 **/*.rs.bk
