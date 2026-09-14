@@ -208,11 +208,16 @@ In the UI, in order:
 
 ---
 
-## 9. The panel on a real repository (depth, large file, binary, big diff) — Not verified
+## 9. The panel on a real repository (depth, large file, binary, big diff) — Partly verified on the dev machine (mock)
 
-**This branch's browser verification did not cover this item** (it covered push refresh, subscription reclamation and the cache, not these extreme shapes).
+**Verified on the dev machine (mock)**
 
-The mock does have matching fixtures, though, so a reviewer can drive them on the dev machine before going to real hardware (see `HELPER_FIXTURES` in `src/lib/mock/helper.ts`):
+- **A file over the cap**: with the root at `/var/log/faragent`, opening `huge.log` (1.5 MiB, cap 1 MiB) shows "File is too large to preview" and does not pull the 1.5 MiB across.
+- **A large diff**: with the root at `/srv/data`, the Git tab's `src/app.rs` row opened and the `git.diff` reply replaced with a 3001-line patch, the UI shows "Long diff, showing the first 2000 of 3001 lines" and renders only the first 2000 lines (nothing past line 1998 and not the last line is in the DOM); it holds in the English UI too. Screenshot: `.superpowers/sdd/dazzling-strolling-flurry/shots/diff-truncated-en-light.png` (that directory is gitignored and does not enter the repository).
+
+**Not verified**: the 30-level tree, a real binary file (the fixture is `/srv/app/docs/img/logo.png`), and how the 620-change repository (`/srv/monorepo`) behaves in the UI.
+
+The mock does have matching fixtures, so they can be driven on the dev machine before going to real hardware (see `HELPER_FIXTURES` in `src/lib/mock/helper.ts`):
 
 | Shape | Mock fixture |
 | --- | --- |
@@ -258,7 +263,7 @@ In the panel open `<repo>` (point the root at `/tmp/deep` and at the repository 
 
 ## 10. Push-driven refresh and burst coalescing (a real `git checkout` / `npm install`) — Verified on the dev machine (mock)
 
-Verified against the mock: one `fs.changed` refreshes only the affected directory (**one** `fs.list`, not the whole tree); 20 consecutive pushes coalesce into **1** round trip; `git.changed` refreshes only `status / branches / log`, never `discover`.
+Verified against the mock: one `fs.changed` invalidates only the changed path's parent listing, the path's own listing, and its `stat` and `read` — never the whole `["panel"]`, so one `npm install` cannot re-walk the entire tree; 20 consecutive pushes coalesce into **1** round trip; `git.changed` refreshes only `status / branches / log / diff`, never `discover`.
 
 What a real machine adds is **whether the pushes actually arrive and whether the volume holds up**:
 

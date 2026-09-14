@@ -208,11 +208,16 @@ ssh <Host> "pgrep -af 'inotifywait|fswatch'"
 
 ---
 
-## 9. 真实仓库上的面板（深度、大文件、二进制、大 diff） —— 未验证
+## 9. 真实仓库上的面板（深度、大文件、二进制、大 diff） —— 部分开发机已验（mock）
 
-这一项**本分支的浏览器验证没有覆盖**（当时验的是推送刷新、订阅回收和缓存，不是这几种极端形状）。
+**已在开发机（mock）验证的**
 
-不过 mock 里有对应的夹具，可以在开发机上先跑一遍再上真机（见 `src/lib/mock/helper.ts` 的 `HELPER_FIXTURES`）：
+- **超过上限的大文件**：root 切到 `/var/log/faragent`，点开 `huge.log`（1.5 MiB，上限 1 MiB），界面显示"File is too large to preview"，没有把那 1.5 MiB 拉进来。
+- **大 diff**：root 切到 `/srv/data`、Git 标签打开 `src/app.rs`、把 `git.diff` 的返回换成一段 3001 行的补丁 —— 界面显示"Long diff, showing the first 2000 of 3001 lines"，正文只渲染前 2000 行（第 1998 行之后的内容和最后一行都不在 DOM 里），英文界面同样成立。截图：`.superpowers/sdd/dazzling-strolling-flurry/shots/diff-truncated-en-light.png`（该目录被 gitignore，不进版本库）。
+
+**没验的形状**：30 层深的目录树、真实二进制文件（夹具是 `/srv/app/docs/img/logo.png`）、620 个改动那个仓库（`/srv/monorepo`）在 UI 上的表现。
+
+mock 里有对应的夹具，可以先在开发机上跑一遍再上真机（见 `src/lib/mock/helper.ts` 的 `HELPER_FIXTURES`）：
 
 | 形状 | mock 夹具 |
 | --- | --- |
@@ -258,7 +263,7 @@ cd <repo> && for i in $(seq 1 600); do echo $i >> "gen/$i.txt"; done && git add 
 
 ## 10. 推送刷新与突发合并（真 `git checkout` / `npm install`） —— 开发机已验（mock）
 
-在 mock 上已验证：单次 `fs.changed` 只刷受影响的那一个目录（**一次** `fs.list`，不是整棵树）；20 次连续推送合并成 **1** 次往返；`git.changed` 只刷 `status / branches / log`，不刷 `discover`。
+在 mock 上已验证：单次 `fs.changed` 只失效该路径的父目录列表、该路径自身的列表、以及它的 `stat` 和 `read` —— 绝不是整个 `["panel"]`，所以不会有人 `npm install` 一下就把整棵树重拉一遍；20 次连续推送合并成 **1** 次往返；`git.changed` 只刷 `status / branches / log / diff`，不刷 `discover`。
 
 真机要确认的是**推送到得对不对、量级扛不扛得住**：
 
