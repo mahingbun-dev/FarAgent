@@ -591,6 +591,8 @@ export function SessionsPage() {
         <NewSessionDialog
           lang={lang}
           host={hostAlias}
+          home={probe.data.home}
+          os={os}
           defaultCwd={defaultCwd}
           recents={Array.from(
             new Set(

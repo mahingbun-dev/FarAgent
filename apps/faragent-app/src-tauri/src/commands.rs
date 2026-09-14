@@ -205,6 +205,13 @@ pub async fn install_plan(
 
 // ---------------------------------------------------------------- dirs
 
+/// Expand `~` / `~/x` / `~\x` against a remote home. Prefix only; same rules
+/// as the TUI. Pure — no SSH.
+#[tauri::command]
+pub async fn expand_home(path: String, home: String, os: HostOs) -> String {
+    faragent_core::paths::expand_home(&path, &home, os)
+}
+
 /// List child directories of `path` on the remote. Never creates directories.
 /// The caller expands `~`.
 #[tauri::command]

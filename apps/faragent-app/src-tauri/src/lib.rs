@@ -32,6 +32,7 @@ pub fn run() {
             commands::install_preflight,
             commands::install_plan,
             commands::list_dirs,
+            commands::expand_home,
             commands::github_sync,
             commands::get_full_permissions,
             commands::set_full_permissions,

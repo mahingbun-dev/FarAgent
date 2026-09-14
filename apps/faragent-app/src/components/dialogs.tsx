@@ -218,6 +218,8 @@ export function PasswordDialog({
 export function NewSessionDialog({
   lang,
   host,
+  home,
+  os,
   defaultCwd,
   recents,
   busy,
@@ -227,6 +229,8 @@ export function NewSessionDialog({
 }: {
   lang: Lang;
   host: string;
+  home: string;
+  os: "posix" | "windows";
   defaultCwd: string;
   recents: string[];
   busy?: boolean;
@@ -244,6 +248,15 @@ export function NewSessionDialog({
     ipc.getFullPermissions().then(setFullPerms).catch(() => {});
   }, []);
 
+  const start = () => {
+    const typed = cwd.trim();
+    if (!typed) {
+      onStart(typed);
+      return;
+    }
+    void ipc.expandHome(typed, home, os).then(onStart);
+  };
+
   useEffect(() => {
     const path = cwd.trim();
     if (!path) {
@@ -253,7 +266,8 @@ export function NewSessionDialog({
     let cancelled = false;
     const timer = window.setTimeout(() => {
       ipc
-        .listDirs(host, path)
+        .expandHome(path, home, os)
+        .then((expanded) => ipc.listDirs(host, expanded))
         .then((l) => {
           if (cancelled) return;
           setListing(l);
@@ -269,7 +283,7 @@ export function NewSessionDialog({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [host, cwd]);
+  }, [host, home, os, cwd]);
 
   const go = (next: string) => {
     setCwd(next);
@@ -284,7 +298,7 @@ export function NewSessionDialog({
           <Button variant="outline" onClick={onCancel}>
             {t("cwd.cancel")}
           </Button>
-          <Button onClick={() => onStart(cwd.trim())} disabled={busy}>
+          <Button onClick={start} disabled={busy}>
             {busy ? <Loader2 className="animate-spin" /> : null}
             {t("cwd.start")}
           </Button>
@@ -298,7 +312,7 @@ export function NewSessionDialog({
         placeholder={t("cwd.placeholder")}
         onChange={(e) => setCwd(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") onStart(cwd.trim());
+          if (e.key === "Enter") start();
           if (e.key === "Escape") onCancel();
         }}
         className="mt-3 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring/40"

@@ -196,6 +196,8 @@ export const ipc = {
     invoke<Plan>("install_plan", { host, agent, action }),
   listDirs: (host: string, path: string) =>
     invoke<DirListing>("list_dirs", { host, path }),
+  expandHome: (path: string, home: string, os: "posix" | "windows") =>
+    invoke<string>("expand_home", { path, home, os }),
   githubSync: (host: string) => invoke<GitHubSync>("github_sync", { host }),
   getFullPermissions: () => invoke<boolean>("get_full_permissions"),
   setFullPermissions: (on: boolean) =>

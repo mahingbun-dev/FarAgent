@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use faragent_core::agents::AgentKind;
 use faragent_core::config;
+use faragent_core::paths::expand_home;
 use faragent_core::text::Lang;
 use faragent_core::vocab::HostOs;
 use faragent_install::{self as install, Plan};
@@ -378,32 +379,6 @@ fn sessions_supported(os: HostOs, tmux: bool) -> bool {
 /// The probed dialect, defaulting to POSIX before any probe has run.
 fn probe_os(app: &App) -> HostOs {
     app.probe.as_ref().map(|p| p.os).unwrap_or_default()
-}
-
-/// `~` / `~/x` (or `~\x`) against the **remote** home, in the remote's own
-/// separator style. Anything else is left alone.
-fn expand_home(typed: &str, home: &str, os: HostOs) -> String {
-    if typed == "~" {
-        return home.to_string();
-    }
-    match os {
-        HostOs::Posix => match typed.strip_prefix("~/") {
-            Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
-            None => typed.to_string(),
-        },
-        HostOs::Windows => {
-            for prefix in ["~/", "~\\"] {
-                if let Some(rest) = typed.strip_prefix(prefix) {
-                    return format!(
-                        "{}\\{}",
-                        home.trim_end_matches(['/', '\\']),
-                        rest.replace('/', "\\")
-                    );
-                }
-            }
-            typed.to_string()
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
