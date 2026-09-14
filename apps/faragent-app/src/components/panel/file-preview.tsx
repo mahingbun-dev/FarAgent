@@ -8,9 +8,13 @@
  *    bytes is a `<span>` per token. There is no code path from this component to
  *    `fs.write`, because no such op exists in the protocol the panel speaks.
  * 2. **1 MiB is decided before the read, not after.** `fs.stat` gives the size,
- *    and a file over `PREVIEW_MAX_BYTES` renders its size and stops — the bytes
- *    are never requested, so a 200 MiB file costs one syscall on the remote
- *    instead of a channel full of base64.
+ *    and a file over `PREVIEW_MAX_BYTES` renders its size and stops. The read is
+ *    not merely discarded once the stat reply arrives — it is not issued: the
+ *    path handed to the query hook stays `""` until a resolved stat says the
+ *    file is a regular file under the cap (`previewReadPath`). A 200 MiB file
+ *    therefore costs one syscall on the remote, not a channel full of base64.
+ *    The window that *is* read is `PREVIEW_READ_LIMIT`, and a reply that did not
+ *    reach the end of the file says so.
  * 3. **Binary never reaches the DOM.** The helper refuses to send a file whose
  *    head carries a NUL (`binary`), and this checks the bytes it *did* get for
  *    the same thing, because a remote that sent them is exactly the remote whose
@@ -28,9 +32,10 @@ import {
   PREVIEW_MAX_BYTES,
   PREVIEW_MAX_CHARS,
   PREVIEW_MAX_LINES,
+  PREVIEW_READ_LIMIT,
   formatBytes,
-  isPreviewTooLarge,
   looksBinary,
+  previewReadPath,
   slicePreview,
 } from "@/lib/panel/file";
 import { basename } from "@/lib/panel/paths";
@@ -62,10 +67,17 @@ export function FilePreview({ path }: { path: string }) {
   const stat = usePanelStat(connection, path);
   const size = stat.data?.size ?? 0;
   const isFile = stat.data?.kind === "file";
-  // Over the cap: the read is never issued. `""` is how the query hooks say
-  // "not now" — every one of them requires a non-empty path.
-  const blocked = stat.data !== undefined && (!isFile || isPreviewTooLarge(size));
-  const read = usePanelRead(connection, blocked ? "" : path);
+  // The read path comes from a *resolved* stat, so nothing is fetched until
+  // `fs.stat` has said the file is a regular file under the cap. `""` is how the
+  // query hooks are told "not now"; `previewReadPath` is the rule.
+  const read = usePanelRead(
+    connection,
+    previewReadPath(stat.data, path),
+    PREVIEW_READ_LIMIT,
+  );
+  // Display only: the same resolved stat that withheld the read path is what
+  // decides which placeholder to show.
+  const blocked = stat.data !== undefined && previewReadPath(stat.data, path) === "";
 
   const name = basename(path);
 
@@ -186,6 +198,13 @@ export function FilePreview({ path }: { path: string }) {
 
   const text = decodeText(read.data.data);
   const slice = slicePreview(text, PREVIEW_MAX_LINES, PREVIEW_MAX_CHARS);
+  // `eof: false` is the read stopping short of the end of the file, which means
+  // the file is bigger than the window that was asked for — it grew past the
+  // `fs.stat` that cleared it, a log being appended to while it is open being
+  // the ordinary case. It has to be said out loud, and above the line notice:
+  // `slice.totalLines` then counts the fragment, so a line total would be a
+  // quiet lie about the file.
+  const windowed = read.data.eof === false;
   // Above this the scanner is the thing that would make the panel feel slow, so
   // the file is shown as plain text. It is still shown.
   const language = text.length > HIGHLIGHT_MAX_CHARS ? "plain" : languageForPath(path);
@@ -193,14 +212,16 @@ export function FilePreview({ path }: { path: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {header}
-      {slice.truncated || text.length > HIGHLIGHT_MAX_CHARS ? (
+      {windowed || slice.truncated || text.length > HIGHLIGHT_MAX_CHARS ? (
         <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-warning">
-          {slice.truncated
-            ? t("file.truncated", {
-                lines: slice.lines.length,
-                total: slice.totalLines,
-              })
-            : t("file.plain")}
+          {windowed
+            ? t("file.windowed", { limit: formatBytes(PREVIEW_READ_LIMIT) })
+            : slice.truncated
+              ? t("file.truncated", {
+                  lines: slice.lines.length,
+                  total: slice.totalLines,
+                })
+              : t("file.plain")}
         </p>
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">

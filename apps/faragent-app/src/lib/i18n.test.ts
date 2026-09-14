@@ -48,11 +48,13 @@ test("the panel and git keys this task added are present in both", () => {
     "file.tooLarge",
     "file.binary",
     "file.truncated",
+    "file.windowed",
     "file.readOnly",
     "changes.staged",
     "changes.unstaged",
     "changes.untracked",
     "changes.listOnly",
+    "changes.diffTruncated",
     "changes.noDiff",
     "changes.binaryDiff",
     "git.notRepo",
@@ -75,4 +77,14 @@ test("translate substitutes params and falls back to the key", () => {
   // An unregistered key is visible rather than empty, which is what makes a
   // missing translation reportable instead of silent.
   assert.equal(translate("en", "nope.missing"), "nope.missing");
+});
+
+test("the ahead/behind copy reads correctly at one, which is why it is phrased this way", () => {
+  // "1 commits ahead" is what a `{count} commits` template would print, so the
+  // English avoids a plural noun entirely. Pinned here because the screenshot
+  // that shows the Git tab's English labels has to match shipped copy.
+  assert.equal(translate("en", "git.ahead", { count: 1 }), "1 ahead of upstream");
+  assert.equal(translate("en", "git.behind", { count: 3 }), "3 behind upstream");
+  assert.equal(translate("en", "git.upstream", { name: "origin/main" }), "upstream origin/main");
+  assert.equal(translate("zh", "git.ahead", { count: 1 }), "领先 1 个提交");
 });

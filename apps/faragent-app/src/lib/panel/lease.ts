@@ -14,6 +14,10 @@
  * — which on the real backend means an ssh child spawned and killed on every
  * panel mount, and a remote log full of noise.
  *
+ * The deferral must not become a leak, though: a released slot whose key was
+ * replaced in the meantime (host changed, retry pressed) has no holder left and
+ * is closed by the same callback. See `release`.
+ *
  * Pure: no DOM, no React. `schedule` is injectable so a test can flush it.
  */
 
@@ -45,10 +49,16 @@ export function createLease<T>(
       const captured = slot;
       if (captured.holders > 0) return;
       schedule(() => {
-        // A remount may have re-acquired the slot between the release and this
-        // callback; closing then would kill a live connection.
-        if (slot !== captured || captured.holders > 0) return;
-        slot = null;
+        // A remount may have re-acquired *this* slot between the release and
+        // this callback; closing then would kill a live connection. Only the
+        // same slot object can have a holder again (an acquire with a matching
+        // key returns the slot it found), so this is the whole test.
+        if (captured.holders > 0) return;
+        // A *different* key took the slot in the meantime. `captured` is then
+        // orphaned with nobody to release it, and its connection would never be
+        // closed — an ssh child leaked on every tab switch or retry. It has to
+        // be closed here, and it is the one case the old guard got backwards.
+        if (slot === captured) slot = null;
         void captured.value.then((value) => close(value)).catch(() => {});
       });
     },

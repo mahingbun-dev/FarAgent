@@ -39,10 +39,25 @@ export function usePanelStat(connection: HelperConnection | null, path: string) 
   });
 }
 
-export function usePanelRead(connection: HelperConnection | null, path: string) {
+/**
+ * A file's bytes, or the window of them the caller asked for.
+ *
+ * `limit` is part of the cache key: a 256 KiB read and a 1 MiB one are different
+ * answers to the same path, and a key that ignored it would serve the fragment
+ * to the second caller. Omitted, the helper applies its own 256 KiB default.
+ */
+export function usePanelRead(
+  connection: HelperConnection | null,
+  path: string,
+  limit?: number,
+) {
   return useQuery({
-    queryKey: key(connection, "read", path),
-    queryFn: () => (connection as HelperConnection).readFile(path),
+    queryKey: key(connection, "read", path, limit ?? 0),
+    queryFn: () =>
+      (connection as HelperConnection).readFile(
+        path,
+        limit === undefined ? {} : { limit },
+      ),
     enabled: connection !== null && path !== "",
     retry: false,
   });

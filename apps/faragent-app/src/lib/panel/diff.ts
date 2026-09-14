@@ -7,7 +7,7 @@
  * reply's own `files` array (that is what survives the remote's 6 MiB patch
  * budget), and this module only reads the patch body when the reply *has* one.
  *
- * The two rules a reader of this file should know:
+ * The three rules a reader of this file should know:
  *
  * 1. **A patch is not a file list.** `git.diff` answers with `filesOnly` (or
  *    `truncated`) when the change set is too big; the panel then shows the
@@ -16,6 +16,9 @@
  * 2. **Line numbers are carried, not counted.** A hunk header's `-a,b +c,d`
  *    seeds the counters, and `+`/`-`/` ` advance the right one, which is what
  *    makes a deletion and the line opposite it line up in the gutter.
+ * 3. **A patch body has a row budget too.** `shouldListOnly` bounds the file
+ *    count; `sliceDiff` bounds the rows one patch may mount, because a single
+ *    file can be large enough to make the view crawl on its own.
  *
  * Pure: no DOM, no imports.
  */
@@ -252,3 +255,87 @@ export function diffTotals(files: DiffFile[]): { added: number; removed: number 
   }
   return { added, removed };
 }
+
+/**
+ * Most diff rows one patch may put in the DOM.
+ *
+ * `DIFF_FILE_CAP` bounds how many *files* a change set may have before the panel
+ * falls back to a list, but it says nothing about one file's body: a single
+ * patch near the remote's 6 MiB budget parses into six figures of rows, every
+ * one of them scanned by the highlighter and mounted synchronously. That is the
+ * "silently slow" the brief rules out, so the row budget is capped here and the
+ * view says how much it left out. The same figure as `PREVIEW_MAX_LINES`: what
+ * a reader can scroll in one sitting, and what one frame can carry.
+ */
+export const DIFF_LINE_CAP = 2000;
+
+/** How many rows a `DiffFile`'s body holds. */
+export function diffRows(file: DiffFile): number {
+  let rows = 0;
+  for (const hunk of file.hunks) rows += hunk.lines.length;
+  return rows;
+}
+
+export interface DiffSlice {
+  /** The files to render, with at most the row budget between them. */
+  files: DiffFile[];
+  /** Rows in the slice. */
+  shown: number;
+  /** Rows in the whole patch. */
+  total: number;
+  /** Something was left out: rows, and with them every file after. */
+  truncated: boolean;
+}
+
+/**
+ * Take the part of a patch the view is allowed to render.
+ *
+ * Whole files are kept while they fit; the file that crosses the budget is
+ * copied with as many of its leading hunks (and lines) as still fit, so the
+ * output is a valid `DiffFile` and the view needs no special case. Files after
+ * that one are dropped — they are past the budget by definition, and `total`
+ * plus `truncated` is what tells the reader so.
+ */
+export function sliceDiff(
+  files: DiffFile[],
+  maxLines: number = DIFF_LINE_CAP,
+): DiffSlice {
+  let total = 0;
+  for (const file of files) total += diffRows(file);
+
+  const kept: DiffFile[] = [];
+  let shown = 0;
+  let truncated = false;
+
+  for (const file of files) {
+    const rows = diffRows(file);
+    if (shown + rows <= maxLines) {
+      kept.push(file);
+      shown += rows;
+      continue;
+    }
+    const remaining = maxLines - shown;
+    if (remaining > 0) {
+      const hunks: DiffHunk[] = [];
+      let left = remaining;
+      for (const hunk of file.hunks) {
+        if (left <= 0) break;
+        if (hunk.lines.length <= left) {
+          hunks.push(hunk);
+          left -= hunk.lines.length;
+          shown += hunk.lines.length;
+        } else {
+          hunks.push({ header: hunk.header, lines: hunk.lines.slice(0, left) });
+          shown += left;
+          left = 0;
+        }
+      }
+      kept.push({ ...file, hunks });
+    }
+    truncated = true;
+    break;
+  }
+
+  return { files: kept, shown, total, truncated };
+}
+

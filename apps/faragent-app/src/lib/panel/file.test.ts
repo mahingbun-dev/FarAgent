@@ -13,10 +13,12 @@ import {
   PREVIEW_MAX_BYTES,
   PREVIEW_MAX_CHARS,
   PREVIEW_MAX_LINES,
+  PREVIEW_READ_LIMIT,
   containsNul,
   formatBytes,
   isPreviewTooLarge,
   looksBinary,
+  previewReadPath,
   slicePreview,
 } from "./file.ts";
 
@@ -108,4 +110,57 @@ test("formatBytes is readable at every step", () => {
   assert.equal(formatBytes(2048), "2.0 KB");
   assert.equal(formatBytes(1536 * 1024), "1.5 MB");
   assert.equal(formatBytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+});
+
+// The read gate. This is the one that was wrong: the read was issued on mount
+// with the real path, before `fs.stat` had answered, so an over-cap file was
+// fetched in full and the chunk thrown away a render later. The rule is a
+// function now, so the mistake is a failing assertion rather than an unread
+// ternary in a component.
+
+test("no resolved stat means no read, at any path", () => {
+  assert.equal(
+    previewReadPath(undefined, "/var/log/faragent/huge.log"),
+    "",
+    "the read must wait for the size, not assume one",
+  );
+});
+
+test("a file over the byte cap is never handed to the read", () => {
+  const path = "/var/log/faragent/huge.log";
+  assert.equal(previewReadPath({ kind: "file", size: PREVIEW_MAX_BYTES + 1 }, path), "");
+  assert.equal(
+    previewReadPath({ kind: "file", size: 200 * 1024 * 1024 }, path),
+    "",
+    "the 200 MiB case the cap exists for",
+  );
+});
+
+test("a file at the cap is read, and so is one between the old default and the cap", () => {
+  const path = "/srv/data/src/app.rs";
+  assert.equal(previewReadPath({ kind: "file", size: PREVIEW_MAX_BYTES }, path), path);
+  assert.equal(
+    previewReadPath({ kind: "file", size: 900 * 1024 }, path),
+    path,
+    "900 KiB is under the cap, so it is read in full",
+  );
+});
+
+test("only a regular file is read", () => {
+  const path = "/srv/data";
+  assert.equal(previewReadPath({ kind: "dir", size: 4096 }, path), "");
+  assert.equal(previewReadPath({ kind: "symlink", size: 12 }, path), "");
+  assert.equal(previewReadPath({ kind: "other", size: 0 }, path), "");
+});
+
+test("the read window is the byte cap, which is inside the protocol's chunk limit", () => {
+  assert.equal(PREVIEW_READ_LIMIT, PREVIEW_MAX_BYTES);
+  // `MAX_READ_CHUNK` in `crates/faragent-helper/src/proto.rs` is 4 MiB; a window
+  // above it would be silently clamped by the remote instead of refused, which
+  // is exactly the sort of fragment the window exists to avoid.
+  assert.ok(PREVIEW_READ_LIMIT <= 4 * 1024 * 1024, "over the helper's chunk ceiling");
+  assert.ok(
+    PREVIEW_READ_LIMIT > 256 * 1024,
+    "the helper's default would hand back a fragment of a file under the cap",
+  );
 });

@@ -6,7 +6,9 @@
  *
  * 1. `PREVIEW_MAX_BYTES` — a file over this is never read. The panel asks
  *    `fs.stat` first and shows a placeholder with the size; nothing is put on
- *    the wire for the body, and nothing reaches the DOM.
+ *    the wire for the body, and nothing reaches the DOM. `previewReadPath` is
+ *    the guard, and it withholds the path until the stat has answered, because
+ *    a read issued one render early is a read issued at any size.
  * 2. `PREVIEW_MAX_LINES` / `PREVIEW_MAX_CHARS` — a file *under* the byte cap
  *    can still be a 30k-line minified bundle. The preview renders the first N
  *    lines and says so, instead of freezing the frame.
@@ -36,6 +38,42 @@ export const BINARY_SNIFF_BYTES = 8192;
 export function isPreviewTooLarge(size: number): boolean {
   return size > PREVIEW_MAX_BYTES;
 }
+
+/**
+ * The path the preview may actually read, given what `fs.stat` said.
+ *
+ * `""` is how every panel query hook is told "not now", and it is the return
+ * value here for all three of the ways a body must not be fetched: no stat
+ * answer yet, not a regular file, or over `PREVIEW_MAX_BYTES`.
+ *
+ * The "no answer yet" case is the one that is easy to get wrong, and was:
+ * issuing the read on mount and *then* discarding the chunk when the stat
+ * arrives still puts a file of any size on the wire, which is the cost the cap
+ * exists to avoid. So the rule lives here, as a function a test can pin, rather
+ * than as a condition inlined in a component where only reading it carefully
+ * catches the mistake.
+ */
+export function previewReadPath(
+  stat: { kind: string; size: number } | undefined,
+  path: string,
+): string {
+  if (stat === undefined) return "";
+  if (stat.kind !== "file") return "";
+  if (isPreviewTooLarge(stat.size)) return "";
+  return path;
+}
+
+/**
+ * The read window the preview asks for.
+ *
+ * `PREVIEW_MAX_BYTES` rather than the helper's own 256 KiB default: a file
+ * between the two is under the cap, so the preview is supposed to show it, and
+ * the default would hand back a fragment that looks whole. It is well under the
+ * protocol's `MAX_READ_CHUNK`. A reply with `eof: false` is then a file that
+ * grew past the stat between the two calls, and the preview says so rather than
+ * printing a fragment.
+ */
+export const PREVIEW_READ_LIMIT = PREVIEW_MAX_BYTES;
 
 /** True when any byte is NUL. */
 export function containsNul(bytes: Uint8Array): boolean {

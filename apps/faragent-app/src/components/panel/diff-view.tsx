@@ -89,6 +89,11 @@ function Row({ line, language }: { line: DiffLine; language: string }) {
  * One file's patch. `language` is the file's language for the highlighter (see
  * `languageForPath`); a `meta` line is printed as git wrote it rather than
  * scanned, because `\ No newline at end of file` is prose, not code.
+ *
+ * This renders every row it is handed, so the row budget is the caller's job:
+ * the file must already have been through `sliceDiff`, which is what caps a
+ * patch at `DIFF_LINE_CAP` rows and reports what it left out. There is one
+ * caller (`changed-file-row.tsx`) and it does exactly that.
  */
 export function DiffFileView({
   file,

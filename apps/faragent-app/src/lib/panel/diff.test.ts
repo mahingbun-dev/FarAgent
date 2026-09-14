@@ -12,9 +12,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DIFF_FILE_CAP,
+  DIFF_LINE_CAP,
+  diffRows,
   diffTotals,
   parseUnifiedDiff,
   shouldListOnly,
+  sliceDiff,
+  type DiffFile,
+  type DiffHunk,
 } from "./diff.ts";
 
 const MODIFIED = [
@@ -194,4 +199,88 @@ test("the diff cap is 500 files, and over it only the list may render", () => {
     true,
   );
   assert.equal(shouldListOnly({ filesOnly: false, truncated: false, fileCount: 0 }), false);
+});
+
+// The row budget, which is the other half of the cap: `DIFF_FILE_CAP` bounds
+// how many files, this bounds how much of one file's body reaches the DOM.
+
+/** One file whose body is `rows` added lines, built through the parser. */
+function patchWith(path: string, rows: number): string {
+  return [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    `@@ -1,1 +1,${rows + 1} @@`,
+    " context",
+    ...Array.from({ length: rows }, (_, i) => `+line ${i}`),
+  ].join("\n");
+}
+
+test("a patch inside the row budget is rendered whole", () => {
+  const parsed = parseUnifiedDiff(patchWith("small.txt", 40));
+  const slice = sliceDiff(parsed);
+
+  assert.equal(DIFF_LINE_CAP, 2000);
+  assert.equal(slice.truncated, false);
+  assert.equal(slice.files.length, 1);
+  assert.deepEqual(slice.files, parsed, "an under-budget patch is not rebuilt");
+  assert.equal(slice.shown, 41);
+  assert.equal(slice.total, 41);
+  assert.equal(slice.shown, diffRows(parsed[0]));
+});
+
+test("a single huge file is cut at the row budget, and the total is kept", () => {
+  const parsed = parseUnifiedDiff(patchWith("huge.txt", DIFF_LINE_CAP + 500));
+  const slice = sliceDiff(parsed);
+
+  assert.equal(slice.total, DIFF_LINE_CAP + 501, "the reader is told the real size");
+  assert.equal(slice.shown, DIFF_LINE_CAP);
+  assert.equal(slice.truncated, true);
+  assert.equal(slice.files.length, 1);
+  assert.equal(diffRows(slice.files[0]), DIFF_LINE_CAP);
+  assert.equal(
+    slice.files[0].hunks[0].header,
+    parsed[0].hunks[0].header,
+    "the header survives, so the gutter still knows where it is",
+  );
+  // The rows kept are the patch's *leading* rows, in order.
+  const kept = slice.files[0].hunks.flatMap((h: DiffHunk) => h.lines.map((l) => l.text));
+  const all = parsed[0].hunks.flatMap((h: DiffHunk) => h.lines.map((l) => l.text));
+  assert.deepEqual(kept, all.slice(0, DIFF_LINE_CAP));
+});
+
+test("the file that crosses the budget is trimmed and the ones after are dropped", () => {
+  const parsed: DiffFile[] = [
+    ...parseUnifiedDiff(patchWith("a.txt", 6)),
+    ...parseUnifiedDiff(patchWith("b.txt", 6)),
+    ...parseUnifiedDiff(patchWith("c.txt", 6)),
+  ];
+  assert.equal(parsed.length, 3);
+  const slice = sliceDiff(parsed, 10);
+
+  assert.equal(slice.total, 21);
+  assert.equal(slice.shown, 10);
+  assert.equal(slice.truncated, true);
+  assert.deepEqual(
+    slice.files.map((f: DiffFile) => f.path),
+    ["a.txt", "b.txt"],
+    "c.txt is past the budget and is not rendered",
+  );
+  assert.equal(diffRows(slice.files[0]), 7, "a.txt fits whole");
+  assert.equal(diffRows(slice.files[1]), 3, "b.txt is trimmed to what is left");
+  assert.equal(slice.files[1].hunks[0].header, parsed[1].hunks[0].header);
+});
+
+test("a zero budget renders nothing, and an empty patch says nothing was cut", () => {
+  const parsed = parseUnifiedDiff(patchWith("x.txt", 5));
+  const none = sliceDiff(parsed, 0);
+  assert.deepEqual(none.files, []);
+  assert.equal(none.shown, 0);
+  assert.equal(none.total, 6);
+  assert.equal(none.truncated, true);
+
+  const empty = sliceDiff([]);
+  assert.deepEqual(empty.files, []);
+  assert.equal(empty.total, 0);
+  assert.equal(empty.truncated, false, "an empty patch is not a truncated one");
 });

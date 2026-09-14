@@ -107,3 +107,49 @@ test("a different key opens its own connection", async () => {
   assert.equal(await lease.acquire("host-b", open), "conn-2");
   assert.equal(opens, 2);
 });
+
+// The leak. `PanelHelperProvider` keys the lease by `${host}#${attempt}`, so
+// switching the panel to another host — or pressing retry — releases the old
+// key and acquires a new one in the same tick. The old slot has no holder left
+// and nothing else will ever release it, so the deferred close is the only
+// chance to close it. Returning early because "the slot is not ours any more"
+// leaks the connection: on the desktop app, a helper process still holding an
+// ssh child.
+
+test("a release whose slot was taken by another key still closes its connection", async () => {
+  const { schedule, flush } = manual();
+  const lease = createLease<string>(schedule);
+  const closed: string[] = [];
+  const close = (value: string) => closed.push(value);
+
+  const a = lease.acquire("host-a#0", () => Promise.resolve("conn-a"));
+  await a;
+  // The tab switched: cleanup released host A, the new effect acquired host B,
+  // and the deferred close for A has not run yet.
+  lease.release("host-a#0", close);
+  const b = lease.acquire("host-b#0", () => Promise.resolve("conn-b"));
+  await b;
+
+  flush();
+  await Promise.resolve();
+  assert.deepEqual(closed, ["conn-a"], "host A's connection was leaked");
+});
+
+test("a retry on the same host closes the attempt it replaced", async () => {
+  // Same shape, reached by the error state's retry button rather than a tab
+  // switch: the key gains a new attempt number.
+  const { schedule, flush } = manual();
+  const lease = createLease<string>(schedule);
+  const closed: string[] = [];
+
+  const first = lease.acquire("host-a#0", () => Promise.resolve("conn-1"));
+  await first;
+  lease.release("host-a#0", (value) => closed.push(value));
+  const second = lease.acquire("host-a#1", () => Promise.resolve("conn-2"));
+  flush();
+  await Promise.resolve();
+
+  assert.deepEqual(closed, ["conn-1"]);
+  assert.equal(await second, "conn-2", "the new attempt is untouched");
+});
+
