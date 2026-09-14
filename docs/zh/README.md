@@ -13,6 +13,7 @@
 | 参与贡献 | [contributing.md](contributing.md) |
 | 安全说明 | [security.md](security.md) |
 | 后续计划 | [roadmap.md](roadmap.md) |
+| 真机验收清单（面板实时刷新 / 缓存 / helper） | [acceptance.md](acceptance.md) |
 
 文档中心：[docs/README.md](../README.md)
 
