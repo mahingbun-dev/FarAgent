@@ -21,13 +21,15 @@
  * Three hosts, so all three `helper_open` outcomes are reachable from the host
  * switcher: `build-01.farm.internal` is native, `gpu-box` is the script
  * fallback (with a real reason), and `win-builder` fails the way the backend
- * fails it.
+ * fails it. Any other host name fails the *other* way `helper_open` fails — with
+ * a connection diagnosis and no `message` (see `noRouteDiagnosis`).
  *
  * Everything here is data and pure logic: no `window`, no timers other than the
  * macrotask that delivers a push. `handlers.ts` registers the three commands;
  * `channel.ts` carries the events.
  */
 import { b64ToBytes, bytesToB64 } from "../bytes.ts";
+import type { Diagnosis } from "../ipc.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
 import type { MockHandler } from "./handlers.ts";
 
@@ -873,6 +875,70 @@ function modeFor(host: string): MockMode {
   return { kind: "native" };
 }
 
+/**
+ * What `helper_open` fails with when the address is unreachable.
+ *
+ * Not a `plain` error, and deliberately so: `helper.rs` shapes a connection
+ * failure through `faragent_service`'s diagnosis — the same report the TUI
+ * renders — and that shape carries **no `message` field at all**. A fixture that
+ * answered `{kind: "plain", message}` here would hide the difference, which is
+ * the one that matters: the sentence a panel shows has to come from the
+ * diagnosis's own summary.
+ *
+ * The slug, both sentences, the fix steps and every label are copied from
+ * `crates/faragent-service/src/diagnose.rs` (`Problem::NoRoute`, `label()`,
+ * `title()`, `list_title()`, `ssh_doc()`), so what a panel renders here is what
+ * it renders against a real host. Only the host name in them is the caller's.
+ */
+function noRouteDiagnosis(host: string): Diagnosis {
+  return {
+    problem: "no_route",
+    summary: {
+      en: "no route to that address from this machine: wrong network, or the VPN/adapter is down.",
+      zh: "本机没有到这个地址的路由：不在同一张网，或网卡 / VPN 没起来。",
+    },
+    steps: {
+      en: [
+        `\`ping -c 2 ${host}\``,
+        "Confirm you are on the right network: a LAN address only works on that LAN.",
+        "With Tailscale / VPN, check state first: `tailscale status`.",
+        "Try another path: a public IP / domain, or set `HostName` to a reachable address.",
+      ],
+      zh: [
+        `\`ping -c 2 ${host}\``,
+        "确认你在对的网里：局域网地址只在家里 / 办公室那张网有效。",
+        "用 Tailscale / VPN 时先看状态：`tailscale status`。",
+        "换个入口：改用公网 IP / 域名，或把 `HostName` 换成可达地址。",
+      ],
+    },
+    raw: `ssh: connect to host ${host} port 22: No route to host`,
+    command: `ssh -o BatchMode=yes -T ${host} -- bash -lc 'echo faragent-helper-ready'`,
+    needsAuth: false,
+    timedOut: false,
+    title: {
+      en: `FarAgent · ${host} · connection failed`,
+      zh: `FarAgent · ${host} · 连接失败`,
+    },
+    listTitle: {
+      en: "raw error and fix  [no_route]",
+      zh: "原始报错与解决方案  [no_route]",
+    },
+    labels: {
+      label: { en: "connection failed", zh: "连接失败" },
+      raw: { en: "raw ssh output", zh: "ssh 原始输出" },
+      command: { en: "command FarAgent ran", zh: "FarAgent 实际执行的命令" },
+      fixes: { en: "fixes", zh: "处理步骤" },
+      docs: { en: "docs", zh: "文档" },
+      sshDoc: {
+        en: "docs/en/ssh-access.md (when it fails: raw error -> cause -> fix)",
+        zh: "docs/zh/ssh-access.md（连不上时：原始报错 → 原因 → 解决）",
+      },
+    },
+    plainEn: `connection failed ${host}: no route to that address from this machine: wrong network, or the VPN/adapter is down.`,
+    plainZh: `连接失败 ${host}：本机没有到这个地址的路由：不在同一张网，或网卡 / VPN 没起来。`,
+  };
+}
+
 function opOpen(args: Record<string, unknown>): unknown {
   const host = wire(args, "host");
   if (host === "") {
@@ -888,7 +954,9 @@ function opOpen(args: Record<string, unknown>): unknown {
     };
   }
   if (host !== "build-01.farm.internal" && host !== "gpu-box") {
-    throw { kind: "plain", message: `mock: no route to host "${host}"` };
+    // A diagnosis, not a plain error: that is the shape the backend uses for a
+    // connection failure, and the one that carries no `message`.
+    throw { kind: "diagnosis", diagnosis: noRouteDiagnosis(host) };
   }
   // One live channel per host, the same way `helper.rs` has one `CommandStream`
   // per host: a second `open` replaces the first rather than leaking it.

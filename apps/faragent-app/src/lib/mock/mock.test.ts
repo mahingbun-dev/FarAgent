@@ -16,6 +16,7 @@ import { after, before, test } from "node:test";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { b64ToBytes } from "../bytes.ts";
 import type { AttachEvent, Session } from "../ipc.ts";
+import { HelperError, helperErrorText } from "../helper.ts";
 import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
@@ -294,6 +295,40 @@ test("the helper commands answer through the mock's virtual remote", async () =>
     },
     (e: { kind: string }) => assert.equal(e.kind, "disconnected"),
   );
+});
+
+test("a host that cannot be reached fails the way the backend fails it", async () => {
+  // `helper_open` on an unreachable host is a *diagnosis*, not a plain error —
+  // the same shape the TUI renders — and that shape carries no `message` field.
+  // The fixture has to keep that property, because it is the one that broke the
+  // panel's text: `HelperError.from` has to derive the sentence, and this test
+  // would happily pass while a panel printed "[object Object]" if the mock
+  // added a `message` the real backend never sends.
+  const channel = new Channel<HelperEvent>();
+  const rejection = await ipc
+    .helperOpen({ host: "gone-01.farm.internal", onEvent: channel })
+    .then(
+      () => null,
+      (e: unknown) => e,
+    );
+  assert.ok(rejection, "an unreachable host must reject");
+  const wire = rejection as {
+    kind?: unknown;
+    message?: unknown;
+    diagnosis?: { problem?: unknown; summary?: { en?: unknown } };
+  };
+  assert.equal(wire.kind, "diagnosis");
+  assert.equal(wire.message, undefined, "the wire shape sends no message");
+  assert.equal(wire.diagnosis?.problem, "no_route");
+
+  const error = HelperError.from(rejection);
+  assert.equal(error.kind, "open");
+  assert.equal(error.message, wire.diagnosis?.summary?.en);
+  assert.match(error.message, /no route to that address/);
+  // And the panel's sentence is bilingual, straight off the diagnosis — the same
+  // two strings the TUI would show for this host.
+  assert.equal(helperErrorText(error, "en"), wire.diagnosis?.summary?.en);
+  assert.match(helperErrorText(error, "zh"), /没有到这个地址的路由/);
 });
 
 test("installMocks refuses to clobber a live Tauri runtime", () => {

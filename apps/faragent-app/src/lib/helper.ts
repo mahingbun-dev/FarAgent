@@ -324,8 +324,10 @@ export interface GitChanged {
  *   closed, or the stream died. A call in flight fails this way rather than
  *   hanging.
  * - `open` — `helper_open` itself failed (no route, no auth, a Windows remote).
- *   Its `message` is the backend's plain text; a connection *diagnosis* rides
- *   along in `cause` for `asDiagnosis()`.
+ *   Its `message` is the backend's plain text when there is one; when the failure
+ *   is a connection *diagnosis* — the commonest case, and the shape with no
+ *   `message` field at all — it is the diagnosis's own English summary, and the
+ *   diagnosis itself rides along in `cause` for `asDiagnosis()`.
  */
 export type HelperFailureKind = "remote" | "timeout" | "disconnected" | "open";
 
@@ -376,6 +378,10 @@ export class HelperError extends Error {
    * backend's own errors serialize to, the same object wrapped in a `payload`
    * key, and a bare string from a command whose error type is a `CommandError`
    * (`helper_open` is one).
+   *
+   * Two of those shapes carry no `message` at all — `CommandError::Diagnosis`
+   * and `HelperError::Timeout` — so the text is derived from the fields they do
+   * carry rather than stringified (see [`missingMessage`]).
    */
   static from(e: unknown): HelperError {
     if (e instanceof HelperError) return e;
@@ -391,7 +397,7 @@ export class HelperError extends Error {
       const message =
         typeof v.message === "string" && v.message.length > 0
           ? v.message
-          : fallbackText(e);
+          : missingMessage(v, e);
       if (v.kind === "remote") {
         return new HelperError("remote", message, {
           code: typeof v.code === "string" ? v.code : null,
@@ -421,6 +427,48 @@ function fallbackText(e: unknown): string {
   return String(e);
 }
 
+/**
+ * Text for a failure whose payload carries no `message` of its own.
+ *
+ * Both shapes that reach here used to render as "[object Object]" — the single
+ * most user-visible failure this type has, because it is what the panel prints.
+ * `CommandError::Diagnosis`, behind most `helper_open` failures, serializes no
+ * `message`; neither does `HelperError::Timeout`.
+ *
+ * A diagnosis is quoted in its own words (its English summary — the same
+ * sentence [`helperErrorText`] localises) rather than summarised here, and a
+ * timeout is assembled from the two fields it does carry. Nothing is invented:
+ * a shape that is neither still falls through to [`fallbackText`], so a caller
+ * sees the same string it saw before rather than a worse one.
+ */
+function missingMessage(
+  v: { kind: string; op?: unknown; seconds?: unknown },
+  e: unknown,
+): string {
+  const diagnosis = asDiagnosis(v);
+  if (diagnosis) {
+    // Guarded rather than assumed: the wire always sends both, but a panel that
+    // is handed a hand-written object should not crash on an empty one.
+    const summary = diagnosis.summary?.en;
+    if (typeof summary === "string" && summary.length > 0) return summary;
+    const plain = diagnosis.plainEn;
+    if (typeof plain === "string" && plain.length > 0) return plain;
+  }
+  if (v.kind === "timeout") {
+    const op = typeof v.op === "string" && v.op.length > 0 ? v.op : "the request";
+    return typeof v.seconds === "number"
+      ? `no reply to ${op} within ${v.seconds}s`
+      : `no reply to ${op}`;
+  }
+  if (typeof v.kind === "string" && v.kind.length > 0) {
+    // Nothing recognisable, but the tag is there. `String(object)` would be
+    // "[object Object]" for every one of these, which tells a user nothing; the
+    // tag at least names what failed, and `code` still rides along beside it.
+    return `helper failure (${v.kind})`;
+  }
+  return fallbackText(e);
+}
+
 export function isHelperErrorCode(code: string): code is HelperErrorCode {
   return (HELPER_ERROR_CODES as readonly string[]).includes(code);
 }
@@ -431,11 +479,17 @@ export function isHelperErrorCode(code: string): code is HelperErrorCode {
  * A `remote` error is the helper's own English text (the protocol does not
  * localise), so it is passed through rather than disguised; an `open` failure
  * that carries a connection diagnosis uses that diagnosis's localized summary.
+ *
+ * The diagnosis is looked for in two places on purpose. A raw rejection from
+ * `ipc.helperOpen` carries it at the top level, but the same failure caught from
+ * the promise-based [`openHelper`] has already been normalised — its `cause` is
+ * the only place the diagnosis survives, and reading only the top level would
+ * quietly render every Chinese user's connection failure in English.
  */
 export function helperErrorText(e: unknown, lang: Lang): string {
   const error = HelperError.from(e);
   if (error.kind === "open") {
-    const diagnosis = asDiagnosis(e);
+    const diagnosis = asDiagnosis(e) ?? asDiagnosis(error.cause);
     if (diagnosis) return pick(diagnosis.summary, lang);
   }
   return error.message;

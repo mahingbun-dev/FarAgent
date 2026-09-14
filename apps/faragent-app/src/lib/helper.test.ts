@@ -132,14 +132,17 @@ test("a remote error keeps its protocol code", () => {
 
 test("a Tauri-wrapped payload unwraps before it is read", () => {
   // Tauri may hand the rejection through as `{ payload: … }`; both spellings
-  // reach the webview, and both have to map to the same thing.
+  // reach the webview, and both have to map to the same thing. The fixture is
+  // the wire's real timeout shape — `{"kind":"timeout","op":…,"seconds":…}`,
+  // which carries no prose for the backend to hand over.
   const error = HelperError.from({
-    payload: { kind: "timeout", op: "git.diff", seconds: 60, message: "no reply in 60s" },
+    payload: { kind: "timeout", op: "git.diff", seconds: 60 },
   });
   assert.equal(error.kind, "timeout");
   assert.equal(error.op, "git.diff");
   assert.equal(error.seconds, 60);
   assert.equal(error.retryable, true);
+  assert.equal(error.message, "no reply to git.diff within 60s");
 });
 
 test("a disconnect is retryable and a bad request is not", () => {
@@ -181,8 +184,40 @@ test("a diagnosis behind an open failure is rendered in the user's language", ()
   };
   assert.equal(helperErrorText(failure, "zh"), "远端拒绝了密钥。");
   assert.equal(helperErrorText(failure, "en"), "the remote rejected the key.");
+  // The same failure, one normalisation later: `openHelper` rejects with a
+  // `HelperError`, whose only remaining trace of the diagnosis is `cause`. Read
+  // from the top level alone, this answered in English for a Chinese user.
+  const normalised = HelperError.from(failure);
+  assert.equal(helperErrorText(normalised, "zh"), "远端拒绝了密钥。");
+  assert.equal(helperErrorText(normalised, "en"), "the remote rejected the key.");
+  // The diagnosis shape has no `message` field, so `.message` is derived from
+  // the diagnosis instead of being stringified: a panel that prints
+  // `error.message` directly used to print "[object Object]" here — the
+  // commonest `helper_open` failure there is.
+  assert.equal(HelperError.from(failure).message, "the remote rejected the key.");
+  assert.equal(HelperError.from(failure).kind, "open");
+  // `helper_open` reaches the webview through `payload` as often as not.
+  assert.equal(
+    HelperError.from({ payload: failure }).message,
+    "the remote rejected the key.",
+  );
   // Anything else falls back to the plain message, never to "[object Object]".
   assert.equal(helperErrorText({ kind: "plain", message: "boom" }, "zh"), "boom");
+});
+
+test("no tagged failure reaches the user as [object Object]", () => {
+  // The class of bug rather than one instance: every shape below has a tag and
+  // no `message`, and `String(object)` is "[object Object]" for all of them.
+  for (const payload of [
+    { kind: "weird" },
+    { kind: "remote", code: "internal" },
+    { kind: "timeout" },
+  ]) {
+    const message = HelperError.from(payload).message;
+    assert.doesNotMatch(message, /\[object Object\]/, JSON.stringify(payload));
+    assert.ok(message.length > 0, JSON.stringify(payload));
+  }
+  assert.equal(HelperError.from({ kind: "timeout" }).message, "no reply to the request");
 });
 
 // ---------------------------------------------------------------------------

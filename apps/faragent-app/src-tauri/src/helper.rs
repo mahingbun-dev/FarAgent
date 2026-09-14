@@ -19,7 +19,7 @@
 //!                                          ssh -T  bash -lc …
 //!                                                        │
 //!   helper_call(id, op, args) ──► frame {"id":n,"op":…} ──┤
-//!   helper_close(id)          ──► drop the stream ────────┤
+//!   helper_close(id)          ──► end the child ──────────┤
 //!                                                        ▼
 //!                                   pump thread ──► Channel<HelperEvent>
 //! ```
@@ -58,13 +58,17 @@
 //! # Ownership
 //!
 //! A session is one [`CommandStream`], one pump thread, and one pending map.
-//! Removing it from the map drops the stream, and [`CommandStream`]'s own `Drop`
-//! kills the ssh child, reaps it and joins its stderr drain thread. The pump
-//! thread does not need to be told to stop: killing the child closes the pipe
-//! it is reading, so its next read returns EOF. Both halves therefore end
-//! exactly once, whether the close came from the frontend
-//! ([`HelperManager::close`]), from the remote hanging up, or from a second
-//! `open` for the same host replacing the first.
+//! Ending it has one hard part: the pump thread holds its own `Arc<Session>` for
+//! the whole of its blocking read, so dropping the map's `Arc` does **not** drop
+//! the [`CommandStream`] — and it is `CommandStream`'s `Drop` that kills the ssh
+//! child, reaps it and joins its stderr drain thread. Nothing else breaks that
+//! cycle: the read cannot return while the child lives, and the child lives
+//! while an `Arc` is held. So a *local* close ends the child explicitly
+//! ([`Session::terminate`], which closes stdin and then kills it), the pump's
+//! read then returns EOF, and the thread that drops the last `Arc` does the
+//! reap. Both halves therefore end exactly once, whether the close came from the
+//! frontend ([`HelperManager::close`]), from the remote hanging up, or from a
+//! second `open` for the same host replacing the first.
 
 use crate::dto::{shape_error, CommandError, Text};
 use faragent_helper::proto::{self, ErrorBody, ErrorCode, Inbound, Line};
@@ -216,12 +220,43 @@ struct Session {
     /// The child and its stderr tail, behind a lock only so the whole session is
     /// `Sync` (`tauri::State` demands it, and `Arc<Session>` demands `Sync` of
     /// its contents). Its reader lives in the pump thread and its writer is
-    /// `writer` above; only the reap on close ever touches this.
+    /// `writer` above; only [`Session::terminate`] and the reap on close ever
+    /// touch this.
     stream: Mutex<faragent_transport::CommandStream>,
     pending: Pending,
     /// Per-session request ids: monotonic, never reused within a session, and
     /// independent of the manager's session ids.
     next_request: AtomicU64,
+}
+
+impl Session {
+    /// End the connection from this side: close the remote's stdin, then kill
+    /// the child. Idempotent, and safe to call from any thread.
+    ///
+    /// This exists because dropping the map's `Arc<Session>` is *not* enough.
+    /// The pump thread holds a second `Arc<Session>` for the whole of its
+    /// blocking read, so nothing is dropped — and therefore nothing kills the
+    /// child — while that read is parked. The read cannot return on its own: the
+    /// child is still alive, so its stdout is still open. Without this call a
+    /// `helper_close` (or a same-host re-open) leaves one local `ssh`, one pump
+    /// thread and one remote helper running for the life of the app.
+    fn terminate(&self) {
+        // Close stdin first. A well-behaved remote — the native helper, the bash
+        // fallback — exits on EOF, which is the graceful path, and an EOF that
+        // actually reaches the far end is what stops the *remote* process being
+        // orphaned: killing the local `ssh` does not always carry through.
+        // The sink stays behind so a late write fails cleanly instead of
+        // panicking on a closed handle.
+        drop(std::mem::replace(
+            &mut *lock(&self.writer),
+            Box::new(std::io::sink()),
+        ));
+        // Then the child itself: a wedged remote would never notice the EOF, and
+        // this is the guaranteed half. Only the kill happens here — the reap
+        // stays with `CommandStream::drop`, so it happens exactly once, on
+        // whichever thread drops the last `Arc`.
+        lock(&self.stream).kill();
+    }
 }
 
 struct Shared {
@@ -287,7 +322,7 @@ impl HelperManager {
             });
         }
 
-        let mut stream = match &mode {
+        let stream = match &mode {
             HelperMode::Native => transport.spawn_login_stdio_stream(REMOTE_HELPER_PATH),
             // Identical wire format, identical channel; only the command line
             // differs. `bash -lc` for both, so the remote's login PATH is in
@@ -298,6 +333,28 @@ impl HelperManager {
         }
         .map_err(|e| shape_error(&e, host))?;
 
+        let id = self.adopt(host, stream, on_event);
+
+        Ok(HelperOpenDto {
+            id,
+            mode: (&mode).into(),
+            native: mode.is_native(),
+        })
+    }
+
+    /// Take ownership of a spawned stream: split its stdio, register it,
+    /// replace any earlier session for the same host, and start its pump.
+    ///
+    /// Split from [`open`](Self::open) so a test can drive real wiring against a
+    /// stand-in for `ssh` — a test cannot reach `open`'s probe and install
+    /// decision, but it can reach this, and this is the part that owns the
+    /// process.
+    fn adopt(
+        &self,
+        host: &str,
+        mut stream: faragent_transport::CommandStream,
+        on_event: Channel<HelperEvent>,
+    ) -> u64 {
         // The reader goes to the pump thread; the stream keeps the child.
         let reader = std::mem::replace(&mut stream.reader, Box::new(std::io::empty()));
         let writer = std::mem::replace(&mut stream.writer, Box::new(std::io::sink()));
@@ -314,8 +371,10 @@ impl HelperManager {
 
         // One connection per host: a second open for the same host replaces the
         // first rather than stacking a second `ssh` beside it. The replaced
-        // session is dropped *outside* the lock, so its kill+reap cannot stall
-        // anyone else's `open`/`close`/`call`.
+        // session is *ended* — not merely dropped, which would leave its child
+        // and its pump thread behind (see `Session::terminate`) — and it is
+        // ended outside the lock, so its kill cannot stall anyone else's
+        // `open`/`close`/`call`.
         let replaced: Vec<Arc<Session>> = {
             let mut sessions = lock(&self.shared.sessions);
             let stale: Vec<u64> = sessions
@@ -330,16 +389,13 @@ impl HelperManager {
             sessions.insert(id, Arc::clone(&session));
             replaced
         };
-        drop(replaced);
+        for stale in replaced {
+            stale.terminate();
+        }
 
         let shared = Arc::clone(&self.shared);
         std::thread::spawn(move || pump(shared, id, reader, pending, session, on_event));
-
-        Ok(HelperOpenDto {
-            id,
-            mode: (&mode).into(),
-            native: mode.is_native(),
-        })
+        id
     }
 
     /// Send one request and wait for its reply.
@@ -398,12 +454,18 @@ impl HelperManager {
         }
     }
 
-    /// Drop a session: kills the ssh child, reaps it, ends the pump thread.
-    /// Idempotent — closing an id that is already gone is not an error.
+    /// Drop a session: ends the child, which ends the pump thread, which drops
+    /// the last `Arc` and lets `CommandStream::drop` reap. Idempotent — closing
+    /// an id that is already gone is not an error.
     pub fn close(&self, id: u64) {
-        // Dropped outside the lock: `CommandStream::drop` waits for the child.
+        // `terminate` first, and *before* the drop: the pump thread holds the
+        // other `Arc`, so the drop alone would neither end the child nor end the
+        // thread (see `Session::terminate`). The lock is released before the
+        // kill, so a slow one cannot stall another `open`/`close`/`call`.
         let removed = lock(&self.shared.sessions).remove(&id);
-        drop(removed);
+        if let Some(session) = removed {
+            session.terminate();
+        }
     }
 
     /// How many sessions are open. Tests only; the frontend has no business
@@ -434,15 +496,21 @@ fn pump(
     let mut reader = BufReader::new(reader);
     let mut reason = pump_frames(&mut reader, &pending, &|event| on_event.send(event).is_ok());
 
-    // Reap: take the session out of the map, which drops the last `Arc` (this
-    // thread's own, unless a call is mid-flight) and with it the child. The
-    // stderr tail is the only evidence left when the remote dies without a
-    // goodbye, so it rides along in the message.
+    // Reap: take the session out of the map, which drops this thread's `Arc` and
+    // — unless a call is still in flight — the last one, and with it the child.
+    // The stderr tail is the only evidence left when the remote dies without a
+    // goodbye, so it is read first and rides along in the message.
     let removed = lock(&shared.sessions).remove(&id);
     let tail = lock(&session.stream).stderr_tail();
     if !tail.trim().is_empty() {
         reason = format!("{reason}: {}", tail.trim());
     }
+    // The loop can also end with the child still alive (the webview stopped
+    // listening). `terminate` is idempotent, so this is a no-op on the paths
+    // where it already died, and on that one it is what stops a mid-flight call —
+    // which holds the second-to-last `Arc` — from keeping the child alive for the
+    // rest of its timeout.
+    session.terminate();
     drop(removed);
     drop(session);
 
@@ -1030,6 +1098,291 @@ mod tests {
             })
             .unwrap(),
             json!({"kind": "remote", "code": "binary", "message": "nope"})
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A real process, without a real ssh host
+    //
+    // The one failure class the tests above cannot see is the *process*: a
+    // session owns an ssh child and a pump thread, and a close that comes from
+    // this side has to end both. Dropping the map's `Arc<Session>` does not do
+    // it, because the pump thread holds its own `Arc` for the whole of its
+    // blocking read — so `ssh` is shadowed here by a stand-in that lives, says
+    // nothing, and never exits. That is exactly the state the bug needed: an
+    // idle live connection whose `read_line` does not return.
+    //
+    // "Did the child end?" is answered by the child itself: it appends to a beat
+    // file every 50 ms, and the test waits for the appends to stop. A pid would
+    // be the obvious probe and is the wrong one — a pid is recycled the moment
+    // it is reaped, so a bare `kill -0` on a recycled number reports a leak that
+    // is not there, and reports it *because* the fix works.
+    //
+    // These are the only tests in this binary that spawn a process, and `PATH`
+    // is process-global, so they are unix-only and must stay that way.
+    // -----------------------------------------------------------------------
+
+    /// Held for the whole of each test below.
+    ///
+    /// Both of them put a stand-in `ssh` in front of `PATH`, and a `PATH` is
+    /// per-process, not per-test: without this, whichever test finishes first
+    /// restores the original `PATH` out from under the other one, which then
+    /// spawns the *real* ssh (fails) or the other test's stand-in (records a
+    /// second pid in the wrong place). The transport's own suite guards the same
+    /// door with a static mutex.
+    #[cfg(unix)]
+    static SSH_STUB_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    fn lock_ssh_stub() -> MutexGuard<'static, ()> {
+        SSH_STUB_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Every beat file, in a stable order. One per stand-in, named by the
+    /// stand-in's own `$$` — so a file is only ever compared with another file,
+    /// never with a pid that something else may own by now.
+    #[cfg(unix)]
+    fn beats(dir: &Path) -> Vec<std::path::PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut found: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("beat."))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[cfg(unix)]
+    fn beat_size(beat: &Path) -> u64 {
+        std::fs::metadata(beat).map(|meta| meta.len()).unwrap_or(0)
+    }
+
+    /// Wait until the stand-in that owns `beat` is writing. Everything below
+    /// asserts on "it stopped", and a file that has not been written yet has
+    /// stopped too — so this is what makes that assertion mean something.
+    #[cfg(unix)]
+    fn wait_beat_running(beat: &Path) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if beat_size(beat) > 1 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    /// Wait until the stand-in that owns `beat` stops writing. A process that
+    /// has been killed cannot append, so a stalled file is evidence it is gone;
+    /// three missed 50 ms ticks are required, so one slow write cannot pass for
+    /// a dead child.
+    #[cfg(unix)]
+    fn wait_beat_stopped(beat: &Path) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = beat_size(beat);
+        let mut stalled = 0;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            let now = beat_size(beat);
+            if now == seen {
+                stalled += 1;
+                if stalled >= 3 {
+                    return true;
+                }
+            } else {
+                stalled = 0;
+                seen = now;
+            }
+        }
+        false
+    }
+
+    /// A stand-in `ssh` in front of `PATH` for the life of the value.
+    #[cfg(unix)]
+    struct StubSsh {
+        dir: std::path::PathBuf,
+        saved_path: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl StubSsh {
+        fn install(label: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = std::env::temp_dir().join(format!(
+                "faragent-helper-close-{}-{label}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            // `-V` is answered because `mux_capable()` asks. Everything else is
+            // ignored: the point is to be a process that stays alive, writes no
+            // frame, and never exits on its own. `read` is deliberately absent —
+            // the pump must be parked on an idle pipe, not on a closed one.
+            // Double-quoted on purpose: `$$` has to expand, so each spawn gets
+            // its own beat file. (`temp_dir()` holds no quoting hazards.)
+            let script = format!(
+                r#"#!/bin/sh
+case " $* " in *" -V "*) exit 0 ;; esac
+while :; do
+  printf '.' >> "{dir}/beat.$$"
+  sleep 0.05
+done
+"#,
+                dir = dir.display()
+            );
+            let fake = dir.join("ssh");
+            std::fs::write(&fake, script).unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let saved_path = std::env::var_os("PATH");
+            let mut joined = dir.as_os_str().to_os_string();
+            if let Some(path) = &saved_path {
+                joined.push(":");
+                joined.push(path);
+            }
+            std::env::set_var("PATH", joined);
+
+            Self { dir, saved_path }
+        }
+
+        /// The beat files, waiting until there are at least `count`.
+        fn await_beats(&self, count: usize) -> Vec<std::path::PathBuf> {
+            for _ in 0..1000 {
+                let found = beats(&self.dir);
+                if found.len() >= count {
+                    return found;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!(
+                "the stand-in ssh never started {count} time(s); saw {:?}",
+                beats(&self.dir)
+            );
+        }
+
+        /// A stream over the stand-in, built the way `open` builds one.
+        fn stream(&self) -> faragent_transport::CommandStream {
+            OpenSshTransport::connect("faragent-close-test.invalid")
+                .expect("the transport must build")
+                .spawn_login_stdio_stream("run helper")
+                .expect("the stand-in ssh must spawn")
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for StubSsh {
+        fn drop(&mut self) {
+            // Whatever the assertions managed, this test does not leave a
+            // stand-in behind. A leaked one would outlive the suite — the whole
+            // point of the bug — and on the next run it would be a second live
+            // `ssh` in the same directory, which is exactly what the replace test
+            // looks for. `pkill` matches on the full command line, and this
+            // directory name is unique to this run, so nothing else can match.
+            let _ = std::process::Command::new("/usr/bin/pkill")
+                .arg("-f")
+                .arg(self.dir.to_string_lossy().as_ref())
+                .status();
+            match self.saved_path.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A `Channel<HelperEvent>` that only records *that* something arrived. The
+    /// stand-in sends no frames, so the only thing it can receive is the
+    /// `Closed` the pump sends as its last act.
+    #[cfg(unix)]
+    fn quiet_channel() -> (Channel<HelperEvent>, mpsc::Receiver<()>) {
+        let (tx, rx) = mpsc::channel();
+        let channel = Channel::<HelperEvent>::new(move |_body| {
+            let _ = tx.send(());
+            Ok(())
+        });
+        (channel, rx)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_session_ends_its_child_and_its_pump_thread() {
+        let _path_guard = lock_ssh_stub();
+        let stub = StubSsh::install("close");
+        let manager = HelperManager::default();
+        let (channel, closed) = quiet_channel();
+
+        let id = manager.adopt("faragent-close-test.invalid", stub.stream(), channel);
+        let beat = stub.await_beats(1).remove(0);
+        assert!(
+            wait_beat_running(&beat),
+            "the stand-in must be running before the close"
+        );
+
+        manager.close(id);
+
+        // The pump sends `Closed` only after its blocking read returned *and* it
+        // dropped the last `Arc` — `pump` drops the session before it sends — so
+        // this one wait covers the thread, the reap and the drop. It never
+        // arrives at all while the child lives, which is where the code used to
+        // sit: `close` dropped the map's `Arc`, the pump's own `Arc` kept the
+        // `CommandStream` alive, and the read that had to return before anything
+        // else could happen never returned.
+        closed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the pump thread must end when the app closes the channel");
+        assert_eq!(manager.open_sessions(), 0);
+        assert!(
+            wait_beat_stopped(&beat),
+            "the ssh child kept running after the session was closed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reopening_a_host_ends_the_connection_it_replaces() {
+        // The React remount case: `helper_open` on a host that is already open
+        // replaces it, and the replaced connection has to die rather than pile up
+        // a second ssh and a second pump thread. The map holding one entry proves
+        // nothing here — the leak is the process, not the map.
+        let _path_guard = lock_ssh_stub();
+        let stub = StubSsh::install("replace");
+        let manager = HelperManager::default();
+        let (first_channel, _first_closed) = quiet_channel();
+        let (second_channel, _second_closed) = quiet_channel();
+
+        let first = manager.adopt("faragent-close-test.invalid", stub.stream(), first_channel);
+        let first_beat = stub.await_beats(1).remove(0);
+        assert!(wait_beat_running(&first_beat));
+
+        let second = manager.adopt("faragent-close-test.invalid", stub.stream(), second_channel);
+        assert_ne!(first, second);
+        let second_beat = stub
+            .await_beats(2)
+            .into_iter()
+            .find(|beat| *beat != first_beat)
+            .expect("a second stand-in must have started");
+        assert!(wait_beat_running(&second_beat));
+
+        assert_eq!(manager.open_sessions(), 1, "one connection per host");
+        assert!(
+            wait_beat_stopped(&first_beat),
+            "the replaced ssh child outlived the connection that replaced it"
+        );
+
+        manager.close(second);
+        assert!(
+            wait_beat_stopped(&second_beat),
+            "the last ssh child outlived its close"
         );
     }
 }
