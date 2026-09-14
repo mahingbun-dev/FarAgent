@@ -339,9 +339,13 @@ impl FallbackReason {
                 format!("探测远端失败（{detail}），改用脚本模式。"),
                 format!("could not probe the remote ({detail}); using the script mode."),
             ),
+            // Not a downgrade: `helper_open` refuses a Windows remote outright
+            // (see `posix_only`), so a sentence promising the script fallback
+            // would describe a mode the caller never gets. The wording says
+            // what actually happens instead.
             FallbackReason::WindowsRemote => LocalizedText::new(
-                "远程是 Windows：helper 上传通道仅支持 POSIX，改用脚本模式。".to_string(),
-                "the remote is Windows: the helper upload channel is POSIX-only; using the script mode."
+                "远程是 Windows：helper 通道仅支持 POSIX，无法在这些远端打开 helper 会话。".to_string(),
+                "the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it."
                     .to_string(),
             ),
             FallbackReason::UploadFailed { detail } => LocalizedText::new(
