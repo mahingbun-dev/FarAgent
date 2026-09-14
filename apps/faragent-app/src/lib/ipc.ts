@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AgentKind } from "@/lib/agents";
+import type { HelperEvent, HelperOpen } from "@/lib/helper";
 
 export type Lang = "zh" | "en";
 export type AuthMode = "auto" | "key" | "password";
@@ -224,4 +225,15 @@ export const ipc = {
   attachResize: (id: number, cols: number, rows: number) =>
     invoke<void>("attach_resize", { id, cols, rows }),
   attachClose: (id: number) => invoke<void>("attach_close", { id }),
+  // The helper channel's three commands. `lib/helper.ts` wraps these into an
+  // awaitable connection; the raw calls live here for the same reason the
+  // terminal's do — one place that names a command and its argument keys.
+  helperOpen: (args: { host: string; onEvent: Channel<HelperEvent> }) =>
+    invoke<HelperOpen>("helper_open", {
+      host: args.host,
+      onEvent: args.onEvent,
+    }),
+  helperCall: (id: number, op: string, args?: Record<string, unknown>) =>
+    invoke<unknown>("helper_call", { id, op, args }),
+  helperClose: (id: number) => invoke<void>("helper_close", { id }),
 };
