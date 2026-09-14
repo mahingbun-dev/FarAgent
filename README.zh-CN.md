@@ -7,12 +7,13 @@
 <p align="center"><a href="README.md">English</a> · <strong>中文</strong></p>
 
 <p align="center">
-  <strong>远在你家机器上的 coding agent，用 SSH 接上原生 TUI。</strong><br>
+  <strong>只要能 SSH 上去，coding agent 就在手边——<br>包括那些不让你装任何东西的机器。</strong><br>
   命令：<code>faragent</code>
 </p>
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
+  <a href="#为什么不直接用-tmux">为什么不用 tmux</a> ·
   <a href="docs/zh/README.md">文档中心</a> ·
   <a href="docs/zh/user-guide.md">用户手册</a> ·
   <a href="docs/zh/development.md">开发者文档</a>
@@ -23,13 +24,19 @@
   <img alt="rust" src="https://img.shields.io/badge/rust-1.80%2B-b45309">
   <img alt="ssh" src="https://img.shields.io/badge/transport-OpenSSH-334155">
   <img alt="agents" src="https://img.shields.io/badge/agents-claude%20%7C%20codex%20%7C%20grok%20%7C%20pi-0891b2">
+  <img alt="remote" src="https://img.shields.io/badge/remote-installs%20nothing-0f766e">
+  <img alt="windows" src="https://img.shields.io/badge/Windows%2011%20remote-native-0078d4">
 </p>
 
 ---
 
-**FarAgent**（命令 `faragent`）把你的终端接到 **已经装在自己机器上** 的 Claude Code、Codex、Grok Build、Pi。它不是 Herdr/ccmux 那种本地 mux，也不是把密钥隧道回本机：推理仍走远程配置。（曾用名 FarSSH。）
+**FarAgent**（命令 `faragent`）把你的终端接到 **已经装在自己机器上** 的 Claude Code、Codex、Grok Build、Pi，走系统 OpenSSH。推理留在远程。它不是新的 coding agent，不是云 IDE，不是把密钥隧道回本机的工具，也不是又一个终端多路复用器。（曾用名 FarSSH。）
 
-大模型、项目文件、MCP、API 密钥都留在远程。合上笔记本不会杀掉 agent——它在 tmux 里继续跑。之后再打开 `faragent`，attach 同一个窗格即可。
+有三件事，是这个领域里大多数工具做不到的：
+
+- **远程不装我们任何东西。** 没有 faragent 二进制、没有常驻服务、不需要 python3。远程只用 `bash`、`find`、`tmux`，首次启动时从 stdin 塞进去一个 `~/.faragent/tmux.conf`。全部占用就这些。
+- **原生 Windows 11 远程主机。** Win32 OpenSSH + 默认 cmd 外壳，不用 WSL —— Windows 机器是一等公民，而不是绕道 WSL。
+- **远程仍然是你的。** 大模型、项目文件、MCP、API 密钥一个都不离开它。合上笔记本不会杀掉 agent——它在 tmux 里继续跑，之后再 attach 同一个窗格即可。
 
 ## 为什么需要它
 
@@ -38,8 +45,20 @@
 | `ssh devbox` 再自己记 `tmux attach` | 容易在同一仓库再拉起第二个 Codex/Claude | 主机 → agent → 会话，**live 只 attach** |
 | Claude / ChatGPT / Grok 订阅在家里那台机器上 | 把密钥拷到咖啡馆笔记本很危险 | 密钥不离开远程 |
 | 要原生 TUI（slash、鼠标、权限确认） | 官方桌面远程往往只服务一家 | Claude Code、Codex、Grok Build、Pi 同一个选择器 |
+| 机器不让你装东西 | 别的工具要在那台机器上放运行时、守护进程或 Node | 那台机器只多一个 `tmux.conf` |
+| 要连的是一台 Windows 11 机器 | 这个领域几乎只做 macOS/Linux | Win32 OpenSSH，不用 WSL（[保活仍在路线图上](docs/zh/roadmap.md)） |
 
-它不是新的 coding agent，不是云 IDE，也不是要在每台机器上安装的网关。
+## 为什么不直接用 tmux？
+
+FarAgent 替代的不是 tmux —— 它驱动的就是 tmux。下面这些说的都是 tmux **之外**的那一层。
+
+| | 裸 `ssh` + tmux | faragent |
+| --- | --- | --- |
+| 再找到那个会话 | `tmux attach`，再翻窗格 | 主机 → agent → 会话，直接标出 `[live]` 和 `[idle]` |
+| 在同一仓库起了第二个 agent | 很容易误操作 | live 会话**只 attach**（[原因](https://github.com/openai/codex/issues/30424)） |
+| 新机器 | 自己装 tmux 和 agent | 告诉你缺什么，走官方安装器，一个确认屏 |
+| Windows 11 远程 | 没有 tmux 可 attach | 支持 resume 模式 |
+| 连不上 | ssh 原始报错 | 原始报错 + 可能原因 + 可直接复制的修复命令 |
 
 ## 工作方式
 

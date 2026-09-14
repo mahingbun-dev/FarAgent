@@ -7,12 +7,13 @@
 <p align="center"><strong>English</strong> · <a href="README.zh-CN.md">中文</a></p>
 
 <p align="center">
-  <strong>Coding agents on machines far from you — native TUI, over SSH.</strong><br>
+  <strong>Your coding agents on any machine you can SSH into —<br>including the ones you can't install anything on.</strong><br>
   CLI: <code>faragent</code>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#why-not-just-tmux">Why not just tmux</a> ·
   <a href="docs/README.md">Docs</a> ·
   <a href="docs/en/user-guide.md">User guide</a> ·
   <a href="docs/en/development.md">Developers</a>
@@ -23,13 +24,19 @@
   <img alt="rust" src="https://img.shields.io/badge/rust-1.80%2B-b45309">
   <img alt="ssh" src="https://img.shields.io/badge/transport-OpenSSH-334155">
   <img alt="agents" src="https://img.shields.io/badge/agents-claude%20%7C%20codex%20%7C%20grok%20%7C%20pi-0891b2">
+  <img alt="remote" src="https://img.shields.io/badge/remote-installs%20nothing-0f766e">
+  <img alt="windows" src="https://img.shields.io/badge/Windows%2011%20remote-native-0078d4">
 </p>
 
 ---
 
-**FarAgent** (`faragent`) attaches your terminal to Claude Code, Codex, Grok Build, and Pi **already installed on your own machines**. It is not another mux like Herdr/ccmux, and not a local-key tunnel: inference stays on the remote host. (Formerly FarSSH.)
+**FarAgent** (`faragent`) attaches your terminal to Claude Code, Codex, Grok Build, and Pi **already installed on your own machines** — over plain OpenSSH. Inference stays on the remote host. It is not a new coding agent, not a cloud IDE, not a local-key tunnel, and not another terminal multiplexer. (Formerly FarSSH.)
 
-The model, the files, the MCP servers, and the API keys stay on the remote host. Closing the laptop does not kill the agent: it keeps running in tmux. Open `faragent` later and attach the same pane.
+Three things it does that most tools in this space don't:
+
+- **Nothing of ours is installed on the host.** No faragent binary, no daemon, no Python. The remote runs `bash`, `find`, and `tmux`; a `~/.faragent/tmux.conf` is piped in on first start. That is the whole footprint.
+- **Native Windows 11 remotes.** Win32 OpenSSH with the default cmd shell, no WSL — a Windows machine is a first-class host, not a WSL workaround.
+- **The remote stays yours.** The model, the files, the MCP servers, and the API keys never leave it. Closing the laptop does not kill the agent: it keeps running in tmux, and you attach the same pane later.
 
 ## Why
 
@@ -38,8 +45,20 @@ The model, the files, the MCP servers, and the API keys stay on the remote host.
 | `ssh devbox` then remember `tmux attach` | Fragile, easy to start a second Codex/Claude on the same repo | Host → agent → session, **live attaches only** |
 | Pay for Claude / ChatGPT / Grok on the home machine | Copying keys to a café laptop is a bad idea | Keys never leave the remote |
 | Want the native TUI (slash commands, mouse, permissions) | Official desktop remote apps are one-vendor | Claude Code, Codex, Grok Build, and Pi in one picker |
+| Point at a box you are not allowed to install things on | Other tools want a runtime, a daemon, or Node on that host | The host gets a `tmux.conf` and nothing else |
+| Remote into a Windows 11 machine | Almost everything here is macOS/Linux only | Win32 OpenSSH, no WSL ([keep-alive still on the roadmap](docs/en/roadmap.md)) |
 
-It is not a new coding agent, not a cloud IDE, and not a gateway you install on every box.
+## Why not just tmux?
+
+tmux is not the thing FarAgent replaces — it is the thing FarAgent drives. All of the rows below are about the layer *around* tmux.
+
+| | plain `ssh` + tmux | faragent |
+| --- | --- | --- |
+| Finding the session again | `tmux attach`, then hunt for the pane | Host → agent → session, with `[live]` and `[idle]` rows |
+| Starting a second agent on one repo | Easy to do by accident | Live sessions **attach only** ([why](https://github.com/openai/codex/issues/30424)) |
+| A fresh box | Install tmux and the agent by hand | Told what is missing, official installer, one confirm screen |
+| A Windows 11 remote | No tmux to attach to | Supported in resume mode |
+| A connection that fails | Raw ssh output | Verbatim output, the likely cause, and a copy-paste fix |
 
 ## How it works
 
