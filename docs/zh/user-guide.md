@@ -4,6 +4,10 @@
 
 **FarAgent**（命令 `faragent`）是一个跑在你笔记本上的终端应用。它 SSH 进你已经在用的那台机器，找出 Claude Code / Codex / Grok Build / Pi，然后把终端 **透传** 给它们的原生 TUI。大模型请求使用 **远程** 上的登录态和配置。
 
+**只要能 SSH 上去就能用，包括那些不让你装任何东西的机器。** 远程不装我们任何东西：没有 faragent 二进制、没有常驻服务、不需要 Python。远程只用 `bash`、`find`、`tmux`，外加首次启动会话时写入的 `~/.faragent/tmux.conf`。全部占用就这些。
+
+远程可以是 Linux、macOS、WSL2，也可以是 **原生 Windows 11**（Win32 OpenSSH、默认 cmd 外壳、不用 WSL）。Windows 上没有 tmux，会话行为不一样——动手前先读 [SSH 连接 · Windows 远程](ssh-access.md#windows-远程原生)。
+
 目录：
 
 - [需要什么](#需要什么)
@@ -44,7 +48,7 @@
 
 可在 TUI 里代装 agent（Linux/macOS 用官方 `curl | bash` 装到用户目录、不用 sudo；Windows 用官方 PowerShell 安装器、也不用管理员），也可自己在远程安装，然后在那台机器上登录（例如 `grok login`）。
 
-本机不拷 API key。探测和列会话在本机 Rust 里完成；远程跑 bash、tmux，以及你确认过的官方安装器。第一次启动会话仍会写入 `~/.faragent/tmux.conf`。不需要 python3，也不需要把 faragent 二进制放到远程。
+本机不拷 API key。探测和列会话在本机 Rust 里完成；远程跑 bash、tmux，以及你确认过的官方安装器。
 
 下面三种用法对应三种身份：**改代码**、**本机当成品用**、**拷到另一台电脑用**。远程那台装 agent 的机器不需要 Rust，也不需要这份源码。
 

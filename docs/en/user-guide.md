@@ -4,6 +4,10 @@
 
 **FarAgent** (`faragent`) is a local TUI. It SSHs into a machine you already use, finds Claude Code / Codex / Grok Build / Pi, and attaches their **native** terminal UI. Model calls use the **remote** login and config.
 
+That works on **any machine you can SSH into, including ones you are not allowed to install anything on.** Nothing of ours lands on the host: no faragent binary, no daemon, no Python. The remote runs `bash`, `find`, and `tmux`, plus a `~/.faragent/tmux.conf` written on the first session start. That is the whole footprint.
+
+Remotes can be Linux, macOS, WSL2, or **native Windows 11** (Win32 OpenSSH, default cmd shell, no WSL). Windows has no tmux, so sessions behave differently there — read [SSH access · Windows remote](ssh-access.md#windows-remote-native) before you start.
+
 Contents:
 
 - [Requirements](#requirements)
@@ -44,7 +48,7 @@ Contents:
 
 You can install agents from the TUI (on Linux/macOS: official `curl | bash` into the user directory, no sudo; on Windows: the official PowerShell installers, also no admin) or run those installers yourself on the remote, then log in once there (`claude`, `codex login`, `grok login`, `pi` `/login`, etc.).
 
-The laptop never copies API keys. Probe and session listing run in Rust locally; the remote runs bash (or PowerShell on Windows), tmux, and the official installers you confirm. First session start on a Linux/macOS remote still writes `~/.faragent/tmux.conf`. No python3, no faragent binary on the target.
+The laptop never copies API keys. Probe and session listing run in Rust locally; the remote runs bash (or PowerShell on Windows), tmux, and the official installers you confirm.
 
 There are three ways to run the laptop side: **hack on the source**, **use a release binary here**, or **copy that binary to another computer**. The remote machine that holds your agents does not need Rust or this repository.
 
