@@ -5,6 +5,7 @@
 use crate::dto::{shape_error, CommandError};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use faragent_core::agents::AgentKind;
 use faragent_core::vocab::HostOs;
 use faragent_remote::{remote as remote_proto, win};
 use faragent_transport::{
@@ -25,8 +26,14 @@ use tauri::Manager;
 pub enum AttachSpec {
     /// Attach a remote tmux session (POSIX live or idle).
     Tmux { tmux_name: String },
-    /// Foreground agent launch on a Windows remote.
-    WinAgent { cwd: String, argv: Vec<String> },
+    /// Foreground agent launch on a Windows remote. The backend derives the
+    /// argv from the agent tables (resume vs new), so the frontend never
+    /// duplicates them.
+    WinAgent {
+        agent: AgentKind,
+        cwd: String,
+        session_id: Option<String>,
+    },
     /// Run a confirmed install/upgrade/uninstall script.
     Install { script: String, os: HostOs },
     /// First interactive login: host-key and password prompts belong to
@@ -69,7 +76,17 @@ impl SessionManager {
                 bash_login_command(&remote_proto::attach_script(tmux_name)),
                 true,
             ),
-            AttachSpec::WinAgent { cwd, argv } => (win::attach_launcher(cwd, argv), true),
+            AttachSpec::WinAgent {
+                agent,
+                cwd,
+                session_id,
+            } => {
+                let argv = match session_id {
+                    Some(id) => agent.resume_argv(id),
+                    None => agent.new_argv(),
+                };
+                (win::attach_launcher(cwd, &argv), true)
+            }
             AttachSpec::Install { script, os } => match os {
                 HostOs::Posix => (bash_login_command(script), true),
                 HostOs::Windows => (win::encoded_command(script), true),

@@ -392,14 +392,25 @@ export function SessionsPage() {
   if (!host || !probe.data) return null;
   const hostAlias = host.alias;
 
-  const attachTmux = (sess: Session | null, tmux: string) => {
+  /**
+   * Open the session in a terminal tab. POSIX remotes attach tmux; Windows
+   * remotes have no tmux, so the agent runs in the foreground (resume vs new
+   * is the backend's call — it owns the argv tables).
+   */
+  const attachSession = (sess: Session | null, name: string, cwd: string) => {
     openTab({
-      title: `${AGENT_TITLES[agent]} · ${
-        sess?.title ?? sess?.id ?? tmux
-      }`,
+      title: `${AGENT_TITLES[agent]} · ${sess?.title ?? sess?.id ?? name}`,
       subtitle: hostAlias,
       host: hostAlias,
-      spec: { kind: "tmux", tmux_name: tmux },
+      spec:
+        os === "windows"
+          ? {
+              kind: "win_agent",
+              agent,
+              cwd,
+              session_id: sess?.id ?? null,
+            }
+          : { kind: "tmux", tmux_name: name },
     });
   };
 
@@ -419,7 +430,7 @@ export function SessionsPage() {
         createCwd,
       );
       setPendingDir(null);
-      attachTmux(resume, name);
+      attachSession(resume, name, cwd);
       void qc.invalidateQueries({
         queryKey: ["sessions", hostAlias, agent, os],
       });
@@ -450,8 +461,13 @@ export function SessionsPage() {
   };
 
   const open = (sess: Session) => {
+    // `live` only exists on POSIX (tmux); Windows rows are idle/running.
     if (sess.live) {
-      attachTmux(sess, sess.tmux ?? tmuxName(agent, sess.id));
+      attachSession(
+        sess,
+        sess.tmux ?? tmuxName(agent, sess.id),
+        sess.cwd ?? probe.data!.home,
+      );
       return;
     }
     if (sess.running) {
