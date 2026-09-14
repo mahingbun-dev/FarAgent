@@ -153,9 +153,42 @@ export function asDiagnosis(e: unknown): Diagnosis | null {
   return null;
 }
 
+/**
+ * The bilingual sentence behind a `CommandError::Localized` rejection, or `null`.
+ *
+ * The twin of [`asDiagnosis`], for a class of failure that is not a connection
+ * diagnosis: a sentence the backend already has in both languages (a
+ * `LocalizedText` — the Windows-remote refusal is the first) and would otherwise
+ * have to pick a language for, which it cannot do well. It arrives as
+ * `{ kind: "localized", message: { zh, en } }` and the reader's language is
+ * chosen here, by `pick`, exactly as the diagnosis's own `summary` is.
+ *
+ * Carrying both is the mechanism: the alternative — a code the frontend maps to
+ * a local table — would mean a second copy of every backend sentence in
+ * `lib/i18n.ts`, drifting from the one the TUI shows. The backend already owns
+ * the sentence; this only carries it.
+ */
+export function asLocalized(e: unknown): Text | null {
+  const v = unwrap(e);
+  if (!v || typeof v !== "object" || !("kind" in v)) return null;
+  const k = v as { kind: string; message?: unknown };
+  if (k.kind !== "localized") return null;
+  const m = k.message;
+  if (!m || typeof m !== "object") return null;
+  const t = m as { zh?: unknown; en?: unknown };
+  if (typeof t.zh !== "string" || typeof t.en !== "string") return null;
+  return { zh: t.zh, en: t.en };
+}
+
 export function errorMessage(e: unknown): string {
   const v = unwrap(e);
   if (typeof v === "string") return v;
+  // A bilingual carrier would stringify to "[object Object]" through the `message`
+  // branch below. English is the fallback here rather than the reader's language
+  // because this helper has no language in scope; the lang-aware path for a
+  // command failure is `helperErrorText` in `lib/helper.ts`, which picks it.
+  const localized = asLocalized(v);
+  if (localized) return localized.en;
   if (v && typeof v === "object" && "message" in v) {
     return String((v as { message: unknown }).message);
   }

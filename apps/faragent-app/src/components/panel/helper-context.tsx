@@ -15,6 +15,10 @@
  *   the silent degradation `faragent_service::helper` exists to prevent.
  * - **A closed channel.** The remote helper can exit; when it does, the panel
  *   says so instead of spinning forever.
+ *
+ * And one is *asked for*: the remote's own op list, via one `ping` per
+ * connection. The mode says "degraded", but only the op list says which three
+ * panel features the fallback cannot serve — see `lib/panel/capabilities.ts`.
  */
 import {
   createContext,
@@ -26,6 +30,11 @@ import {
   type ReactNode,
 } from "react";
 import { helperFallbackNotice, openHelper, type HelperConnection } from "@/lib/helper";
+import {
+  capabilitiesFor,
+  OPTIMISTIC,
+  type PanelCapabilities,
+} from "@/lib/panel/capabilities";
 import { createLease } from "@/lib/panel/lease";
 import { useStore } from "@/state";
 
@@ -40,6 +49,11 @@ export interface PanelHelperValue {
   error: unknown;
   /** The fallback's bilingual sentence, or `null` on a native helper. */
   notice: string | null;
+  /**
+   * Which of the panel's op-dependent features this remote can serve. Optimistic
+   * until the remote's `ping` answers; see `lib/panel/capabilities.ts`.
+   */
+  capabilities: PanelCapabilities;
   /** Ask for a fresh channel. The error state's retry. */
   retry: () => void;
 }
@@ -67,6 +81,7 @@ export function PanelHelperProvider({
   const lang = useStore((s) => s.lang);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<HelperState>(CONNECTING);
+  const [capabilities, setCapabilities] = useState<PanelCapabilities>(OPTIMISTIC);
 
   useEffect(() => {
     let alive = true;
@@ -76,6 +91,10 @@ export function PanelHelperProvider({
     // same failure instead of dialling again.
     const key = `${host}#${attempt}`;
     setState(CONNECTING);
+    // Back to optimistic for the new channel: the previous remote's op list says
+    // nothing about this one, and a stale "no diffs here" would be worse than a
+    // moment of optimism.
+    setCapabilities(OPTIMISTIC);
 
     lease.acquire(key, () => openHelper(host)).then(
       (connection) => {
@@ -83,6 +102,11 @@ export function PanelHelperProvider({
         setState({ status: "open", connection, error: null });
         stop = connection.onClosed(() => {
           if (alive) setState({ status: "closed", connection, error: null });
+        });
+        // One `ping` per connection, however many panels share it — the answer
+        // decides which features the tabs may offer.
+        void capabilitiesFor(connection).then((decided) => {
+          if (alive) setCapabilities(decided);
         });
       },
       (error: unknown) => {
@@ -110,9 +134,10 @@ export function PanelHelperProvider({
       notice: state.connection
         ? helperFallbackNotice(state.connection.mode, lang)
         : null,
+      capabilities,
       retry,
     }),
-    [host, state, lang, retry],
+    [host, state, lang, capabilities, retry],
   );
 
   return (

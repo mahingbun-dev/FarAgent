@@ -59,9 +59,21 @@ import { useStore } from "@/state";
 const PERSIST_DEBOUNCE_MS = 1_000;
 
 export function PanelWatch({ root }: { root: string }) {
-  const { connection } = usePanelHelper();
+  const { connection, capabilities } = usePanelHelper();
   const queryClient = useQueryClient();
   const cacheOn = useStore((s) => s.appCacheEnabled);
+
+  /**
+   * Whether this remote can be subscribed to at all. A bash-fallback remote
+   * cannot: `watch.subscribe` is one of the three ops it does not speak, and a
+   * failed subscribe is dropped by design inside `lib/panel/watch.ts` — which
+   * made "live refresh never happens here" the one shortfall with no symptom at
+   * all. `right-panel.tsx` states it instead, and this skips the doomed round
+   * trip. Optimistic while the ping is in flight, so a native host still
+   * subscribes on the first paint; a fallback host's wasted subscribe is
+   * released by the pool as soon as the decision lands.
+   */
+  const subscribable = capabilities.watch;
 
   /**
    * The persist effect's "write the bucket now", published for the teardown
@@ -79,7 +91,7 @@ export function PanelWatch({ root }: { root: string }) {
 
   // The subscription, the pushes, and the release.
   useEffect(() => {
-    if (!connection || root === "") return;
+    if (!connection || root === "" || !subscribable) return;
 
     const release = panelWatches.acquire(connection, root);
     const invalidate = (changes: Change[]) => {
@@ -125,7 +137,7 @@ export function PanelWatch({ root }: { root: string }) {
       // a *different* remote's panel read it if the id were ever reused.
       void queryClient.removeQueries({ queryKey: ["panel", connection.id] });
     };
-  }, [connection, root, queryClient]);
+  }, [connection, root, subscribable, queryClient]);
 
   // The optional disk cache, read side. Once per connection, and only when the
   // setting is on — with it off this effect does nothing at all.

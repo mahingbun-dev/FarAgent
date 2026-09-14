@@ -205,6 +205,47 @@ test("a diagnosis behind an open failure is rendered in the user's language", ()
   assert.equal(helperErrorText({ kind: "plain", message: "boom" }, "zh"), "boom");
 });
 
+test("a bilingual failure reaches a Chinese reader in Chinese", () => {
+  // The `localized` twin of the diagnosis case above, and the class rather than
+  // one string: `CommandError::Localized` carries a sentence the backend has in
+  // both languages. `helper.rs` used to lift only `.en` out of
+  // `FallbackReason::WindowsRemote` and drop the Chinese, so a Chinese user saw
+  // an English refusal on the one host that can produce it.
+  const failure = {
+    kind: "localized",
+    message: {
+      zh: "远程是 Windows：helper 通道仅支持 POSIX。",
+      en: "the remote is Windows: the helper channel is POSIX-only.",
+    },
+  };
+  assert.equal(helperErrorText(failure, "zh"), "远程是 Windows：helper 通道仅支持 POSIX。");
+  assert.equal(helperErrorText(failure, "en"), "the remote is Windows: the helper channel is POSIX-only.");
+
+  // One normalisation later: `openHelper` rejects with a `HelperError`, and the
+  // language must survive that — the same trap the diagnosis test pins.
+  const normalised = HelperError.from(failure);
+  assert.equal(normalised.kind, "open");
+  assert.deepEqual(normalised.localized, failure.message);
+  assert.equal(helperErrorText(normalised, "zh"), failure.message.zh);
+  assert.equal(helperErrorText(normalised, "en"), failure.message.en);
+  // `.message` has no language in scope, so it settles on English rather than
+  // stringifying the object — but never "[object Object]".
+  assert.equal(normalised.message, failure.message.en);
+
+  // The Tauri `payload` wrapper is the commonest arrival path here too.
+  assert.equal(helperErrorText({ payload: failure }, "zh"), failure.message.zh);
+
+  // And the discriminant is what makes it `localized`: a same-shaped object
+  // under another tag is not one, so it must not claim the bilingual path.
+  assert.equal(HelperError.from({ kind: "plain", message: "boom" }).localized, null);
+  assert.equal(HelperError.from({ kind: "remote", code: "internal" }).localized, null);
+  // Half a translation is not a translation: `pick` would hand back `undefined`
+  // for the missing side, which is worse than the English-only string it replaced.
+  assert.equal(HelperError.from({ kind: "localized", message: { en: "only" } }).localized, null);
+  assert.equal(HelperError.from({ kind: "localized", message: {} }).localized, null);
+  assert.equal(HelperError.from({ kind: "localized" }).localized, null);
+});
+
 test("no tagged failure reaches the user as [object Object]", () => {
   // The class of bug rather than one instance: every shape below has a tag and
   // no `message`, and `String(object)` is "[object Object]" for all of them.

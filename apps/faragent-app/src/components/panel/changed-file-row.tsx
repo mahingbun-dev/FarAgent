@@ -14,6 +14,16 @@
  * without syntax colouring. Neither is silent — the truncation notice is
  * rendered *above* the rows and repeated where they stop, and both copies sit
  * outside the horizontal scroller.
+ *
+ * ## When there is no `git.diff` to ask for
+ *
+ * The bash fallback does not speak `git.diff`, so the row is not expandable
+ * there — this reads the connection's op list (via `usePanelHelper`) rather than
+ * offering a control that would fail with `unknown op`. The row is then a plain
+ * `div`, not a `button`: a control that cannot do its job should not be
+ * announced as one. The reason itself is the tab's job to state, because the
+ * tabs know where to put one sentence for the whole list instead of one per row
+ * (see `changes-panel.tsx` / `git-panel.tsx`).
  */
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -31,9 +41,10 @@ import { useStore, useT } from "@/state";
 export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string }) {
   const t = useT();
   const lang = useStore((s) => s.lang);
-  const { connection } = usePanelHelper();
+  const { connection, capabilities } = usePanelHelper();
   const [open, setOpen] = useState(false);
   const path = decodeText(file.path);
+  const expandable = capabilities.diff;
   const patch = usePanelGitDiff(connection, repo, path, file.staged, open);
 
   const parsed = patch.data?.diff ? decodeText(patch.data.diff) : "";
@@ -49,42 +60,61 @@ export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string })
     ? t("changes.diffTruncated", { lines: slice.shown, total: slice.total })
     : null;
 
-  return (
-    <div className="border-b border-border last:border-b-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        title={open ? t("changes.hideDiff") : t("changes.showDiff")}
-        className={cn(
-          "flex w-full items-center gap-2 px-2 py-1 text-left text-xs hover:bg-surface-hover",
-          open && "bg-surface-selected",
-        )}
-      >
+  const rowClass = cn(
+    "flex w-full items-center gap-2 px-2 py-1 text-left text-xs",
+    expandable && "hover:bg-surface-hover",
+    open && expandable && "bg-surface-selected",
+  );
+  const cells = (
+    <>
+      {expandable ? (
         <ChevronRight
           className={cn(
             "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
             open && "rotate-90",
           )}
         />
-        <span className="min-w-0 flex-1 truncate font-mono" title={path}>
-          {file.origPath ? (
-            <>
-              <span className="text-muted-foreground">
-                {decodeText(file.origPath)} →{" "}
-              </span>
-              {path}
-            </>
-          ) : (
-            path
-          )}
-        </span>
-        <span className="shrink-0 font-mono text-micro text-muted-foreground">
-          {file.index}
-          {file.worktree}
-        </span>
-        <FileStatusBadge status={file.status} />
-      </button>
+      ) : null}
+      <span className="min-w-0 flex-1 truncate font-mono" title={path}>
+        {file.origPath ? (
+          <>
+            <span className="text-muted-foreground">
+              {decodeText(file.origPath)} →{" "}
+            </span>
+            {path}
+          </>
+        ) : (
+          path
+        )}
+      </span>
+      <span className="shrink-0 font-mono text-micro text-muted-foreground">
+        {file.index}
+        {file.worktree}
+      </span>
+      <FileStatusBadge status={file.status} />
+    </>
+  );
+
+  return (
+    <div className="border-b border-border last:border-b-0">
+      {expandable ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          title={open ? t("changes.hideDiff") : t("changes.showDiff")}
+          className={rowClass}
+        >
+          {cells}
+        </button>
+      ) : (
+        // Not a button: there is nothing to open. The `title` carries the reason
+        // the row has no chevron, for the reader who wonders about the one row
+        // that looks different in a list where nothing is expandable.
+        <div className={rowClass} title={t("changes.noDiffOp")}>
+          {cells}
+        </div>
+      )}
 
       {open ? (
         patch.isLoading ? (

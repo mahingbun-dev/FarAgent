@@ -61,6 +61,25 @@ const HELPER_OPS = [
   "shutdown",
 ];
 
+/**
+ * What the *bash fallback* answers `ping` with — `fs.rs`'s own reply, verbatim.
+ *
+ * The fallback is a seven-op shell script, not the helper binary: `git.branches`,
+ * `git.diff` and `watch.*` are absent, and asking for one is a `bad_request`
+ * (`fs.rs`'s `unknown op` arm). A panel that does not read this list degrades
+ * silently — the Changes tab fails with a raw protocol error and the branch list
+ * is simply empty. So the mock models the shortfall rather than papering over it.
+ */
+const FALLBACK_OPS = [
+  "ping",
+  "fs.list",
+  "fs.read",
+  "fs.stat",
+  "git.discover",
+  "git.status",
+  "git.log",
+];
+
 /** Deliver a push on a macrotask, the way a real stream would arrive. */
 const MACROTASK = 0;
 
@@ -1047,10 +1066,16 @@ function opOpen(args: Record<string, unknown>): unknown {
     // `FallbackReason::WindowsRemote`'s, verbatim — including the part saying
     // this is *not* a downgrade, because `helper_open` returns an error rather
     // than a script-fallback mode here.
+    //
+    // `localized`, not `plain`: the wording exists in both languages on the
+    // backend, and a `plain` carrier would force it to pick one at the wire
+    // (`helper.rs` used to flatten it to `.en`, which is what finding I4 was).
     throw {
-      kind: "plain",
-      message:
-        "the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it.",
+      kind: "localized",
+      message: {
+        zh: "远程是 Windows：helper 通道仅支持 POSIX，无法在这些远端打开 helper 会话。",
+        en: "the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it.",
+      },
     };
   }
   if (host !== "build-01.farm.internal" && host !== "gpu-box") {
@@ -1106,9 +1131,19 @@ function opCall(args: Record<string, unknown>): unknown {
   }
   const params = (raw ?? {}) as Record<string, unknown>;
 
+  // The fallback is a different program with a smaller vocabulary. Answer the
+  // op list *it* would answer, and refuse the rest exactly as it refuses them.
+  const ops = session.mode.kind === "native" ? HELPER_OPS : FALLBACK_OPS;
+  if (!ops.includes(op)) {
+    return protocolError(
+      "bad_request",
+      `unknown op \`${op}\`; this ${session.mode.kind === "native" ? "helper" : "fallback"} speaks: ${ops.join(", ")}`,
+    );
+  }
+
   switch (op) {
     case "ping":
-      return { pong: true, version: "0.2.0", pid: 4242, ops: HELPER_OPS };
+      return { pong: true, version: "0.2.0", pid: 4242, ops };
     case "fs.list":
       return opFsList(params);
     case "fs.read":

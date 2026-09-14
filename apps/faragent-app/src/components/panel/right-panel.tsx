@@ -290,14 +290,35 @@ function RootBar({
   );
 }
 
-/** The fallback notice, if the remote is not running the native helper. */
+/**
+ * What this remote cannot do, said out loud above the tabs.
+ *
+ * Two sentences, because they answer two different questions. The first is the
+ * backend's own fallback sentence — *why* the remote is in the degraded mode.
+ * The second is the consequence the panel would otherwise hide: with no
+ * `watch.subscribe`, a change on the remote never refreshes anything here. The
+ * other two consequences are named where they bite (the Changes and Git tabs),
+ * since they are about what those tabs contain.
+ */
 function Notice() {
-  const { notice } = usePanelHelper();
-  if (!notice) return null;
+  const t = useT();
+  const { notice, capabilities } = usePanelHelper();
+  const lines = [
+    notice,
+    capabilities.watch ? null : t("panel.watchUnsupported"),
+  ].filter((line): line is string => line !== null);
+  if (lines.length === 0) return null;
   return (
-    <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-warning">
-      {notice}
-    </p>
+    <>
+      {lines.map((line) => (
+        <p
+          key={line}
+          className="shrink-0 border-b border-border px-2 py-1 text-xs text-warning"
+        >
+          {line}
+        </p>
+      ))}
+    </>
   );
 }
 function PanelBody({

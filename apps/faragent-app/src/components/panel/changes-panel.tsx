@@ -57,7 +57,7 @@ export function ChangesPanel({ root }: { root: string }) {
 function ChangesBody({ repo }: { repo: string }) {
   const t = useT();
   const lang = useStore((s) => s.lang);
-  const { connection } = usePanelHelper();
+  const { connection, capabilities } = usePanelHelper();
   const status = usePanelGitStatus(connection, repo);
 
   if (status.isLoading) return <Spinner label={t("file.loading")} />;
@@ -100,7 +100,18 @@ function ChangesBody({ repo }: { repo: string }) {
         {" · "}
         {t("git.branch")} {status.data?.branch ? decodeText(status.data.branch) : "—"}
       </p>
-      {listOnly ? (
+      {/*
+        Three reasons the diffs are not open, and the first is the strongest: a
+        fallback remote has no `git.diff` at all, so no row can expand and the
+        reason is about the remote rather than about this change set. Its rows
+        render unexpandable (`changed-file-row.tsx`), which without this sentence
+        would look like a list that simply does nothing when clicked.
+      */}
+      {!capabilities.diff ? (
+        <p className="border-b border-border px-2 py-1.5 text-xs text-warning">
+          {t("changes.noDiffOp")}
+        </p>
+      ) : listOnly ? (
         <p className="border-b border-border px-2 py-1.5 text-xs text-warning">
           {truncated
             ? t("changes.truncated", { count: files.length })

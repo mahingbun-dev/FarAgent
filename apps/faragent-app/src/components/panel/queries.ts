@@ -87,11 +87,23 @@ export function usePanelGitStatus(connection: HelperConnection | null, root: str
   });
 }
 
-export function usePanelGitBranches(connection: HelperConnection | null, root: string) {
+/**
+ * The branch list.
+ *
+ * `enabled` is the caller's, because the bash fallback does not speak
+ * `git.branches`: asking anyway costs a round trip whose only possible answer is
+ * `unknown op`, and the panel already knows that before it asks
+ * (`lib/panel/capabilities.ts`).
+ */
+export function usePanelGitBranches(
+  connection: HelperConnection | null,
+  root: string,
+  enabled = true,
+) {
   return useQuery({
     queryKey: key(connection, "branches", root),
     queryFn: () => (connection as HelperConnection).gitBranches(root),
-    enabled: connection !== null && root !== "",
+    enabled: connection !== null && root !== "" && enabled,
     retry: false,
   });
 }

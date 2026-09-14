@@ -82,9 +82,10 @@ function Section({ title, aside, children }: {
 function GitBody({ root }: { root: string }) {
   const t = useT();
   const lang = useStore((s) => s.lang);
-  const { connection } = usePanelHelper();
+  const { connection, capabilities } = usePanelHelper();
   const status = usePanelGitStatus(connection, root);
-  const branches = usePanelGitBranches(connection, root);
+  // Not asked for when the remote cannot answer it: see `usePanelGitBranches`.
+  const branches = usePanelGitBranches(connection, root, capabilities.branches);
   const log = usePanelGitLog(connection, root);
 
   const [shownFiles, setShownFiles] = useState(LIST_PAGE_SIZE);
@@ -155,7 +156,11 @@ function GitBody({ root }: { root: string }) {
           <p className="px-2 py-2 text-xs text-muted-foreground">{t("git.clean")}</p>
         ) : (
           <>
-            {data.truncated ? (
+            {/* The same sentence the Changes tab shows, for the same reason: on a
+                fallback remote no row here can expand. */}
+            {!capabilities.diff ? (
+              <p className="px-2 py-1 text-xs text-warning">{t("changes.noDiffOp")}</p>
+            ) : data.truncated ? (
               <p className="px-2 py-1 text-xs text-warning">
                 {t("changes.truncated", { count: files.length })}
               </p>
@@ -186,10 +191,24 @@ function GitBody({ root }: { root: string }) {
       <Section
         title={t("git.branches")}
         aside={
-          branches.data ? String(branches.data.branches.length) : undefined
+          // "500+" rather than "500": `git.branches` caps the list and says so
+          // with `truncated`, and an aside that printed the capped length as the
+          // total would report a repository with 900 branches as having 500. The
+          // cap itself is `faragent_helper::proto::MAX_LIST_ENTRIES` (500), the
+          // same one the changed-file list uses.
+          branches.data
+            ? `${branches.data.branches.length}${branches.data.truncated ? "+" : ""}`
+            : undefined
         }
       >
-        {branches.isLoading ? (
+        {!capabilities.branches ? (
+          // Not the empty state: "no branches" is a fact about the repository,
+          // and this is a fact about the remote. A fallback helper cannot list
+          // branches at all, and saying "no branches" here would be a lie.
+          <p className="px-2 py-2 text-xs text-warning">
+            {t("git.branchesUnsupported")}
+          </p>
+        ) : branches.isLoading ? (
           <Spinner label={t("file.loading")} />
         ) : branches.error ? (
           <p className="px-2 py-1 text-xs text-danger">
@@ -200,25 +219,36 @@ function GitBody({ root }: { root: string }) {
             {t("git.branchesEmpty")}
           </p>
         ) : (
-          // Deliberately not a button: this panel does not switch branches.
-          (branches.data?.branches ?? []).map((branch) => (
-            <div
-              key={decodeText(branch.full)}
-              className="flex items-center gap-2 px-2 py-1 text-xs"
-              title={decodeText(branch.full)}
-            >
-              <BranchIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate font-mono">
-                {decodeText(branch.name)}
-              </span>
-              {branch.current ? (
-                <Badge variant="success">{t("git.current")}</Badge>
-              ) : null}
-              {branch.remote ? (
-                <Badge variant="outline">{t("git.remoteBranch")}</Badge>
-              ) : null}
-            </div>
-          ))
+          <>
+            {branches.data?.truncated ? (
+              <p className="px-2 py-1 text-xs text-warning">
+                {t("git.branchesTruncated", {
+                  count: branches.data.branches.length,
+                })}
+              </p>
+            ) : null}
+            {/*
+              Deliberately not a button: this panel does not switch branches.
+            */}
+            {(branches.data?.branches ?? []).map((branch) => (
+              <div
+                key={decodeText(branch.full)}
+                className="flex items-center gap-2 px-2 py-1 text-xs"
+                title={decodeText(branch.full)}
+              >
+                <BranchIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate font-mono">
+                  {decodeText(branch.name)}
+                </span>
+                {branch.current ? (
+                  <Badge variant="success">{t("git.current")}</Badge>
+                ) : null}
+                {branch.remote ? (
+                  <Badge variant="outline">{t("git.remoteBranch")}</Badge>
+                ) : null}
+              </div>
+            ))}
+          </>
         )}
       </Section>
 

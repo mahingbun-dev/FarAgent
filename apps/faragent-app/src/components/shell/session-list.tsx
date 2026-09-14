@@ -25,12 +25,40 @@ import { useStore, useT } from "@/state";
 
 type Mark = "live" | "running" | "scheduled" | "idle";
 
-/** Filled = something is happening; hollow = idle, as in the reference. */
+/**
+ * The word the TUI prints for each mark, as an i18n key rather than a literal.
+ *
+ * This is the dot's accessible name, so it is user-facing text and it is in both
+ * tables. `live` and `running` are different facts — a `live` tmux session
+ * versus an agent process that is running — and the words say which.
+ */
+const MARK_LABEL: Record<Mark, string> = {
+  live: "session.mark.live",
+  running: "session.mark.running",
+  scheduled: "session.mark.scheduled",
+  idle: "session.mark.idle",
+};
+
+/**
+ * Filled = something is happening; hollow = idle, as in the reference.
+ *
+ * ## Why this is not `aria-hidden`
+ *
+ * It was, with the raw mark ("live", "idle") in `title` — so the *only* way to
+ * read a session's state was a hover tooltip, and a screen reader got nothing at
+ * all. The dot is the whole carrier of that state in the rail, so it is now a
+ * labelled `role="img"`: its name joins the row's own, and the button above it
+ * announces "&lt;title&gt;, live session". `title` keeps the tooltip working for a
+ * mouse, and is the same translated word, so the two cannot disagree.
+ */
 function StatusDot({ mark }: { mark: Mark }) {
+  const t = useT();
+  const label = t(MARK_LABEL[mark]);
   return (
     <span
-      aria-hidden
-      title={mark}
+      role="img"
+      aria-label={label}
+      title={label}
       className={cn(
         "h-1.5 w-1.5 shrink-0 rounded-full",
         mark === "idle" && "border border-mark-idle",

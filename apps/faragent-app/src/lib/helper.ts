@@ -33,7 +33,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { b64ToBytes, bytesToB64 } from "./bytes.ts";
 import { translate } from "./i18n.ts";
-import { asDiagnosis, ipc, pick } from "./ipc.ts";
+import { asDiagnosis, asLocalized, ipc, pick } from "./ipc.ts";
 import type { Lang, Text } from "./ipc.ts";
 
 // ---------------------------------------------------------------------------
@@ -328,7 +328,9 @@ export interface GitChanged {
  *   Its `message` is the backend's plain text when there is one; when the failure
  *   is a connection *diagnosis* — the commonest case, and the shape with no
  *   `message` field at all — it is the diagnosis's own English summary, and the
- *   diagnosis itself rides along in `cause` for `asDiagnosis()`.
+ *   diagnosis itself rides along in `cause` for `asDiagnosis()`. A bilingual
+ *   sentence (`CommandError::Localized`) rides along in {@link HelperError.localized}
+ *   for `helperErrorText` to pick from.
  */
 export type HelperFailureKind = "remote" | "timeout" | "disconnected" | "open";
 
@@ -340,6 +342,13 @@ export class HelperError extends Error {
   readonly op: string | null;
   /** The timeout's budget in seconds, for `kind === "timeout"`. */
   readonly seconds: number | null;
+  /**
+   * A sentence the backend carries in both languages, when it sent one
+   * (`CommandError::Localized` — the Windows-remote refusal). `null` for every
+   * failure whose prose only exists in one language; {@link helperErrorText}
+   * picks from it, because only that function knows the reader's language.
+   */
+  readonly localized: Text | null;
   /** The rejection as it arrived, before any unwrapping. */
   readonly cause: unknown;
 
@@ -350,6 +359,7 @@ export class HelperError extends Error {
       code?: string | null;
       op?: string | null;
       seconds?: number | null;
+      localized?: Text | null;
       cause?: unknown;
     } = {},
   ) {
@@ -359,6 +369,7 @@ export class HelperError extends Error {
     this.code = fields.code ?? null;
     this.op = fields.op ?? null;
     this.seconds = fields.seconds ?? null;
+    this.localized = fields.localized ?? null;
     this.cause = fields.cause;
   }
 
@@ -375,19 +386,33 @@ export class HelperError extends Error {
   /**
    * Normalise anything `invoke` rejected with into a `HelperError`.
    *
-   * Three shapes reach here, and all three are real: the tagged object this
+   * Four shapes reach here, and all four are real: the tagged object this
    * backend's own errors serialize to, the same object wrapped in a `payload`
-   * key, and a bare string from a command whose error type is a `CommandError`
-   * (`helper_open` is one).
+   * key, a bare string from a command whose error type is a `CommandError`
+   * (`helper_open` is one), and that same command error carrying a bilingual
+   * sentence instead of one string.
    *
    * Two of those shapes carry no `message` at all — `CommandError::Diagnosis`
    * and `HelperError::Timeout` — so the text is derived from the fields they do
-   * carry rather than stringified (see [`missingMessage`]).
+   * carry rather than stringified (see [`missingMessage`]), and the fourth
+   * (`CommandError::Localized`) carries a `message` that is an *object*, which
+   * `String()` would render as "[object Object]".
    */
   static from(e: unknown): HelperError {
     if (e instanceof HelperError) return e;
     const value = e && typeof e === "object" && "payload" in e ? e.payload : e;
     if (value && typeof value === "object" && "kind" in value) {
+      // Ahead of everything that touches `message`: for this shape `message` is
+      // a `Text`, not a string, so the checks below would discard it. The
+      // English half becomes `message` (pinned by the tests, and what a log line
+      // shows); `localized` is what `helperErrorText` picks from.
+      const localized = asLocalized(value);
+      if (localized) {
+        return new HelperError("open", pick(localized, "en"), {
+          localized,
+          cause: e,
+        });
+      }
       const v = value as {
         kind: string;
         code?: unknown;
@@ -482,16 +507,20 @@ export function isHelperErrorCode(code: string): code is HelperErrorCode {
  * A `remote` error is the helper's own English text (the protocol does not
  * localise), so it is passed through rather than disguised; an `open` failure
  * that carries a connection diagnosis uses that diagnosis's localized summary;
- * a timeout is translated here.
+ * one that carries a bilingual sentence (`CommandError::Localized`) uses that
+ * sentence's own language; a timeout is translated here.
  *
  * The diagnosis is looked for in two places on purpose. A raw rejection from
  * `ipc.helperOpen` carries it at the top level, but the same failure caught from
  * the promise-based [`openHelper`] has already been normalised — its `cause` is
  * the only place the diagnosis survives, and reading only the top level would
- * quietly render every Chinese user's connection failure in English.
+ * quietly render every Chinese user's connection failure in English. A localized
+ * sentence does not have that problem: {@link HelperError.from} lifts it onto the
+ * error itself, so it is read from `error.localized` whichever way it arrived.
  */
 export function helperErrorText(e: unknown, lang: Lang): string {
   const error = HelperError.from(e);
+  if (error.localized) return pick(error.localized, lang);
   if (error.kind === "open") {
     const diagnosis = asDiagnosis(e) ?? asDiagnosis(error.cause);
     if (diagnosis) return pick(diagnosis.summary, lang);
