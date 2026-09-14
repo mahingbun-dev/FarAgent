@@ -249,7 +249,9 @@ impl Request {
         match self.params.get(key) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(s)) => Ok(Some(b64_decode(s)?)),
-            Some(_) => Err(ProtoError::bad_request(format!("`{key}` must be a base64 string"))),
+            Some(_) => Err(ProtoError::bad_request(format!(
+                "`{key}` must be a base64 string"
+            ))),
         }
     }
 
@@ -257,11 +259,12 @@ impl Request {
     pub fn u64(&self, key: &str) -> Result<Option<u64>, ProtoError> {
         match self.params.get(key) {
             None | Some(Value::Null) => Ok(None),
-            Some(Value::Number(n)) => n
-                .as_u64()
-                .map(Some)
-                .ok_or_else(|| ProtoError::bad_request(format!("`{key}` must be a non-negative integer"))),
-            Some(_) => Err(ProtoError::bad_request(format!("`{key}` must be an integer"))),
+            Some(Value::Number(n)) => n.as_u64().map(Some).ok_or_else(|| {
+                ProtoError::bad_request(format!("`{key}` must be a non-negative integer"))
+            }),
+            Some(_) => Err(ProtoError::bad_request(format!(
+                "`{key}` must be an integer"
+            ))),
         }
     }
 
@@ -270,7 +273,9 @@ impl Request {
         match self.params.get(key) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::Bool(b)) => Ok(Some(*b)),
-            Some(_) => Err(ProtoError::bad_request(format!("`{key}` must be a boolean"))),
+            Some(_) => Err(ProtoError::bad_request(format!(
+                "`{key}` must be a boolean"
+            ))),
         }
     }
 
@@ -439,7 +444,12 @@ pub fn parse_line(line: &[u8]) -> Option<Inbound> {
             .unwrap_or_default();
         Some(ErrorBody { code, message })
     });
-    Some(Inbound::Reply { id, ok, data, error })
+    Some(Inbound::Reply {
+        id,
+        ok,
+        data,
+        error,
+    })
 }
 
 /// What [`read_line`] found.
@@ -488,7 +498,11 @@ pub fn read_line<R: BufRead>(reader: &mut R) -> std::io::Result<Line> {
                     }
                 }
                 reader.consume(at + 1);
-                return Ok(if oversized { Line::Oversized } else { Line::Frame(buf) });
+                return Ok(if oversized {
+                    Line::Oversized
+                } else {
+                    Line::Frame(buf)
+                });
             }
             None => {
                 let n = available.len();
@@ -601,10 +615,22 @@ mod tests {
         let wrong_types =
             Request::from_line(br#"{"id":1,"op":"ping","limit":-1,"recursive":"yes","p":7}"#)
                 .unwrap();
-        assert_eq!(wrong_types.u64("limit").unwrap_err().code, ErrorCode::BadRequest);
-        assert_eq!(wrong_types.bool("recursive").unwrap_err().code, ErrorCode::BadRequest);
-        assert_eq!(wrong_types.bytes("p").unwrap_err().code, ErrorCode::BadRequest);
-        assert_eq!(wrong_types.string("p").unwrap_err().code, ErrorCode::BadRequest);
+        assert_eq!(
+            wrong_types.u64("limit").unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            wrong_types.bool("recursive").unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            wrong_types.bytes("p").unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            wrong_types.string("p").unwrap_err().code,
+            ErrorCode::BadRequest
+        );
 
         // Missing is not the same as wrong: an absent key is `None`.
         assert_eq!(wrong_types.u64("offset").unwrap(), None);
@@ -670,8 +696,14 @@ mod tests {
         assert!(parse_line(b"Welcome to Ubuntu 24.04!").is_none());
         assert!(parse_line(b"[1,2]").is_none());
         assert!(parse_line(b"{\"id\":1}").is_none(), "no `ok`");
-        assert!(parse_line(b"{\"op\":\"ping\"}").is_none(), "a request, not a reply");
-        assert!(parse_line(b"{\"event\":42}").is_none(), "event must be a string");
+        assert!(
+            parse_line(b"{\"op\":\"ping\"}").is_none(),
+            "a request, not a reply"
+        );
+        assert!(
+            parse_line(b"{\"event\":42}").is_none(),
+            "event must be a string"
+        );
         // `id` + `ok` is a reply; `data` is optional.
         assert!(parse_line(b"{\"id\":1,\"ok\":true}").is_some());
         assert!(parse_line(b"{\"id\":1,\"ok\":true,\"data\":null}").is_some());

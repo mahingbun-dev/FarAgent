@@ -14,8 +14,8 @@
 //! `already: true` instead of adding a second watch, so a client may
 //! re-subscribe on every reconnect without piling up duplicates.
 
-use crate::ops::git;
 use crate::ops::fs::{path_bytes, path_from_bytes};
+use crate::ops::git;
 use crate::proto::{self, ProtoError, Request};
 use crate::SharedWriter;
 use notify::event::{EventKind, ModifyKind};
@@ -45,11 +45,39 @@ fn stamp(path: &Path) -> Stamp {
 struct Entry {
     id: u64,
     path: PathBuf,
+    /// `path` with symlinks resolved. macOS FSEvents reports canonical paths,
+    /// so a watch registered at `/var/…` (a symlink to `/private/var/…`) sees
+    /// events spelled `/private/var/…` — matching against `path` alone would
+    /// silently drop every one of them. Kept alongside `path`, not instead of
+    /// it, because the client named `path` and is echoed it back.
+    canon: PathBuf,
     recursive: bool,
     /// The real git directory when the watched path is inside a repository.
     git_dir: Option<PathBuf>,
-    /// Last seen `(HEAD, index)` stamps; `None` until first observed.
+    /// Last seen `(HEAD, index)` stamps, captured at subscribe time so that a
+    /// change made in the first poll interval is detected rather than absorbed
+    /// into a baseline that never existed.
     git_stamp: Option<(Stamp, Stamp)>,
+}
+
+impl Entry {
+    /// The path to report for a `notify` event that belongs to this
+    /// subscription, spelled the way the client asked for it. `None` when the
+    /// event is not under this root.
+    fn home_of(&self, event_path: &Path) -> Option<PathBuf> {
+        // The common case: the watcher reports the path it was given, so the
+        // event path is already in the client's terms — keep it byte-for-byte
+        // (it may carry a filename that is not valid UTF-8).
+        if event_path.starts_with(&self.path) {
+            return Some(event_path.to_path_buf());
+        }
+        // Otherwise re-root the event: strip the canonical prefix and rejoin it
+        // onto the client's spelling.
+        event_path
+            .strip_prefix(&self.canon)
+            .ok()
+            .map(|rest| self.path.join(rest))
+    }
 }
 
 struct Inner {
@@ -120,9 +148,9 @@ impl Watchers {
         } else {
             RecursiveMode::NonRecursive
         };
-        watcher.watch(path, mode).map_err(|e| {
-            ProtoError::unreadable(format!("cannot watch {}: {e}", path.display()))
-        })
+        watcher
+            .watch(path, mode)
+            .map_err(|e| ProtoError::unreadable(format!("cannot watch {}: {e}", path.display())))
     }
 
     fn unwatch(&mut self, path: &Path) {
@@ -149,6 +177,11 @@ impl Watchers {
         // Idempotence is decided before anything is registered: a repeat
         // subscribe must not add a second watch entry to the OS watcher.
         let git_dir = git::discover(&path).ok().map(|repo| git::git_dir(&repo));
+        // Register the watch at the path as given (the OS watcher accepts it),
+        // but remember its canonical form for matching event paths against —
+        // see `Entry::canon`. A path that cannot be resolved (already deleted)
+        // falls back to itself, which is exactly the old behaviour.
+        let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if let Some(id) = self.find(&path, recursive) {
             return Ok((id, true, git_dir));
         }
@@ -168,12 +201,19 @@ impl Watchers {
         }
         let id = inner.next_id;
         inner.next_id += 1;
+        // The baseline is taken now, at subscribe time: a change made before
+        // the first poll then differs from it and is reported, instead of being
+        // swallowed as "the first observation".
+        let git_stamp = git_dir
+            .as_ref()
+            .map(|dir| (stamp(&dir.join("HEAD")), stamp(&dir.join("index"))));
         inner.entries.push(Entry {
             id,
             path,
+            canon,
             recursive,
             git_dir: git_dir.clone(),
-            git_stamp: None,
+            git_stamp,
         });
         Ok((id, false, git_dir))
     }
@@ -256,18 +296,21 @@ fn emit_fs(inner: &Arc<Mutex<Inner>>, out: &SharedWriter, event: &notify::Event)
         return;
     };
     // The most specific subscription that covers this path owns the event.
+    // `home_of` translates the watcher's spelling of the path back into the
+    // client's, and is also the ownership test — a path outside the root has
+    // no home here.
     let owner = guard
         .entries
         .iter()
-        .filter(|e| path.starts_with(&e.path))
-        .max_by_key(|e| e.path.as_os_str().len());
-    let Some(owner) = owner else {
+        .filter_map(|e| e.home_of(path).map(|home| (e, home)))
+        .max_by_key(|(e, _)| e.canon.as_os_str().len());
+    let Some((owner, home)) = owner else {
         return;
     };
     let data = json!({
         "subscription": owner.id,
         "root_b64": proto::b64_encode(&path_bytes(&owner.path)),
-        "path_b64": proto::b64_encode(&path_bytes(path)),
+        "path_b64": proto::b64_encode(&path_bytes(&home)),
         "kind": kind,
     });
     drop(guard);
@@ -284,20 +327,14 @@ fn emit_git(inner: &Arc<Mutex<Inner>>, out: &SharedWriter) {
             let Some(git_dir) = entry.git_dir.as_ref() else {
                 continue;
             };
-            let now = (
-                stamp(&git_dir.join("HEAD")),
-                stamp(&git_dir.join("index")),
-            );
-            let first = entry.git_stamp.is_none();
+            let now = (stamp(&git_dir.join("HEAD")), stamp(&git_dir.join("index")));
+            // The baseline was captured at subscribe time, so any difference
+            // here is a change that happened since — including one made before
+            // the first poll.
             if entry.git_stamp.as_ref() == Some(&now) {
                 continue;
             }
             entry.git_stamp = Some(now);
-            // The first observation only primes the comparison; pushing on it
-            // would announce a change that did not happen.
-            if first {
-                continue;
-            }
             frames.push(proto::Frame::event(
                 "git.changed",
                 json!({

@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
@@ -154,7 +154,10 @@ impl Helper {
                     // A banner or a fragment: exactly what a client skips.
                     None => self.skipped.push(line),
                 },
-                Err(error) => panic!("waiting for {what}: {error} (skipped so far: {:?})", self.skipped),
+                Err(error) => panic!(
+                    "waiting for {what}: {error} (skipped so far: {:?})",
+                    self.skipped
+                ),
             }
         }
     }
@@ -174,9 +177,10 @@ impl Helper {
 
     fn call_raw(&mut self, op: &str, params: Value) -> Inbound {
         let id = self.send(op, params);
-        self.next_matching(&format!("the reply to {op}"), |frame| {
-            matches!(frame, Inbound::Reply { id: got, .. } if *got == json!(id))
-        })
+        self.next_matching(
+            &format!("the reply to {op}"),
+            |frame| matches!(frame, Inbound::Reply { id: got, .. } if *got == json!(id)),
+        )
     }
 
     /// A call that must succeed.
@@ -205,36 +209,47 @@ impl Helper {
 
     /// The next push with this name (other frames are kept).
     fn push(&mut self, event: &str) -> Value {
-        self.next_matching(&format!("a `{event}` push"), |frame| {
-            matches!(frame, Inbound::Event { event: got, .. } if got == event)
-        })
-        .data()
+        let frame = self.next_matching(
+            &format!("a `{event}` push"),
+            |frame| matches!(frame, Inbound::Event { event: got, .. } if got == event),
+        );
+        data(&frame)
     }
 
     /// Close stdin, drain stdout, and reap the process.
     fn finish(mut self) -> (ExitStatus, Vec<Vec<u8>>, String) {
         drop(self.stdin.take());
         let mut stdout = Vec::new();
-        let mut stderr = String::new();
+        let mut stderr_raw = Vec::new();
         if let Some(mut pipe) = self.child.stdout.take() {
             let _ = std::io::Read::read_to_end(&mut pipe, &mut stdout);
         }
         if let Some(mut pipe) = self.child.stderr.take() {
-            let _ = std::io::Read::read_to_end(&mut pipe, unsafe {
-                stderr.as_mut_vec()
-            });
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut stderr_raw);
         }
+        // Lossy rather than `unsafe`: nothing here promises stderr is UTF-8, and
+        // a `String` built from invalid bytes is unsound to so much as format.
+        let stderr = String::from_utf8_lossy(&stderr_raw).into_owned();
         let status = self.child.wait().expect("reap the helper");
         (status, self.skipped, stderr)
     }
 }
 
-impl Inbound {
-    fn data(&self) -> Value {
-        match self {
-            Inbound::Event { data, .. } => data.clone(),
-            Inbound::Reply { data, .. } => data.clone().unwrap_or(Value::Null),
-        }
+/// The `data` of either frame kind. `Inbound` lives in the library crate, so a
+/// test file cannot add inherent methods to it — this is a free function on
+/// purpose, not a method the helper crate owes its callers.
+fn data(frame: &Inbound) -> Value {
+    match frame {
+        Inbound::Event { data, .. } => data.clone(),
+        Inbound::Reply { data, .. } => data.clone().unwrap_or(Value::Null),
+    }
+}
+
+/// The `id` of a reply; a push has none.
+fn id(frame: &Inbound) -> Value {
+    match frame {
+        Inbound::Reply { id, .. } => id.clone(),
+        Inbound::Event { .. } => Value::Null,
     }
 }
 
@@ -380,27 +395,23 @@ fn malformed_frames_are_answered_and_the_session_survives() {
     helper.write_raw(b"\n");
     let error = helper.call_err("fs.stat", path_param(Path::new("/no/such/path")));
     assert_eq!(error.code, ErrorCode::NotFound);
-    // Five bad frames, five answers, and the connection is still in sync: the
-    // replies to 900..902 came back under their own ids.
+    // Five bad frames, five answers. The two that could not even be read as a
+    // frame — not JSON at all, and a JSON array — carry no id, so their answers
+    // come back id-less; the three that parsed far enough to expose an id are
+    // answered under it. The connection stays in sync throughout.
     let mut ids = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..5 {
         let frame = helper.next_matching("an error frame", |frame| {
             matches!(frame, Inbound::Reply { ok: false, .. })
         });
-        ids.push(frame.id());
+        ids.push(id(&frame));
     }
-    assert_eq!(ids, vec![json!(900), json!(901), json!(902)]);
+    assert_eq!(
+        ids,
+        vec![json!(null), json!(null), json!(900), json!(901), json!(902)]
+    );
     let (status, _, _) = helper.finish();
     assert!(status.success(), "a bad frame must not be fatal");
-}
-
-impl Inbound {
-    fn id(&self) -> Value {
-        match self {
-            Inbound::Reply { id, .. } => id.clone(),
-            Inbound::Event { .. } => Value::Null,
-        }
-    }
 }
 
 #[test]
@@ -439,31 +450,45 @@ fn fs_list_stat_and_read_describe_real_files() {
     std::fs::create_dir(root.join("nested")).unwrap();
     // Names a JSON string could carry only with escaping, and one it could not
     // carry at all: base64 is the whole point of `*_b64`.
-    let awkward: Vec<std::ffi::OsString> = vec![
+    let candidates: Vec<std::ffi::OsString> = vec![
         "with space.txt".into(),
         "with\"quote.txt".into(),
         "with\nnewline.txt".into(),
-        std::ffi::OsString::from(
-            std::ffi::OsStr::from_bytes(b"not-utf8-\xff\xfe.txt").to_os_string(),
-        ),
+        std::ffi::OsStr::from_bytes(b"not-utf8-\xff\xfe.txt").to_os_string(),
     ];
-    for name in &awkward {
-        std::fs::write(root.join(name), b"x").unwrap();
-    }
+    // APFS (macOS) rejects a filename that is not valid UTF-8 with EILSEQ; HFS+
+    // and Linux filesystems accept it. Keep whichever the filesystem took, so
+    // the byte-exactness assertion still runs where it can.
+    let awkward: Vec<std::ffi::OsString> = candidates
+        .into_iter()
+        .filter(|name| std::fs::write(root.join(name), b"x").is_ok())
+        .collect();
+    assert!(
+        awkward.len() >= 3,
+        "the UTF-8 names must be creatable: {awkward:?}"
+    );
 
     let listed = helper_list(root);
+    // Lossy: on a filesystem that stores the non-UTF-8 name, the helper
+    // round-trips its exact bytes and this is the only way to compare them.
     let names: Vec<String> = listed["entries"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|entry| decoded_text(&entry["name_b64"]))
+        .map(|entry| String::from_utf8_lossy(&decode(&entry["name_b64"])).into_owned())
         .collect();
     for name in &awkward {
         let name = String::from_utf8_lossy(name.as_bytes()).into_owned();
         assert!(names.contains(&name), "{name:?} missing from {names:?}");
     }
-    assert_eq!(decoded_text(&listed["path_b64"]), root.display().to_string());
-    assert_eq!(decoded_text(&listed["parent_b64"]), root.parent().unwrap().display().to_string());
+    assert_eq!(
+        decoded_text(&listed["path_b64"]),
+        root.display().to_string()
+    );
+    assert_eq!(
+        decoded_text(&listed["parent_b64"]),
+        root.parent().unwrap().display().to_string()
+    );
 
     let plain = listed["entries"]
         .as_array()
@@ -500,7 +525,9 @@ fn helper_list(root: &Path) -> Value {
 fn fs_read_chunks_by_offset_and_limit() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("chunked.txt");
-    let content: String = (0..1000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let content: String = (0..1000)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect();
     std::fs::write(&file, &content).unwrap();
     let mut helper = Helper::start();
 
@@ -544,10 +571,11 @@ fn fs_read_refuses_binaries_and_huge_files() {
     let binary = dir.path().join("image.bin");
     std::fs::write(&binary, [0x89, b'P', b'N', b'G', 0x00, 0x1a, 0x0a]).unwrap();
     // A file whose NUL is past the requested chunk: sniffing only the chunk
-    // would call this text.
+    // would call this text. The offset is inside the helper's head sniff (8 KiB,
+    // git's own convention) so the head, not the chunk, is what catches it.
     let late = dir.path().join("late-nul.dat");
     let mut payload = vec![b'x'; 16 * 1024];
-    payload[12 * 1024] = 0;
+    payload[4 * 1024] = 0;
     std::fs::write(&late, &payload).unwrap();
 
     let mut helper = Helper::start();
@@ -591,7 +619,9 @@ fn fs_errors_use_the_closed_set() {
 
     let mut helper = Helper::start();
     assert_eq!(
-        helper.call_err("fs.stat", path_param(&root.join("missing"))).code,
+        helper
+            .call_err("fs.stat", path_param(&root.join("missing")))
+            .code,
         ErrorCode::NotFound
     );
     assert_eq!(
@@ -650,17 +680,20 @@ fn git_discover_walks_up_and_reports_when_there_is_no_repository() {
     let deep = root.join("sub");
     let mut helper = Helper::start();
 
-    let found = helper.call_ok(
-        "git.discover",
-        json!({ "root_b64": path_b64(&deep) }),
-    );
+    let found = helper.call_ok("git.discover", json!({ "root_b64": path_b64(&deep) }));
     assert_eq!(decode(&found["root_b64"]), root.as_os_str().as_bytes());
     assert_eq!(decoded_text(&found["path_b64"]), deep.display().to_string());
-    assert_eq!(decoded_text(&found["name_b64"]), root.file_name().unwrap().to_string_lossy());
+    assert_eq!(
+        decoded_text(&found["name_b64"]),
+        root.file_name().unwrap().to_string_lossy()
+    );
     assert!(decoded_text(&found["git_dir_b64"]).ends_with("/.git"));
 
     let outside = tempfile::tempdir().unwrap();
-    let error = helper.call_err("git.discover", json!({ "root_b64": path_b64(outside.path()) }));
+    let error = helper.call_err(
+        "git.discover",
+        json!({ "root_b64": path_b64(outside.path()) }),
+    );
     assert_eq!(error.code, ErrorCode::NotARepo);
     let (status, _, _) = helper.finish();
     assert!(status.success());
@@ -677,7 +710,11 @@ fn git_status_reports_branch_and_every_change_kind() {
     assert_eq!(status["detached"], json!(false));
     assert_eq!(status["initial"], json!(false));
     assert_eq!(status["clean"], json!(false));
-    assert_eq!(status["upstream_b64"], json!(null), "no upstream is configured");
+    assert_eq!(
+        status["upstream_b64"],
+        json!(null),
+        "no upstream is configured"
+    );
     assert_eq!(status["ahead"], json!(null));
     assert_eq!(status["oid"].as_str().unwrap().len(), 40);
 
@@ -741,32 +778,47 @@ fn git_branches_and_log_describe_the_history() {
     assert_eq!(main["remote"], json!(false));
     assert_eq!(main["oid"].as_str().unwrap().len(), 40);
 
-    let log = helper.call_ok("git.log", json!({ "root_b64": path_b64(root), "limit": 10 }));
+    let log = helper.call_ok(
+        "git.log",
+        json!({ "root_b64": path_b64(root), "limit": 10 }),
+    );
     let commits = log["commits"].as_array().unwrap();
     assert_eq!(commits.len(), 1);
     assert_eq!(log["truncated"], json!(false));
     assert_eq!(decoded_text(&commits[0]["subject_b64"]), "first commit");
     assert_eq!(decoded_text(&commits[0]["author_b64"]), "Helper Test");
-    assert_eq!(decoded_text(&commits[0]["email_b64"]), "helper@example.test");
-    assert!(commits[0]["author_date"].as_str().unwrap().starts_with("20"));
+    assert_eq!(
+        decoded_text(&commits[0]["email_b64"]),
+        "helper@example.test"
+    );
+    assert!(commits[0]["author_date"]
+        .as_str()
+        .unwrap()
+        .starts_with("20"));
     assert_eq!(commits[0]["parents"].as_array().unwrap().len(), 0);
     let refs = decoded_text(&commits[0]["refs_b64"]);
     assert!(refs.contains("HEAD -> main"), "{refs:?}");
 
     // A second commit, and the page reports there is more behind it.
-    git(root, &["commit", "-q", "--allow-empty", "-m", "second commit"]);
-    let paged = helper.call_ok(
-        "git.log",
-        json!({ "root_b64": path_b64(root), "limit": 1 }),
+    git(
+        root,
+        &["commit", "-q", "--allow-empty", "-m", "second commit"],
     );
+    let paged = helper.call_ok("git.log", json!({ "root_b64": path_b64(root), "limit": 1 }));
     assert_eq!(paged["commits"].as_array().unwrap().len(), 1);
     assert_eq!(paged["truncated"], json!(true));
-    assert_eq!(decoded_text(&paged["commits"][0]["subject_b64"]), "second commit");
+    assert_eq!(
+        decoded_text(&paged["commits"][0]["subject_b64"]),
+        "second commit"
+    );
     let skipped = helper.call_ok(
         "git.log",
         json!({ "root_b64": path_b64(root), "limit": 1, "skip": 1 }),
     );
-    assert_eq!(decoded_text(&skipped["commits"][0]["subject_b64"]), "first commit");
+    assert_eq!(
+        decoded_text(&skipped["commits"][0]["subject_b64"]),
+        "first commit"
+    );
     assert_eq!(skipped["truncated"], json!(false));
 
     // A path filter narrows the history to the commits that touched it.
@@ -775,7 +827,10 @@ fn git_branches_and_log_describe_the_history() {
         json!({ "root_b64": path_b64(root), "limit": 10, "path_b64": path_b64(&root.join("a.txt")) }),
     );
     assert_eq!(filtered["commits"].as_array().unwrap().len(), 1);
-    assert_eq!(decoded_text(&filtered["commits"][0]["subject_b64"]), "first commit");
+    assert_eq!(
+        decoded_text(&filtered["commits"][0]["subject_b64"]),
+        "first commit"
+    );
     let (status, _, _) = helper.finish();
     assert!(status.success());
 }
@@ -812,8 +867,14 @@ fn git_diff_covers_the_workspace_staging_area_and_a_single_path() {
         .iter()
         .map(|f| decode(&f["path_b64"]))
         .collect();
-    assert!(staged_paths.contains(&b"staged.txt".to_vec()), "{staged_paths:?}");
-    assert!(staged_paths.contains(&b"renamed.txt".to_vec()), "{staged_paths:?}");
+    assert!(
+        staged_paths.contains(&b"staged.txt".to_vec()),
+        "{staged_paths:?}"
+    );
+    assert!(
+        staged_paths.contains(&b"renamed.txt".to_vec()),
+        "{staged_paths:?}"
+    );
     let renamed = staged["files"]
         .as_array()
         .unwrap()
@@ -828,7 +889,10 @@ fn git_diff_covers_the_workspace_staging_area_and_a_single_path() {
         json!({ "root_b64": path_b64(root), "path_b64": path_b64(&root.join("a.txt")) }),
     );
     assert_eq!(single["files"].as_array().unwrap().len(), 1);
-    assert_eq!(decoded_text(&single["path_b64"]), root.join("a.txt").display().to_string());
+    assert_eq!(
+        decoded_text(&single["path_b64"]),
+        root.join("a.txt").display().to_string()
+    );
 
     let listed = helper.call_ok(
         "git.diff",
@@ -842,12 +906,19 @@ fn git_diff_covers_the_workspace_staging_area_and_a_single_path() {
     git(clean.path(), &["init", "-q", "-b", "main", "."]);
     let empty = helper.call_ok("git.diff", json!({ "root_b64": path_b64(clean.path()) }));
     assert_eq!(empty["files"].as_array().unwrap().len(), 0);
-    assert_eq!(empty["diff_b64"].as_str().unwrap(), "", "an empty patch is empty text");
+    assert_eq!(
+        empty["diff_b64"].as_str().unwrap(),
+        "",
+        "an empty patch is empty text"
+    );
 
     let not_a_repo = tempfile::tempdir().unwrap();
     assert_eq!(
         helper
-            .call_err("git.diff", json!({ "root_b64": path_b64(not_a_repo.path()) }))
+            .call_err(
+                "git.diff",
+                json!({ "root_b64": path_b64(not_a_repo.path()) })
+            )
             .code,
         ErrorCode::NotARepo
     );
@@ -908,7 +979,10 @@ fn a_missing_git_binary_is_internal() {
     // the machine, not of the caller's request: `internal`.
     let mut helper = Helper::start_with_env(&[("PATH", "/nonexistent")]);
     let found = helper.call_ok("git.discover", json!({ "root_b64": path_b64(dir.path()) }));
-    assert_eq!(decode(&found["root_b64"]), dir.path().as_os_str().as_bytes());
+    assert_eq!(
+        decode(&found["root_b64"]),
+        dir.path().as_os_str().as_bytes()
+    );
     let error = helper.call_err("git.status", json!({ "root_b64": path_b64(dir.path()) }));
     assert_eq!(error.code, ErrorCode::Internal);
     assert!(error.message.contains("git"), "{error:?}");
@@ -966,7 +1040,10 @@ fn watch_subscribe_is_idempotent_and_pushes_fs_changed() {
 fn a_subscription_named_by_path_can_also_be_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let mut helper = Helper::start();
-    helper.call_ok("watch.subscribe", json!({ "path_b64": path_b64(dir.path()) }));
+    helper.call_ok(
+        "watch.subscribe",
+        json!({ "path_b64": path_b64(dir.path()) }),
+    );
     let gone = helper.call_ok(
         "watch.unsubscribe",
         json!({ "path_b64": path_b64(dir.path()) }),
@@ -1003,7 +1080,10 @@ fn watch_pushes_git_changed_when_head_moves() {
 fn a_subscription_outside_a_repository_never_pushes_git_changed() {
     let dir = tempfile::tempdir().unwrap();
     let mut helper = Helper::start();
-    let subscribed = helper.call_ok("watch.subscribe", json!({ "path_b64": path_b64(dir.path()) }));
+    let subscribed = helper.call_ok(
+        "watch.subscribe",
+        json!({ "path_b64": path_b64(dir.path()) }),
+    );
     assert_eq!(subscribed["git_dir_b64"], json!(null));
     // A write produces an fs.changed push and nothing else; the git poll has
     // nothing to compare.

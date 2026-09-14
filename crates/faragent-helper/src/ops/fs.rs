@@ -124,7 +124,9 @@ pub fn list(req: &Request) -> Result<Value, ProtoError> {
     let meta = std::fs::symlink_metadata(&path).map_err(|e| io_error(&path, e))?;
     // A symlinked directory lists like `ls` would: follow the link.
     let is_dir = if meta.file_type().is_symlink() {
-        std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+        std::fs::metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
     } else {
         meta.is_dir()
     };
@@ -292,13 +294,19 @@ mod tests {
     #[test]
     fn path_bytes_round_trip() {
         for raw in ["/tmp/a b", "/tmp/quote\"and'apostrophe", "/tmp/tab\there"] {
-            assert_eq!(path_from_bytes(&path_bytes(Path::new(raw))), PathBuf::from(raw));
+            assert_eq!(
+                path_from_bytes(&path_bytes(Path::new(raw))),
+                PathBuf::from(raw)
+            );
         }
     }
 
     #[test]
     fn missing_path_is_not_found() {
-        let req = request("fs.stat", json!({ "path_b64": b64(b"/no/such/path/at/all") }));
+        let req = request(
+            "fs.stat",
+            json!({ "path_b64": b64(b"/no/such/path/at/all") }),
+        );
         assert_eq!(stat(&req).unwrap_err().code, ErrorCode::NotFound);
     }
 
@@ -314,7 +322,10 @@ mod tests {
     #[test]
     fn read_refuses_a_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let req = request("fs.read", json!({ "path_b64": b64(&path_bytes(dir.path())) }));
+        let req = request(
+            "fs.read",
+            json!({ "path_b64": b64(&path_bytes(dir.path())) }),
+        );
         assert_eq!(read(&req).unwrap_err().code, ErrorCode::Unreadable);
     }
 }

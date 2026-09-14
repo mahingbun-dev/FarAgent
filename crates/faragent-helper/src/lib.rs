@@ -173,8 +173,14 @@ mod tests {
     #[test]
     fn ping_replies_and_keeps_serving() {
         let (mut session, buf) = session();
-        assert_eq!(session.handle(br#"{"id":1,"op":"ping"}"#), Outcome::Continue);
-        assert_eq!(session.handle(br#"{"id":2,"op":"ping"}"#), Outcome::Continue);
+        assert_eq!(
+            session.handle(br#"{"id":1,"op":"ping"}"#),
+            Outcome::Continue
+        );
+        assert_eq!(
+            session.handle(br#"{"id":2,"op":"ping"}"#),
+            Outcome::Continue
+        );
         let frames = read_frames(&buf);
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0]["id"], json!(1));
@@ -202,16 +208,15 @@ mod tests {
         assert_eq!(frames.len(), 7);
         for frame in &frames {
             assert_eq!(frame["ok"], json!(false));
-            assert_eq!(
-                frame["error"]["code"],
-                json!("bad_request"),
-                "{frame}"
-            );
+            assert_eq!(frame["error"]["code"], json!("bad_request"), "{frame}");
         }
         assert_eq!(frames[2]["id"], json!(7));
         assert_eq!(frames[6]["id"], json!(null));
         // The session is still usable afterwards.
-        assert_eq!(session.handle(br#"{"id":11,"op":"ping"}"#), Outcome::Continue);
+        assert_eq!(
+            session.handle(br#"{"id":11,"op":"ping"}"#),
+            Outcome::Continue
+        );
         let frames = read_frames(&buf);
         assert_eq!(frames.len(), 8);
         assert_eq!(frames[7]["id"], json!(11));
@@ -220,7 +225,10 @@ mod tests {
     #[test]
     fn shutdown_asks_the_loop_to_stop() {
         let (mut session, buf) = session();
-        assert_eq!(session.handle(br#"{"id":1,"op":"shutdown"}"#), Outcome::Exit);
+        assert_eq!(
+            session.handle(br#"{"id":1,"op":"shutdown"}"#),
+            Outcome::Exit
+        );
         let frames = read_frames(&buf);
         assert_eq!(frames[0]["ok"], json!(true));
         assert_eq!(frames[0]["data"]["bye"], json!(true));

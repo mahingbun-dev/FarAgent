@@ -45,7 +45,9 @@ pub fn dispatch(session: &mut Session, req: &Request) -> Result<Action, ProtoErr
         "git.diff" => Action::Reply(git::diff(req)?),
         "git.log" => Action::Reply(git::log(req)?),
         "watch.subscribe" => Action::Reply(crate::watch::subscribe(session.watchers_mut(), req)?),
-        "watch.unsubscribe" => Action::Reply(crate::watch::unsubscribe(session.watchers_mut(), req)?),
+        "watch.unsubscribe" => {
+            Action::Reply(crate::watch::unsubscribe(session.watchers_mut(), req)?)
+        }
         // The reply goes out first; the loop then unwinds so the caller sees
         // the process exit rather than a closed pipe.
         "shutdown" => Action::Shutdown(json!({ "bye": true })),

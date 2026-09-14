@@ -12,9 +12,7 @@
 //! `core.quotepath` quoting so a path comes back as the exact bytes on disk.
 
 use crate::ops::fs::{path_bytes, path_from_bytes};
-use crate::proto::{
-    self, ErrorCode, ProtoError, Request, MAX_LIST_ENTRIES,
-};
+use crate::proto::{self, ErrorCode, ProtoError, Request, MAX_LIST_ENTRIES};
 use serde_json::{json, Value};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
@@ -63,10 +61,7 @@ pub fn discover(start: &Path) -> Result<PathBuf, ProtoError> {
             _ => {
                 return Err(ProtoError::new(
                     ErrorCode::NotARepo,
-                    format!(
-                        "no `.git` in {} or any parent directory",
-                        start.display()
-                    ),
+                    format!("no `.git` in {} or any parent directory", start.display()),
                 ))
             }
         }
@@ -367,7 +362,12 @@ fn split_fields(record: &[u8], n: usize) -> Vec<&[u8]> {
     record.splitn(n, |b| *b == b' ').collect()
 }
 
-fn entry_from_xy(xy: &[u8], path: Vec<u8>, orig_path: Option<Vec<u8>>, unmerged: bool) -> FileEntry {
+fn entry_from_xy(
+    xy: &[u8],
+    path: Vec<u8>,
+    orig_path: Option<Vec<u8>>,
+    unmerged: bool,
+) -> FileEntry {
     let x = xy.first().copied().unwrap_or(b'.');
     let y = xy.get(1).copied().unwrap_or(b'.');
     let staged = x != b'.' && x != b'?';
@@ -696,9 +696,7 @@ pub fn log(req: &Request) -> Result<Value, ProtoError> {
     for record in raw.split(|b| *b == 0x1e) {
         // Each record is `fields\x1e\n`; the newline git appends belongs to the
         // separator, not the last field.
-        let record = record
-            .strip_prefix(b"\n")
-            .unwrap_or(record);
+        let record = record.strip_prefix(b"\n").unwrap_or(record);
         let record = record.strip_suffix(b"\n").unwrap_or(record);
         if record.is_empty() {
             continue;
@@ -776,7 +774,10 @@ mod tests {
         let raw = b"1 .M N... 100644 100644 100644 aaa bbb has a space.txt\0";
         let (_, files, _) = parse_status(raw);
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].to_value()["path_b64"], proto::b64_encode(b"has a space.txt"));
+        assert_eq!(
+            files[0].to_value()["path_b64"],
+            proto::b64_encode(b"has a space.txt")
+        );
     }
 
     #[test]
@@ -813,10 +814,7 @@ mod tests {
         std::fs::create_dir(repo.join(".git")).unwrap();
         assert_eq!(discover(&deep).unwrap(), repo);
         assert_eq!(discover(&repo).unwrap(), repo);
-        assert_eq!(
-            discover(dir.path()).unwrap_err().code,
-            ErrorCode::NotARepo
-        );
+        assert_eq!(discover(dir.path()).unwrap_err().code, ErrorCode::NotARepo);
     }
 
     #[test]
