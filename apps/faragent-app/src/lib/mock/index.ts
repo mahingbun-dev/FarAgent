@@ -17,6 +17,16 @@
  */
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { dispatch } from "./handlers.ts";
+import { pokeGitChanged, pokeWatch } from "./helper.ts";
+
+/**
+ * Re-exported so browser verification can drive a push on demand.
+ *
+ * `installMocks` also hangs them off `globalThis.__faragentMock`, which is the
+ * handle the browser harness actually uses: it does not have to resolve a
+ * module specifier or care how Vite has rewritten it.
+ */
+export { pokeGitChanged, pokeWatch };
 
 export interface InstallMocksOptions {
   /** Install even when it would not install on its own (the Node test runner). */
@@ -51,6 +61,13 @@ export function installMocks(options: InstallMocksOptions = {}): boolean {
   // I?"; it costs nothing and keeps a later task from tripping over its absence.
   mockWindows("main");
   mockIPC((cmd, payload) => dispatch(cmd, payload));
+  // The push channel has no filesystem behind it to change by itself, so a
+  // verification of "the panel refreshes when the remote pushes" needs a way to
+  // send the push. Dev-only, because this whole module is.
+  (globalThis as { __faragentMock?: unknown }).__faragentMock = {
+    pokeWatch,
+    pokeGitChanged,
+  };
   installed = true;
   return true;
 }

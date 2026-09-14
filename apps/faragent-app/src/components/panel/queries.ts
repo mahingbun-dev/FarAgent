@@ -10,15 +10,21 @@
  * with backoff only delays the sentence the user needs to read.
  */
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { panelKey, type KeyPart } from "@/lib/panel/keys";
 import type { HelperConnection } from "@/lib/helper";
 
 /** How many commits one `git.log` page asks for. */
 export const LOG_PAGE = 50;
 
-type KeyPart = string | number | boolean;
-
+/**
+ * A hook's key, from the connection it reads.
+ *
+ * The shape itself lives in `lib/panel/keys.ts` rather than here, because
+ * `lib/panel/watch.ts` invalidates prefixes of these keys from a push and the
+ * two spellings must not be able to drift.
+ */
 function key(connection: HelperConnection | null, name: string, ...rest: KeyPart[]) {
-  return ["panel", connection?.id ?? 0, name, ...rest];
+  return panelKey(connection?.id ?? 0, name, ...rest);
 }
 
 export function usePanelList(connection: HelperConnection | null, path: string) {

@@ -33,6 +33,7 @@ import { FilePreview } from "@/components/panel/file-preview";
 import { FileTree } from "@/components/panel/file-tree";
 import { GitPanel } from "@/components/panel/git-panel";
 import { PanelHelperProvider, usePanelHelper } from "@/components/panel/helper-context";
+import { PanelWatch } from "@/components/panel/panel-watch";
 import { useProbe } from "@/components/shell/use-shell-data";
 import { useQueryClient } from "@tanstack/react-query";
 import { PANEL } from "@/design";
@@ -138,6 +139,14 @@ export function RightPanel({ tab, onClose }: { tab: Tab; onClose: () => void }) 
       />
 
       <PanelHelperProvider host={tab.host}>
+        {/*
+          The push channel, mounted once for the panel and rendering nothing.
+          It sits inside the provider because it needs the connection, and
+          outside the tabs because the watch is on the panel's root rather than
+          on any one tab — see the file's own note on why a tab switch does not
+          drop it.
+        */}
+        <PanelWatch root={root} />
         <Tabs
           value={panel.tab}
           onValueChange={(value) =>

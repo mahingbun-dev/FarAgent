@@ -32,6 +32,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 import { b64ToBytes, bytesToB64 } from "./bytes.ts";
+import { translate } from "./i18n.ts";
 import { asDiagnosis, ipc, pick } from "./ipc.ts";
 import type { Lang, Text } from "./ipc.ts";
 
@@ -480,7 +481,8 @@ export function isHelperErrorCode(code: string): code is HelperErrorCode {
  *
  * A `remote` error is the helper's own English text (the protocol does not
  * localise), so it is passed through rather than disguised; an `open` failure
- * that carries a connection diagnosis uses that diagnosis's localized summary.
+ * that carries a connection diagnosis uses that diagnosis's localized summary;
+ * a timeout is translated here.
  *
  * The diagnosis is looked for in two places on purpose. A raw rejection from
  * `ipc.helperOpen` carries it at the top level, but the same failure caught from
@@ -494,7 +496,23 @@ export function helperErrorText(e: unknown, lang: Lang): string {
     const diagnosis = asDiagnosis(e) ?? asDiagnosis(error.cause);
     if (diagnosis) return pick(diagnosis.summary, lang);
   }
+  // The timeout is the one failure whose *prose* this side writes: the backend
+  // sends `op` and `seconds` and no sentence at all (see [`missingMessage`]), so
+  // the English text is assembled in this module — and therefore has to be
+  // localised here too. `error.message` keeps the English it was built with, so
+  // a caller that logs or asserts on it sees what it always saw.
+  if (error.kind === "timeout") return helperTimeoutText(error, lang);
   return error.message;
+}
+
+/** The timeout sentence, from the two fields `helper.rs` actually sends. */
+function helperTimeoutText(error: HelperError, lang: Lang): string {
+  const op = error.op !== null && error.op.length > 0
+    ? error.op
+    : translate(lang, "helper.request");
+  return error.seconds === null
+    ? translate(lang, "helper.timeoutNoSeconds", { op })
+    : translate(lang, "helper.timeout", { op, seconds: error.seconds });
 }
 
 // ---------------------------------------------------------------------------

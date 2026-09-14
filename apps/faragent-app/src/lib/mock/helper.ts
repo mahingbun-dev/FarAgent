@@ -1043,12 +1043,14 @@ function opOpen(args: Record<string, unknown>): unknown {
     throw { kind: "plain", message: "mock: `host` is required" };
   }
   if (host === "win-builder") {
-    // Exactly what `helper.rs` refuses a Windows remote with: the framed
-    // channel is POSIX-only, and there is no second dialect of *this* protocol.
+    // Exactly what `helper.rs` refuses a Windows remote with. The sentence is
+    // `FallbackReason::WindowsRemote`'s, verbatim — including the part saying
+    // this is *not* a downgrade, because `helper_open` returns an error rather
+    // than a script-fallback mode here.
     throw {
       kind: "plain",
       message:
-        "the remote is Windows: the helper upload channel is POSIX-only; using the script mode.",
+        "the remote is Windows: the helper channel is POSIX-only, so no helper session can be opened on it.",
     };
   }
   if (host !== "build-01.farm.internal" && host !== "gpu-box") {
@@ -1214,6 +1216,74 @@ function opUnsubscribe(session: Session, params: Record<string, unknown>): unkno
     }
   }
   return { removed };
+}
+
+// ---------------------------------------------------------------------------
+// Poking the watch, for browser verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a `fs.changed` for `path` on every live subscription of `host` that
+ * covers it, exactly as `faragent_helper::watch::emit_fs` picks a subscription.
+ *
+ * Here because the mock's filesystem cannot change by itself: `opSubscribe`
+ * emits one push when a watch starts, and after that a browser test of "does
+ * the panel refresh when the remote says so" has no second event to work with.
+ * Driving the panel through a *real* change is not possible without a real
+ * remote, which is the whole reason this layer exists — so this is the honest
+ * substitute: the same payload the helper would send, on demand.
+ *
+ * Returns how many subscriptions heard it. Nothing in the app calls this; it is
+ * reached from the verification harness (and from `mock.test.ts`).
+ */
+export function pokeWatch(
+  host: string,
+  path: string,
+  kind: "created" | "removed" | "renamed" | "modified" | "other" = "modified",
+): number {
+  const target = normalise(path);
+  let heard = 0;
+  for (const session of sessions.values()) {
+    if (!session.live || session.host !== host) continue;
+    for (const [id, sub] of session.subs) {
+      if (!covers(sub.path, target)) continue;
+      push(session.id, "fs.changed", {
+        subscription: id,
+        root_b64: b64Of(sub.path),
+        path_b64: b64Of(target),
+        kind,
+      });
+      heard += 1;
+    }
+  }
+  return heard;
+}
+
+/**
+ * Emit a `git.changed` on every live subscription of `host` that has a
+ * repository — the coarse notification `emit_git` sends when HEAD or the index
+ * moves. See [`pokeWatch`] for why this exists.
+ */
+export function pokeGitChanged(host: string): number {
+  let heard = 0;
+  for (const session of sessions.values()) {
+    if (!session.live || session.host !== host) continue;
+    for (const [id, sub] of session.subs) {
+      if (sub.gitDir === null) continue;
+      push(session.id, "git.changed", {
+        subscription: id,
+        root_b64: b64Of(sub.path),
+      });
+      heard += 1;
+    }
+  }
+  return heard;
+}
+
+/** The remote's own "is this path inside that watch" rule. */
+function covers(root: string, path: string): boolean {
+  if (root === path) return true;
+  return root === "/" ? true : path.startsWith(`${root}/`);
 }
 
 function closeSession(id: number, message: string): void {

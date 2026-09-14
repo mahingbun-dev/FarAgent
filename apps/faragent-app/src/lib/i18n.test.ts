@@ -35,12 +35,16 @@ test("no value is empty, whitespace, or a bare key", () => {
 });
 
 test("the panel and git keys this task added are present in both", () => {
+  // Two entries used to be in this list and are gone: `panel.root` (the panel's
+  // root bar shows the path itself) and `changes.untracked` (untracked files
+  // are listed under `changes.unstaged`, which is the only grouping the changes
+  // panel has). `i18n-coverage.test.ts` is what catches that class of leftover
+  // now, rather than a hand-written list that listed a key nothing used.
   const added = [
     "panel.files",
     "panel.changes",
     "panel.git",
     "panel.collapse",
-    "panel.root",
     "tree.empty",
     "tree.showMore",
     "tree.truncated",
@@ -52,7 +56,6 @@ test("the panel and git keys this task added are present in both", () => {
     "file.readOnly",
     "changes.staged",
     "changes.unstaged",
-    "changes.untracked",
     "changes.listOnly",
     "changes.diffTruncated",
     "changes.noDiff",

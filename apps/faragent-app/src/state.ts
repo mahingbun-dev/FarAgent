@@ -8,6 +8,11 @@ import { useCallback } from "react";
 import { create } from "zustand";
 import { PANEL } from "@/design";
 import { translate } from "@/lib/i18n";
+import {
+  appCacheEnabled as readAppCacheEnabled,
+  panelCache,
+  setAppCacheEnabled as writeAppCacheEnabled,
+} from "@/lib/panel/cache";
 import { initTheme, preferredTheme, setTheme, type Theme } from "@/lib/theme";
 import type { AgentKind, AttachSpec, Host, Lang } from "@/lib/ipc";
 
@@ -93,6 +98,17 @@ interface Store {
   selectTab: (id: string) => void;
   closeTab: (id: string) => void;
   setPanel: (id: string, patch: Partial<PanelState>) => void;
+
+  /**
+   * Whether the panel keeps a copy of what it reads on this machine.
+   *
+   * Off by default, and read from storage at startup so the choice survives a
+   * restart. The copy can contain code from a remote machine, which is why the
+   * setting is off and why the settings page names the directory — see
+   * `lib/panel/cache.ts`.
+   */
+  appCacheEnabled: boolean;
+  setAppCacheEnabled: (enabled: boolean) => void;
 }
 
 // Apply the stored theme before the first paint (the store owns the
@@ -173,6 +189,17 @@ export const useStore = create<Store>((set) => ({
         tab.id === id ? { ...tab, panel: { ...tab.panel, ...patch } } : tab,
       ),
     })),
+
+  appCacheEnabled: readAppCacheEnabled(),
+  setAppCacheEnabled: (enabled) => {
+    writeAppCacheEnabled(enabled);
+    // Whatever is on disk was written under the old setting, so changing it
+    // clears the cache: turning it off must not leave a copy of the user's
+    // remote code behind, and turning it on must not restore rows the user
+    // never agreed to. The setting starts each state with an empty cache.
+    panelCache().clear();
+    set({ appCacheEnabled: enabled });
+  },
 }));
 
 /**

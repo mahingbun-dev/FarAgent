@@ -22,7 +22,7 @@ import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
 import * as fx from "./fixtures.ts";
 import { dispatch, mockedCommands } from "./handlers.ts";
-import { installMocks, mocksInstalled, uninstallMocks } from "./index.ts";
+import { installMocks, mocksInstalled, pokeGitChanged, pokeWatch, uninstallMocks } from "./index.ts";
 
 const HOST = "build-01.farm.internal";
 
@@ -391,6 +391,133 @@ test("a git.diff target is repository-relative, the shape git.status hands out",
       staged: target.staged,
     })) as { diff_b64: string | null };
     assert.ok(absolute.diff_b64, "an absolute path under the root still resolves");
+  } finally {
+    await ipc.helperClose(id);
+  }
+});
+
+// ------------------------------------------------------- poking the watch
+
+/**
+ * Let the mock's `setTimeout(…, 0)` pushes land on the channel.
+ *
+ * `push` is deliberately asynchronous (it stands in for a process writing to a
+ * pipe), so a test that pokes and asserts immediately would see nothing.
+ */
+const drain = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test("pokeWatch delivers an fs.changed the panel can act on", async () => {
+  // The mock's filesystem cannot change by itself, so this is the handle the
+  // browser verification drives — and the only way to test "the panel refreshes
+  // when the remote pushes" without a real remote. What matters is that the
+  // payload is the helper's own: the same fields, base64, on the same channel.
+  const channel = new Channel<HelperEvent>();
+  const seen: HelperEvent[] = [];
+  channel.onmessage = (event) => seen.push(event);
+  const { id } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  try {
+    const watched = (await ipc.helperCall(id, "watch.subscribe", {
+      path_b64: encodePath("/srv/data"),
+      recursive: true,
+    })) as { subscription: number; git_dir_b64: string | null };
+    assert.ok(watched.subscription > 0);
+    assert.ok(watched.git_dir_b64, "/srv/data is a repository in the fixtures");
+
+    // The subscription's own opening push is `git.changed` for a repository.
+    await drain();
+    assert.equal(seen.length, 1, "a fresh subscription reports one change");
+    assert.equal(seen[0].event, "git.changed");
+    seen.length = 0;
+
+    // Now the on-demand push. `/srv/data/src/app.rs` is under `/srv/data`, so
+    // the subscription hears it; the path is what the waiter will invalidate on.
+    assert.equal(pokeWatch(HOST, "/srv/data/src/app.rs"), 1, "the subscription heard it");
+    await drain();
+    assert.equal(seen.length, 1);
+    const fs = seen[0];
+    assert.equal(fs.event, "fs.changed");
+    const data = fs.data as { subscription: number; root_b64: string; path_b64: string; kind: string };
+    assert.equal(data.subscription, watched.subscription, "the push names its own subscription");
+    assert.equal(decodeText(b64ToBytes(data.root_b64)), "/srv/data");
+    assert.equal(decodeText(b64ToBytes(data.path_b64)), "/srv/data/src/app.rs");
+    assert.equal(data.kind, "modified");
+    seen.length = 0;
+
+    // Outside the watched tree: heard by nobody, so the panel is not woken.
+    assert.equal(pokeWatch(HOST, "/srv/other/file.txt"), 0);
+    assert.equal(pokeWatch(HOST, "/srv/data"), 1, "the watched root is inside itself");
+    await drain();
+    assert.equal(seen.length, 1);
+    seen.length = 0;
+
+    // A host with no live session hears nothing — the push is addressed, like
+    // the real one, which travels down that host's own channel.
+    assert.equal(pokeWatch("gpu-box", "/srv/data/src/app.rs"), 0);
+    assert.equal(pokeGitChanged("gpu-box"), 0);
+    await drain();
+    assert.equal(seen.length, 0);
+
+    assert.equal(pokeGitChanged(HOST), 1, "a repository subscription hears git.changed");
+    await drain();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].event, "git.changed");
+    assert.equal(
+      (seen[0].data as { subscription: number }).subscription,
+      watched.subscription,
+    );
+    seen.length = 0;
+
+    // Unsubscribed: the session is still live but holds nothing to push to.
+    const unsubscribe = (await ipc.helperCall(id, "watch.unsubscribe", {
+      subscription: watched.subscription,
+    })) as { removed: number };
+    assert.equal(unsubscribe.removed, 1);
+    assert.equal(pokeWatch(HOST, "/srv/data/src/app.rs"), 0);
+    assert.equal(pokeGitChanged(HOST), 0);
+    await drain();
+    assert.equal(seen.length, 0);
+  } finally {
+    await ipc.helperClose(id);
+  }
+
+  // A closed channel hears nothing either — the leak this whole task is about,
+  // from the mock's side: a poke must not reach a session that is gone.
+  assert.equal(pokeWatch(HOST, "/srv/data/src/app.rs"), 0);
+  assert.equal(pokeGitChanged(HOST), 0);
+});
+
+test("a directory that is not a repository reports a live tree, not git state", async () => {
+  // The split the real helper has: with no repository to poll, a fresh
+  // subscription announces that the tree is live as an `fs.changed` naming its
+  // own root. `/srv` is the fixture's parent — a real directory, a repository
+  // *under* it (`/srv/data`), but not one itself — which is exactly the case
+  // where the mock must take the other branch.
+  const channel = new Channel<HelperEvent>();
+  const seen: HelperEvent[] = [];
+  channel.onmessage = (event) => seen.push(event);
+  const { id } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  try {
+    const watched = (await ipc.helperCall(id, "watch.subscribe", {
+      path_b64: encodePath("/srv"),
+      recursive: true,
+    })) as { subscription: number; git_dir_b64: string | null };
+    assert.equal(watched.git_dir_b64, null, "/srv is not itself a repository");
+
+    await drain();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].event, "fs.changed", "a non-repository watch has no git state to report");
+    const data = seen[0].data as { subscription: number; path_b64: string; kind: string };
+    assert.equal(data.subscription, watched.subscription);
+    assert.equal(decodeText(b64ToBytes(data.path_b64)), "/srv", "it names its own root");
+    seen.length = 0;
+
+    // And it is not a git subscriber, so `pokeGitChanged` skips it while the
+    // deep path poke still reaches it.
+    assert.equal(pokeGitChanged(HOST), 0, "a non-repository watch is not a git subscriber");
+    assert.equal(pokeWatch(HOST, "/srv/data/src/app.rs"), 1, "a recursive watch covers its subtree");
+    await drain();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].event, "fs.changed");
   } finally {
     await ipc.helperClose(id);
   }

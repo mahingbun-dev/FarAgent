@@ -220,6 +220,28 @@ test("no tagged failure reaches the user as [object Object]", () => {
   assert.equal(HelperError.from({ kind: "timeout" }).message, "no reply to the request");
 });
 
+test("a timeout reads in Chinese, and in English exactly as it did before", () => {
+  // Task 8 introduced this sentence in English only. It was never in
+  // `lib/i18n.ts`, because the backend sends `op` and `seconds` and no prose —
+  // the text this side assembles was the one string nobody could translate.
+  // The English is pinned here so adding the translation did not reword it.
+  const timeout = { payload: { kind: "timeout", op: "git.diff", seconds: 60 } };
+  assert.equal(helperErrorText(timeout, "zh"), "git.diff在 60 秒内没有回复");
+  assert.equal(helperErrorText(timeout, "en"), "no reply to git.diff within 60s");
+  assert.equal(helperErrorText(timeout, "en"), HelperError.from(timeout).message);
+
+  // A timeout whose payload named no op: the placeholder is translated too.
+  const anonymous = { payload: { kind: "timeout", seconds: 5 } };
+  assert.equal(helperErrorText(anonymous, "zh"), "该请求在 5 秒内没有回复");
+  assert.equal(helperErrorText(anonymous, "en"), "no reply to the request within 5s");
+
+  // …and one with no budget either, which is the shape `{"kind":"timeout"}`
+  // reaches the panel as.
+  const bare = { payload: { kind: "timeout" } };
+  assert.equal(helperErrorText(bare, "zh"), "该请求没有回复");
+  assert.equal(helperErrorText(bare, "en"), "no reply to the request");
+});
+
 // ---------------------------------------------------------------------------
 // Mode and notices
 // ---------------------------------------------------------------------------
