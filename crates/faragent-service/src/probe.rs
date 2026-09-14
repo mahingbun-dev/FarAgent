@@ -4,7 +4,7 @@ use faragent_core::config;
 use faragent_core::text::{Lang, LocalizedText};
 use faragent_core::vocab::HostOs;
 use faragent_remote::{remote, win};
-use faragent_transport::{host_os, run_login, run_win_login, OpenSshTransport};
+use faragent_transport::{host_os, run_login, run_win_login, OpenSshTransport, TransportError};
 
 pub use faragent_remote::remote::Probe;
 
@@ -14,8 +14,12 @@ pub fn probe_host(host: &str) -> Result<Probe> {
     let probe = match try_probe(&client, expected) {
         Ok(p) => p,
         Err(e) => {
-            // The cached dialect may be stale (reprovisioned host) or the
-            // marker inconclusive: one retry with the other dialect.
+            // A hung SSH will not succeed on the other dialect either; retrying
+            // just doubles the 25s wait. Fast failures (wrong shell, parse)
+            // still try once more — the cached OS may be stale.
+            if !should_retry_other_os(&e) {
+                return Err(e);
+            }
             let other = match expected {
                 HostOs::Posix => HostOs::Windows,
                 HostOs::Windows => HostOs::Posix,
@@ -73,5 +77,42 @@ fn format_agent_line_lang(kind: AgentKind, probe: &Probe, lang: Lang) -> String 
             format!("{}  {}  ({})", kind.title(), ver, auth)
         }
         _ => format!("{}  {}", kind.title(), NOT_INSTALLED_HINT.pick(lang)),
+    }
+}
+
+fn should_retry_other_os(err: &anyhow::Error) -> bool {
+    match err.downcast_ref::<TransportError>() {
+        Some(t) if t.timed_out => false,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_retry_other_os;
+    use faragent_core::vocab::AuthMode;
+    use faragent_transport::TransportError;
+
+    fn timeout_err() -> anyhow::Error {
+        anyhow::Error::new(TransportError {
+            host: "h".into(),
+            mode: AuthMode::Auto,
+            command: "ssh".into(),
+            raw: "timed out".into(),
+            status: None,
+            timed_out: true,
+            needs_auth: false,
+            methods: String::new(),
+        })
+    }
+
+    #[test]
+    fn timeout_does_not_retry_the_other_os() {
+        assert!(!should_retry_other_os(&timeout_err()));
+    }
+
+    #[test]
+    fn parse_failure_still_retries_the_other_os() {
+        assert!(should_retry_other_os(&anyhow::anyhow!("bad probe text")));
     }
 }

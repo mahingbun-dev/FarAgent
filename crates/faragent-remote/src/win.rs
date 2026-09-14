@@ -49,7 +49,8 @@ pub fn ps_single_quote(s: &str) -> String {
 }
 
 /// Shared helpers every generated script carries: sanitize a value for the
-/// tab protocol, epoch mtime, first-8KB base64, and the `file` line itself.
+/// tab protocol, epoch mtime, prefix base64, and the `file` line itself.
+/// `__PREFIX_BYTES__` is filled per agent — Codex needs more than 8KB.
 const HELPERS: &str = r#"
 function Clean([string]$s) { return ($s -replace "[`t`r`n]", ' ') }
 function Mt([string]$p) {
@@ -57,7 +58,7 @@ function Mt([string]$p) {
 }
 function B64([string]$p) {
   try {
-    $fs = [IO.File]::OpenRead($p); $buf = New-Object byte[] 8192; $n = $fs.Read($buf,0,8192); $fs.Close()
+    $fs = [IO.File]::OpenRead($p); $buf = New-Object byte[] __PREFIX_BYTES__; $n = $fs.Read($buf,0,__PREFIX_BYTES__); $fs.Close()
     if ($n -le 0) { return '' }
     return [Convert]::ToBase64String($buf,0,$n)
   } catch { return '' }
@@ -68,6 +69,14 @@ function Emit([string]$ag,[string]$id,[string]$src,[string]$cwd) {
   Write-Output ("file`t{0}`t{1}`t{2}`t{3}`t{4}" -f $ag, (Clean $id), (Mt $src), (Clean $cwd), $b)
 }
 "#;
+
+fn list_helpers(agent: AgentKind) -> String {
+    let bytes = match agent {
+        AgentKind::Codex => 128 * 1024,
+        _ => 8192,
+    };
+    HELPERS.replace("__PREFIX_BYTES__", &bytes.to_string())
+}
 
 /// Probe: same `FARAGENT_PROBE_V1` tab protocol as the POSIX script, with
 /// `os\twindows` so the client can trust the dialect.
@@ -152,10 +161,11 @@ Write-Output 'live`t0'
 /// `proc\t<agent>\t<session-id-or-empty>` for anything that looks like this
 /// agent running under the current user. There is no tmux on Windows.
 pub fn list_script(agent: AgentKind) -> String {
+    let helpers = list_helpers(agent);
     let mut s = format!(
         r#"{UTF8_PREAMBLE}
 Write-Output 'FARAGENT_LIST_V1'
-{HELPERS}
+{helpers}
 "#
     );
     let root = |tail: &str| format!("(Join-Path $env:USERPROFILE '{tail}')");
@@ -202,12 +212,19 @@ if (Test-Path -LiteralPath $root) {{
         AgentKind::Codex => s.push_str(&format!(
             r#"$root = {root}
 if (Test-Path -LiteralPath $root) {{
-  $count = 0
+  $interactive = New-Object System.Collections.Generic.List[object]
+  $scheduled = New-Object System.Collections.Generic.List[object]
   Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.jsonl' | ForEach-Object {{
-    if ($count -ge 200) {{ return }}
-    $count++
-    Emit 'codex' $_.BaseName $_.FullName ''
+    $fs = [IO.File]::OpenRead($_.FullName)
+    $buf = New-Object byte[] 4096
+    $n = $fs.Read($buf, 0, 4096)
+    $fs.Close()
+    $head = [Text.Encoding]::UTF8.GetString($buf, 0, $n)
+    if ($head.Contains('"source":"exec"')) {{ [void]$scheduled.Add($_) }}
+    else {{ [void]$interactive.Add($_) }}
   }}
+  $interactive | Sort-Object LastWriteTime -Descending | Select-Object -First 30 | ForEach-Object {{ Emit 'codex' $_.BaseName $_.FullName '' }}
+  $scheduled | Sort-Object LastWriteTime -Descending | Select-Object -First 30 | ForEach-Object {{ Emit 'codex' $_.BaseName $_.FullName '' }}
 }}
 {proc_scan}
 "#,
@@ -398,6 +415,20 @@ mod tests {
         assert!(list_script(AgentKind::Codex).contains(".codex\\sessions"));
         assert!(list_script(AgentKind::Grok).contains(".grok\\sessions"));
         assert!(list_script(AgentKind::Pi).contains(".pi\\agent\\sessions"));
+        assert!(
+            list_script(AgentKind::Codex).contains("131072"),
+            "codex prefix must exceed 8KB so session_meta.cwd survives"
+        );
+        assert!(
+            list_script(AgentKind::Codex).contains(r#""source":"exec""#),
+            "split launchd/exec rollouts from desktop sessions"
+        );
+        assert!(
+            list_script(AgentKind::Codex).contains("Select-Object -First 30"),
+            "each bucket is capped so exec jobs cannot crowd out interactive"
+        );
+        assert!(list_script(AgentKind::Claude).contains("8192"));
+        assert!(!list_script(AgentKind::Claude).contains("131072"));
     }
 
     #[test]

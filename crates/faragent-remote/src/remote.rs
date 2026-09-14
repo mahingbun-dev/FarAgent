@@ -94,6 +94,8 @@ impl Probe {
 pub struct JsonlMeta {
     pub title: Option<String>,
     pub cwd: Option<String>,
+    /// Codex `codex exec` / launchd rollouts. Other agents stay false.
+    pub scheduled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +184,16 @@ done
 "#
 }
 
+/// Bytes of each transcript sent home for title/cwd. Codex session_meta
+/// lines are often >8KB (`base_instructions`), and the first real user
+/// prompt sits after injected AGENTS.md, so Codex needs a larger prefix.
+fn list_file_prefix_kb(agent: AgentKind) -> u32 {
+    match agent {
+        AgentKind::Codex => 128,
+        _ => 8,
+    }
+}
+
 pub fn list_script(agent: AgentKind) -> String {
     let mut s = format!(
         r#"
@@ -199,7 +211,7 @@ emit_file() {{
   _cwd=$(printf '%s' "$_cwd" | tr '\t\n\r' '   ')
   _b64=
   if [ -f "$_src" ] && command -v base64 >/dev/null 2>&1; then
-    _b64=$(dd if="$_src" bs=1024 count=8 2>/dev/null | base64 | tr -d '\n\r ')
+    _b64=$(dd if="$_src" bs=1024 count={prefix_kb} 2>/dev/null | base64 | tr -d '\n\r ')
   fi
   printf 'file\t%s\t%s\t%s\t%s\t%s\n' "$_agent" "$_id" "$_mt" "$_cwd" "$_b64"
 }}
@@ -209,7 +221,8 @@ if command -v tmux >/dev/null 2>&1; then
 fi
 "#,
         sock = TMUX_SOCKET,
-        legacy = LEGACY_TMUX_SOCKET
+        legacy = LEGACY_TMUX_SOCKET,
+        prefix_kb = list_file_prefix_kb(agent),
     );
     match agent {
         AgentKind::Grok => s.push_str(
@@ -245,10 +258,25 @@ fi
         AgentKind::Codex => s.push_str(
             r#"
 if [ -d "$HOME/.codex/sessions" ]; then
-  find "$HOME/.codex/sessions" -type f -name '*.jsonl' 2>/dev/null | head -n 200 | while IFS= read -r f; do
-    sid=$(basename "$f" .jsonl)
-    emit_file codex "$sid" "$f" ""
+  _idx=$(mktemp 2>/dev/null || echo "/tmp/faragent-codex-list.$$")
+  find "$HOME/.codex/sessions" -type f -name '*.jsonl' 2>/dev/null |
+  while IFS= read -r f; do
+    _kind=interactive
+    if dd if="$f" bs=1024 count=4 2>/dev/null | grep -q '"source":"exec"'; then
+      _kind=scheduled
+    fi
+    printf '%s\t%s\t%s\n' "$_kind" "$(mtime_of "$f")" "$f"
+  done > "$_idx"
+  for _kind in interactive scheduled; do
+    awk -F '\t' -v k="$_kind" '$1==k { print $2 "\t" $3 }' "$_idx" |
+    sort -nr | head -n 30 | cut -f2- |
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      sid=$(basename "$f" .jsonl)
+      emit_file codex "$sid" "$f" ""
+    done
   done
+  rm -f "$_idx"
 fi
 "#,
         ),
@@ -500,6 +528,7 @@ pub fn jsonl_meta(body: &[u8], limit: usize) -> JsonlMeta {
     let text = String::from_utf8_lossy(body);
     let mut title = None;
     let mut cwd = None;
+    let mut scheduled = false;
     for (i, line) in text.lines().enumerate() {
         if i >= limit {
             break;
@@ -511,29 +540,24 @@ pub fn jsonl_meta(body: &[u8], limit: usize) -> JsonlMeta {
         let Ok(obj) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if !scheduled {
+            scheduled = scheduled_from_record(&obj);
+        }
         if cwd.is_none() {
-            cwd = json_str(&obj, "cwd")
-                .or_else(|| json_str(&obj, "cwd_path"))
-                .or_else(|| {
-                    obj.get("environment_context")
-                        .and_then(|v| v.as_str())
-                        .and_then(extract_cwd_tag)
-                        .map(|s| s.to_string())
-                });
+            cwd = cwd_from_record(&obj);
         }
         if title.is_none() {
-            if let Some(text) = message_text(&obj) {
-                let first = text.trim().lines().next().unwrap_or("").trim();
-                if !first.is_empty() && !first.starts_with('<') {
-                    title = Some(first.chars().take(80).collect());
-                }
-            }
+            title = title_from_record(&obj);
         }
         if title.is_some() && cwd.is_some() {
             break;
         }
     }
-    JsonlMeta { title, cwd }
+    JsonlMeta {
+        title,
+        cwd,
+        scheduled,
+    }
 }
 
 pub fn grok_summary_meta(body: &[u8], cwd_hint: &str) -> (Option<String>, Option<String>) {
@@ -641,24 +665,114 @@ fn extract_cwd_tag(s: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
+fn payload_of(obj: &Value) -> Option<&Value> {
+    obj.get("payload").filter(|v| v.is_object())
+}
+
+fn scheduled_from_record(obj: &Value) -> bool {
+    let rec = payload_of(obj).unwrap_or(obj);
+    let source = json_str(rec, "source");
+    let originator = json_str(rec, "originator");
+    matches!(source.as_deref(), Some("exec"))
+        || matches!(originator.as_deref(), Some("codex_exec"))
+}
+
+fn cwd_from_record(obj: &Value) -> Option<String> {
+    let from = |v: &Value| {
+        json_str(v, "cwd")
+            .or_else(|| json_str(v, "cwd_path"))
+            .or_else(|| {
+                v.get("environment_context")
+                    .and_then(|x| x.as_str())
+                    .and_then(extract_cwd_tag)
+                    .map(|s| s.to_string())
+            })
+    };
+    from(obj).or_else(|| payload_of(obj).and_then(from))
+}
+
+fn is_skipped_role(obj: &Value) -> bool {
+    matches!(
+        obj.get("role").and_then(|v| v.as_str()),
+        Some("developer" | "system" | "assistant")
+    )
+}
+
+fn title_from_record(obj: &Value) -> Option<String> {
+    let record = payload_of(obj).unwrap_or(obj);
+    if is_skipped_role(record) || is_skipped_role(obj) {
+        return None;
+    }
+    if let Some(t) = user_message_item(record).and_then(|s| usable_title(&s)) {
+        return Some(t);
+    }
+    message_text(record)
+        .or_else(|| message_text(obj))
+        .and_then(|s| usable_title(&s))
+}
+
+fn user_message_item(payload: &Value) -> Option<String> {
+    let item = payload.get("item")?;
+    if item.get("type").and_then(|v| v.as_str()) != Some("UserMessage") {
+        return None;
+    }
+    content_text(item.get("content")?)
+}
+
+fn usable_title(text: &str) -> Option<String> {
+    let mut t = text.trim();
+    const MARKER: &str = "## My request:";
+    if let Some(idx) = t.find(MARKER) {
+        t = t[idx + MARKER.len()..].trim();
+    }
+    let first = t.lines().next().unwrap_or("").trim();
+    if first.is_empty() || skip_as_title(first) {
+        return None;
+    }
+    Some(first.chars().take(80).collect())
+}
+
+fn skip_as_title(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with('<')
+        || s.starts_with("# AGENTS.md")
+        || s.starts_with("# Files mentioned by the user")
+        || s.starts_with("[Request interrupted")
+}
+
+fn content_text(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string()).filter(|t| !t.is_empty());
+    }
+    let arr = content.as_array()?;
+    let mut parts = Vec::new();
+    for part in arr {
+        let ty = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if !matches!(ty, "text" | "input_text" | "") {
+            continue;
+        }
+        if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+            if !t.is_empty() {
+                parts.push(t);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 fn message_text(obj: &Value) -> Option<String> {
     let msg = obj.get("message").or_else(|| obj.get("content"))?;
     if let Some(s) = msg.as_str() {
         return Some(s.to_string());
     }
-    let content = msg.get("content")?;
-    if let Some(s) = content.as_str() {
-        return Some(s.to_string());
+    if let Some(content) = msg.get("content") {
+        return content_text(content);
     }
-    let arr = content.as_array()?;
-    for part in arr {
-        if part.get("type").and_then(|t| t.as_str()) == Some("text") {
-            if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                return Some(t.to_string());
-            }
-        }
-    }
-    None
+    content_text(msg)
 }
 
 fn decode_b64(s: &str) -> Vec<u8> {
@@ -899,6 +1013,101 @@ agent	pi			missing
         let body = br#"{"environment_context":"<cwd>/Users/a/src</cwd>"}"#;
         let m = jsonl_meta(body, 80);
         assert_eq!(m.cwd.as_deref(), Some("/Users/a/src"));
+    }
+
+    #[test]
+    fn jsonl_meta_reads_codex_payload_cwd_and_user_title() {
+        let body = r##"{"timestamp":"2026-09-14T02:00:19Z","type":"session_meta","payload":{"session_id":"01a09da3-f4c3-7f73-8a10-752981cdc3d3","cwd":"/tmp/wo","cli_version":"0.153.4"}}
+{"type":"event_msg","payload":{"type":"task_started"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<app-context>\nCodex desktop context"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\n\n<INSTRUCTIONS>\nprefer .venv"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"how to monetize a vibe coding product?\n"}]}}
+"##;
+        let m = jsonl_meta(body.as_bytes(), 120);
+        assert_eq!(m.cwd.as_deref(), Some("/tmp/wo"));
+        assert_eq!(
+            m.title.as_deref(),
+            Some("how to monetize a vibe coding product?")
+        );
+    }
+
+    #[test]
+    fn jsonl_meta_codex_uses_my_request_not_file_wrapper() {
+        let body = r##"{"type":"session_meta","payload":{"cwd":"/tmp/app"}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"\n# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\n\n## My request:\nmatch the thinking-process style\n"}]}}}
+"##;
+        let m = jsonl_meta(body.as_bytes(), 80);
+        assert_eq!(m.cwd.as_deref(), Some("/tmp/app"));
+        assert_eq!(m.title.as_deref(), Some("match the thinking-process style"));
+    }
+
+    #[test]
+    fn jsonl_meta_codex_skips_command_and_interrupted_titles() {
+        let body = r##"{"type":"session_meta","payload":{"cwd":"/tmp/p"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<command-name>/clear</command-name>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[Request interrupted by user]"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"what is in the worktree"}]}}
+"##;
+        let m = jsonl_meta(body.as_bytes(), 80);
+        assert_eq!(m.title.as_deref(), Some("what is in the worktree"));
+    }
+
+    #[test]
+    fn list_script_codex_reads_a_larger_prefix_than_other_agents() {
+        let shared = list_script(AgentKind::Grok);
+        assert!(
+            shared.contains("count=8") || shared.contains("count=\"$_kb\""),
+            "default prefix should stay 8KB: {shared}"
+        );
+        let codex = list_script(AgentKind::Codex);
+        assert!(
+            codex.contains("count=128"),
+            "codex first-line+AGENTS.md often exceeds 8KB: {codex}"
+        );
+        assert!(!list_script(AgentKind::Claude).contains("count=128"));
+        assert!(!list_script(AgentKind::Pi).contains("count=128"));
+    }
+
+    #[test]
+    fn list_script_codex_sends_newest_files_not_an_unsorted_200() {
+        let codex = list_script(AgentKind::Codex);
+        assert!(
+            codex.contains("sort -nr"),
+            "codex must pick newest transcripts: {codex}"
+        );
+        assert!(
+            codex.contains(r#""source":"exec""#),
+            "codex must split launchd/exec rollouts from desktop sessions: {codex}"
+        );
+        assert!(
+            codex.contains("head -n 30"),
+            "each bucket is capped so exec jobs cannot crowd out interactive: {codex}"
+        );
+        assert!(
+            !codex.contains("head -n 200"),
+            "codex must not keep the unsorted 200 cap: {codex}"
+        );
+        assert!(list_script(AgentKind::Claude).contains("head -n 200"));
+    }
+
+    #[test]
+    fn jsonl_meta_marks_codex_exec_as_scheduled() {
+        let body = r#"{"type":"session_meta","payload":{"cwd":"/tmp/p","source":"exec","originator":"codex_exec"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hourly sync"}]}}
+"#;
+        let m = jsonl_meta(body.as_bytes(), 20);
+        assert!(m.scheduled);
+        assert_eq!(m.title.as_deref(), Some("hourly sync"));
+    }
+
+    #[test]
+    fn jsonl_meta_marks_vscode_codex_as_interactive() {
+        let body = r#"{"type":"session_meta","payload":{"cwd":"/tmp/p","source":"vscode","originator":"Codex Desktop"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}
+"#;
+        let m = jsonl_meta(body.as_bytes(), 20);
+        assert!(!m.scheduled);
+        assert_eq!(m.title.as_deref(), Some("fix the build"));
     }
 
     #[test]

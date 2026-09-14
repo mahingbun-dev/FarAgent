@@ -28,6 +28,9 @@ pub struct SessionSummary {
     pub running: bool,
     #[serde(default)]
     pub tmux: Option<String>,
+    /// Codex `codex exec` / launchd rollouts, listed separately in the app.
+    #[serde(default)]
+    pub scheduled: bool,
 }
 
 impl SessionSummary {
@@ -50,6 +53,7 @@ impl SessionSummary {
 pub const MARK_LIVE: &str = "live";
 pub const MARK_IDLE: &str = "idle";
 pub const MARK_RUNNING: &str = "running";
+pub const MARK_SCHEDULED: &str = "sched";
 
 // Guards and wording around starting a session; both languages at once.
 
@@ -253,6 +257,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             live: true,
             running: false,
             tmux: Some(name.clone()),
+            scheduled: false,
         });
     }
 
@@ -286,6 +291,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             live: false,
             running: true,
             tmux: None,
+            scheduled: false,
         });
     }
 
@@ -304,21 +310,22 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
         AgentKind::Codex => remote::find_uuid(&f.id).unwrap_or_else(|| f.id.clone()),
         _ => f.id.clone(),
     };
-    let (title, cwd) = match agent {
+    let (title, cwd, scheduled) = match agent {
         AgentKind::Grok => {
             let (t, c) = remote::grok_summary_meta(&f.body, &f.cwd_hint);
-            (t.or_else(|| Some(sid.clone())), c)
+            (t.or_else(|| Some(sid.clone())), c, false)
         }
         AgentKind::Claude => {
             let m = remote::jsonl_meta(&f.body, 80);
             (
                 m.title.or_else(|| Some(sid.clone())),
                 m.cwd.or_else(|| remote::claude_guess_cwd(&f.cwd_hint, os)),
+                m.scheduled,
             )
         }
         AgentKind::Codex => {
             let m = remote::jsonl_meta(&f.body, 120);
-            (m.title.or_else(|| Some(sid.clone())), m.cwd)
+            (m.title.or_else(|| Some(sid.clone())), m.cwd, m.scheduled)
         }
         AgentKind::Pi => {
             let m = remote::jsonl_meta(&f.body, 80);
@@ -327,7 +334,11 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
             } else {
                 Some(remote::percent_decode(&f.cwd_hint)).filter(|s| !s.is_empty())
             };
-            (m.title.or_else(|| Some(sid.clone())), m.cwd.or(hint))
+            (
+                m.title.or_else(|| Some(sid.clone())),
+                m.cwd.or(hint),
+                m.scheduled,
+            )
         }
     };
     SessionSummary {
@@ -339,6 +350,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
         live: false,
         running: false,
         tmux: Some(agents::tmux_name(agent, &sid)),
+        scheduled,
     }
 }
 
@@ -422,6 +434,42 @@ mod tests {
     }
 
     #[test]
+    fn merge_marks_codex_exec_rollouts_as_scheduled() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![
+                DiskFile {
+                    agent: "codex".into(),
+                    id: "rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    mtime: 20.0,
+                    cwd_hint: "".into(),
+                    body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"vscode","originator":"Codex Desktop"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}
+"#
+                    .to_vec(),
+                },
+                DiskFile {
+                    agent: "codex".into(),
+                    id: "rollout-01bbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                    mtime: 10.0,
+                    cwd_hint: "".into(),
+                    body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"exec","originator":"codex_exec"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hourly sync"}]}}
+"#
+                    .to_vec(),
+                },
+            ],
+            procs: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Codex, HostOs::Posix, dump);
+        assert_eq!(rows.len(), 2);
+        let interactive = rows.iter().find(|r| !r.scheduled).unwrap();
+        let scheduled = rows.iter().find(|r| r.scheduled).unwrap();
+        assert_eq!(interactive.title.as_deref(), Some("fix the build"));
+        assert_eq!(scheduled.title.as_deref(), Some("hourly sync"));
+    }
+
+    #[test]
     fn windows_proc_marks_running_and_adds_proc_only_rows() {
         let dump = ListDump {
             tmux: vec![],
@@ -461,6 +509,33 @@ mod tests {
         assert_eq!(rows.len(), 1, "duplicate empty ids collapse");
         assert!(rows[0].running);
         assert_eq!(rows[0].title.as_deref(), Some("(running)"));
+    }
+
+    #[test]
+    fn merge_reads_codex_payload_title_and_cwd() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![DiskFile {
+                agent: "codex".into(),
+                id: "rollout-2026-09-14T09-59-23-01a09da3-f4c3-7f73-8a10-752981cdc3d3.jsonl"
+                    .into(),
+                mtime: 10.0,
+                cwd_hint: "".into(),
+                body: r##"{"type":"session_meta","payload":{"session_id":"01a09da3-f4c3-7f73-8a10-752981cdc3d3","cwd":"/tmp/wo"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<app-context>\nskip"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\nnope"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"how to monetize?\n"}]}}
+"##
+                .as_bytes()
+                .to_vec(),
+            }],
+            procs: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Codex, HostOs::Posix, dump);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "01a09da3-f4c3-7f73-8a10-752981cdc3d3");
+        assert_eq!(rows[0].title.as_deref(), Some("how to monetize?"));
+        assert_eq!(rows[0].cwd.as_deref(), Some("/tmp/wo"));
     }
 
     #[test]
