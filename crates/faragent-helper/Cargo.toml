@@ -1,0 +1,27 @@
+[package]
+name = "faragent-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent remote helper: a long-lived NDJSON command channel on stdio"
+
+[lib]
+name = "faragent_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "faragent-helper"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
