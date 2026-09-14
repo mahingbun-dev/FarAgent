@@ -1,0 +1,19 @@
+[package]
+name = "faragent-install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "FarAgent install/upgrade/uninstall plans for the coding-agent CLIs"
+
+[dependencies]
+faragent-core = { path = "../faragent-core" }
+faragent-remote = { path = "../faragent-remote" }
+faragent-transport = { path = "../faragent-transport" }
+anyhow.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true

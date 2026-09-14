@@ -90,7 +90,7 @@ flowchart LR
 ```bash
 git clone https://github.com/mahingbun-dev/FarAgent.git
 cd FarAgent
-cargo install --path .
+cargo install --path crates/faragent-cli
 ```
 
 ```ssh-config

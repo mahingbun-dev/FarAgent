@@ -8,25 +8,24 @@ How `faragent` is put together, how to hack on it, and how to add another agent.
 
 ```
 faragent/
-├── Cargo.toml
-├── src/
-│   ├── main.rs          CLI (clap): tui / doctor / probe / sessions
-│   ├── tui.rs           ratatui picker (hosts → agents → confirm → sessions)
-│   ├── ssh.rs           Parse ~/.ssh/config; exec system `ssh`
-│   ├── probe.rs         Deserialize remote probe JSON
-│   ├── install.rs       Official install/upgrade/uninstall plans + preflight
-│   ├── runtime.rs       List/start tmux sessions
-│   ├── pty.rs           Drop the TUI, `ssh -tt`, restore
-│   ├── agents.rs        Agent ids, tmux names, resume argv (docs + tests)
-│   ├── doctor.rs        Human-readable diagnostics
-│   └── remote.rs        Probe/list/start scripts + parsers (runs on the laptop)
-├── docs/                All product documentation
-│   ├── README.md        Docs hub
-│   ├── assets/          Images
-│   ├── en/              English guides
-│   └── zh/              中文文档
-└── plans/               Local notes (gitignored)
+├── Cargo.toml                 workspace root (virtual)
+├── crates/
+│   ├── faragent-core/         Vocabulary: agents, config, paths, quoting, Lang
+│   ├── faragent-transport/    Transport trait + system-OpenSSH implementation, askpass
+│   ├── faragent-remote/       Remote scripts (POSIX + Windows) and their parsers
+│   ├── faragent-service/      probe / sessions / doctor / diagnose
+│   ├── faragent-install/      Official install/upgrade/uninstall plans + preflight
+│   ├── faragent-tui/          ratatui picker + local-tty attach (drop TUI, `ssh -tt`)
+│   └── faragent-cli/          The `faragent` binary (clap: tui / doctor / probe / sessions / auth / login)
+├── docs/                      All product documentation
+│   ├── README.md              Docs hub
+│   ├── assets/                Images
+│   ├── en/                    English guides
+│   └── zh/                    中文文档
+└── plans/                     Local notes (gitignored)
 ```
+
+Dependency direction is strictly one-way: CLI → TUI → service → transport/remote/install → core. A new feature becomes a new crate (or a module in core); a new frontend depends on the service layer.
 
 Binary name: `faragent`. Edition 2021, Rust 1.80+.
 
@@ -51,7 +50,7 @@ laptop                          SSH                         remote account
 
 ## Remote side (no python3)
 
-Logic lives in `src/remote.rs` on the **laptop**. The SSH target only runs `bash -lc` (which, find, tmux) and, on first start, receives `~/.faragent/tmux.conf` via stdin. We do **not** upload a faragent binary: a macOS build cannot run on Linux.
+Logic lives in `crates/faragent-remote` on the **laptop**. The SSH target only runs `bash -lc` (which, find, tmux) and, on first start, receives `~/.faragent/tmux.conf` via stdin. We do **not** upload a faragent binary: a macOS build cannot run on Linux.
 
 | Local parser | Remote bash |
 | --- | --- |
@@ -75,14 +74,14 @@ faragent-<agent>-<shortid>
 
 ## Module notes
 
-| File | Tests / contracts |
+| Crate (module) | Tests / contracts |
 | --- | --- |
-| `ssh.rs` | Wildcard Hosts skipped; `Match` stops parsing; `args_for`/`Flavor` pick auth flags; `SshError` keeps the verbatim output |
-| `diagnose.rs` | Raw output → `Problem` (ordered matching) → wording + fix commands; `diagnosis_of` decides whether the TUI opens the error screen |
-| `agents.rs` | Resume argv table must stay aligned with `remote.rs` start_script |
-| `remote.rs` | Probe/list/start text protocol; JSONL meta; no `python` in scripts |
-| `install.rs` | Official URL constants; plan_for fixtures; `bash_login_command` keeps `|` quoted |
-| `tui.rs` | Live row → attach only; idle → `ensure_tmux_session(..., Some(id))` |
+| `faragent-transport` (`ssh.rs`) | Wildcard Hosts skipped; `Match` stops parsing; `args_for`/`Flavor` pick auth flags; `TransportError` keeps the verbatim output |
+| `faragent-service` (`diagnose.rs`) | Raw output → `Problem` (ordered matching) → wording + fix commands; `diagnosis_of` decides whether the TUI opens the error screen |
+| `faragent-core` (`agents.rs`) | Resume argv table must stay aligned with the remote start script |
+| `faragent-remote` (`remote.rs`, `win.rs`) | Probe/list/start text protocol; JSONL meta; no `python` in scripts |
+| `faragent-install` | Official URL constants; plan_for fixtures; `bash_login_command` keeps `|` quoted |
+| `faragent-tui` (`tui.rs`) | Live row → attach only; idle → `ensure_tmux_session(..., Some(id))` |
 
 PTY: `ratatui::restore()`, then `ssh -tt bash -lc '…'` (tmux attach or a confirmed install script). When ssh exits the picker calls `ratatui::init()` again.
 
@@ -102,8 +101,8 @@ Do not commit `target/` or a remote `~/.faragent` dump.
 
 ## Adding an agent
 
-1. `AgentKind` in `src/agents.rs` (`slug`, `title`, `resume_argv`).
-2. Disk scanner branch in `src/remote.rs` `list_script` (POSIX) **and** `src/win.rs` `list_script` (Windows).
+1. `AgentKind` in `crates/faragent-core/src/agents.rs` (`slug`, `title`, `resume_argv`).
+2. Disk scanner branch in `crates/faragent-remote/src/remote.rs` `list_script` (POSIX) **and** `crates/faragent-remote/src/win.rs` `list_script` (Windows).
 3. Tests for resume argv and the probe/list parsers.
 4. User-guide table (EN + ZH).
 
@@ -111,7 +110,7 @@ Prefer a vendor CLI that can **resume by id** and stores transcripts under the h
 
 ## The Windows dialect
 
-`src/win.rs` is the Windows counterpart of `src/remote.rs`’s POSIX scripts. Ground rules:
+`crates/faragent-remote/src/win.rs` is the Windows counterpart of that crate’s `remote.rs` POSIX scripts. Ground rules:
 
 - cmd.exe is the outer shell (sshd’s default); PowerShell 5.1 does the work.
 - Scripts are **ASCII-only** and travel on stdin (`powershell -File -`); dynamic values ride base64 `$args`. Nothing on the ssh command line needs cmd quoting, and cmd’s ~8k command-line limit does not apply. Interactive launchers use `-EncodedCommand` instead because stdin belongs to the tty — keep those short.
@@ -119,7 +118,7 @@ Prefer a vendor CLI that can **resume by id** and stores transcripts under the h
 - The `FARAGENT_*_V1` markers and tab-separated line shapes are shared with the POSIX side; parsers in `remote.rs` never care which dialect produced the bytes.
 - The remote dialect is detected once (`echo FARAGENT_OS_V1 %OS% "$env:OS"`) and cached per host in `~/.faragent/config.json`; `probe_host` self-heals the cache and retries once with the other dialect.
 
-Windows clients have no ControlMaster (Win32 OpenSSH): `ssh::mux_capable()` detects that and omits the mux options. The in-memory password path lives in `src/askpass.rs` — read its module docs before touching ssh env plumbing.
+Windows clients have no ControlMaster (Win32 OpenSSH): `ssh::mux_capable()` detects that and omits the mux options. The in-memory password path lives in `crates/faragent-transport/src/askpass.rs` — read its module docs before touching ssh env plumbing.
 
 ## Roadmap vs not now
 
@@ -137,7 +136,7 @@ Do not add without a separate plan:
 
 ## Release sketch
 
-Tagged releases build on GitHub Actions (ubuntu/macos/windows) and attach per-OS archives; `cargo install --path .` still works. `tmux.conf` on a POSIX remote is rewritten from the embedded template on each start.
+Tagged releases build on GitHub Actions (ubuntu/macos/windows) and attach per-OS archives; `cargo install --path crates/faragent-cli` still works. `tmux.conf` on a POSIX remote is rewritten from the embedded template on each start.
 
 ## License
 

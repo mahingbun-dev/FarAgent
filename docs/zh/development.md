@@ -8,25 +8,24 @@
 
 ```
 faragent/
-├── Cargo.toml
-├── src/
-│   ├── main.rs          clap：tui / doctor / probe / sessions
-│   ├── tui.rs           ratatui 选择器（主机 → agent → 确认 → 会话）
-│   ├── ssh.rs           解析 ~/.ssh/config，调用系统 ssh
-│   ├── probe.rs         远程探测 JSON
-│   ├── install.rs       官方安装/升级/卸载计划 + preflight
-│   ├── runtime.rs       列/建 tmux 会话
-│   ├── pty.rs           放下 TUI，ssh -tt，再恢复
-│   ├── agents.rs        agent id、tmux 名、resume 参数（文档和测试）
-│   ├── doctor.rs        给人看的诊断
-│   └── remote.rs        探测/列会话/启动（逻辑在本机）
-├── docs/                全部产品文档
-│   ├── README.md        文档中心
-│   ├── assets/          图片
-│   ├── en/              English
-│   └── zh/              中文
-└── plans/               本地笔记（已 gitignore）
+├── Cargo.toml                 虚拟 workspace 根
+├── crates/
+│   ├── faragent-core/         词汇表：agents、config、paths、引用工具、Lang
+│   ├── faragent-transport/    Transport trait + 系统 OpenSSH 实现、askpass
+│   ├── faragent-remote/       远端脚本（POSIX + Windows）与解析器
+│   ├── faragent-service/      probe / 会话 / doctor / 诊断
+│   ├── faragent-install/      官方安装/升级/卸载计划 + preflight
+│   ├── faragent-tui/          ratatui 选择器 + 本地 tty 交接（放 TUI，ssh -tt）
+│   └── faragent-cli/          `faragent` 二进制（clap：tui / doctor / probe / sessions / auth / login）
+├── docs/                      全部产品文档
+│   ├── README.md              文档中心
+│   ├── assets/                图片
+│   ├── en/                    English
+│   └── zh/                    中文
+└── plans/                     本地笔记（已 gitignore）
 ```
+
+依赖方向严格单向：CLI → TUI → service → transport/remote/install → core。新增功能 = 新增 crate（或 core 模块）；新增前端只依赖 service 层。
 
 二进制名：`faragent`。Rust 1.80+，edition 2021。
 
@@ -51,7 +50,7 @@ faragent/
 
 ## 远程侧（不用 python3）
 
-逻辑在本机 `src/remote.rs`。SSH 对端只跑 `bash -lc`（which、find、tmux），第一次开会话时用 stdin 写入 `~/.faragent/tmux.conf`。**不会**上传 faragent 二进制：macOS 编出来的文件没法在 Linux 上跑。
+逻辑在本机 `crates/faragent-remote`。SSH 对端只跑 `bash -lc`（which、find、tmux），第一次开会话时用 stdin 写入 `~/.faragent/tmux.conf`。**不会**上传 faragent 二进制：macOS 编出来的文件没法在 Linux 上跑。
 
 | 本机解析 | 远程 bash |
 | --- | --- |
@@ -75,14 +74,14 @@ faragent-<agent>-<shortid>
 
 ## 模块与测试
 
-| 文件 | 约定 |
+| crate（模块） | 约定 |
 | --- | --- |
-| `ssh.rs` | 通配 Host 跳过；遇到 `Match` 停止；`args_for`/`Flavor` 决定认证参数；`SshError` 保留原始输出 |
-| `diagnose.rs` | 原始报错 → `Problem`（有序匹配）→ 文案与修复命令，`diagnosis_of` 决定 TUI 是否开报错页 |
-| `agents.rs` | resume 参数表与 `remote.rs` start_script 对齐 |
-| `remote.rs` | 探测/列表/启动文本协议；JSONL 元数据；脚本里不能有 python |
-| `install.rs` | 官方 URL 常量；plan_for 夹具；`bash_login_command` 必须把 `|` 引起来 |
-| `tui.rs` | live 只 attach；idle 才 `ensure_tmux_session(..., Some(id))` |
+| `faragent-transport`（`ssh.rs`） | 通配 Host 跳过；遇到 `Match` 停止；`args_for`/`Flavor` 决定认证参数；`TransportError` 保留原始输出 |
+| `faragent-service`（`diagnose.rs`） | 原始报错 → `Problem`（有序匹配）→ 文案与修复命令，`diagnosis_of` 决定 TUI 是否开报错页 |
+| `faragent-core`（`agents.rs`） | resume 参数表与远端 start 脚本对齐 |
+| `faragent-remote`（`remote.rs`、`win.rs`） | 探测/列表/启动文本协议；JSONL 元数据；脚本里不能有 python |
+| `faragent-install` | 官方 URL 常量；plan_for 夹具；`bash_login_command` 必须把 `|` 引起来 |
+| `faragent-tui`（`tui.rs`） | live 只 attach；idle 才 `ensure_tmux_session(..., Some(id))` |
 
 PTY：先 `ratatui::restore()`，再 `ssh -tt bash -lc '…'`（attach tmux 或跑安装脚本）。结束后选择器重新 `ratatui::init()`。
 
@@ -102,8 +101,8 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 
 ## 增加一家 agent
 
-1. `src/agents.rs` 的 `AgentKind`（`slug`、`title`、`resume_argv`）
-2. 磁盘扫描：`src/remote.rs` 的 `list_script`（POSIX）**和** `src/win.rs` 的 `list_script`（Windows）
+1. `crates/faragent-core/src/agents.rs` 的 `AgentKind`（`slug`、`title`、`resume_argv`）
+2. 磁盘扫描：`crates/faragent-remote/src/remote.rs` 的 `list_script`（POSIX）**和** `crates/faragent-remote/src/win.rs` 的 `list_script`（Windows）
 3. resume argv 测试，以及 probe/list 解析测试
 4. 更新中英用户手册表格
 
@@ -111,7 +110,7 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 
 ## Windows 方言
 
-`src/win.rs` 是 `src/remote.rs` POSIX 脚本在 Windows 上的对应物。基本规则：
+`crates/faragent-remote/src/win.rs` 是该 crate `remote.rs` POSIX 脚本在 Windows 上的对应物。基本规则：
 
 - 外壳是 cmd.exe（sshd 默认），干活的都是 PowerShell 5.1。
 - 脚本**全 ASCII**、经 stdin 交付（`powershell -File -`）；动态值走 base64 `$args`。上 ssh 命令行的内容完全不需要 cmd 引号处理，也不受 cmd ~8k 命令行上限约束。交互式 launcher 用 `-EncodedCommand`（stdin 要留给 tty），保持简短。
@@ -119,7 +118,7 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 - `FARAGENT_*_V1` 标记与 tab 分隔协议和 POSIX 侧共用；`remote.rs` 的解析器不关心字节来自哪个方言。
 - 远端方言只探测一次（`echo FARAGENT_OS_V1 %OS% "$env:OS"`），按主机缓存在 `~/.faragent/config.json`；`probe_host` 会自愈缓存，并用另一方言重试一次。
 
-Windows 客户端没有 ControlMaster（Win32 OpenSSH）：`ssh::mux_capable()` 探测后整体省略复用参数。内存密码路径在 `src/askpass.rs`——改 ssh 环境变量相关代码前先读它的模块文档。
+Windows 客户端没有 ControlMaster（Win32 OpenSSH）：`ssh::mux_capable()` 探测后整体省略复用参数。内存密码路径在 `crates/faragent-transport/src/askpass.rs`——改 ssh 环境变量相关代码前先读它的模块文档。
 
 ## 后续计划 vs 现在不要做
 
@@ -137,7 +136,7 @@ Windows 客户端没有 ControlMaster（Win32 OpenSSH）：`ssh::mux_capable()` 
 
 ## 发布
 
-打 tag 后由 GitHub Actions（ubuntu/macos/windows）出各平台产物并附到 Release；`cargo install --path .` 依旧可用。POSIX 远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
+打 tag 后由 GitHub Actions（ubuntu/macos/windows）出各平台产物并附到 Release；`cargo install --path crates/faragent-cli` 依旧可用。POSIX 远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
 
 ## 许可证
 
