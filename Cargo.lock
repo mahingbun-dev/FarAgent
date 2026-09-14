@@ -1220,6 +1220,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "faragent-core",
+ "faragent-helper",
  "pretty_assertions",
  "serde",
  "serde_json",
