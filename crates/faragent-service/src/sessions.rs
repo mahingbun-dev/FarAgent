@@ -391,17 +391,18 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
             (m.title.or_else(|| Some(sid.clone())), m.cwd, m.scheduled)
         }
         AgentKind::Pi => {
+            // Pi's header carries the cwd verbatim and `jsonl_meta` reads it, so
+            // there is nothing to reconstruct. The listing's `cwd_hint` is the
+            // session directory's own name — the cwd rendered as
+            // `--<path with / turned into ->--` — which cannot be turned back
+            // into a path unambiguously: a `-` inside a directory name is
+            // indistinguishable from a separator. It used to be handed to
+            // `percent_decode`, Grok's rule, which returns it unchanged, so a Pi
+            // row whose header could not be read reported a cwd of
+            // `--Users-me-code-app--`. A wrong path on the rail is worse than no
+            // path, so the hint is not consulted at all.
             let m = remote::jsonl_meta(&f.body, 80);
-            let hint = if f.cwd_hint == sid {
-                None
-            } else {
-                Some(remote::percent_decode(&f.cwd_hint)).filter(|s| !s.is_empty())
-            };
-            (
-                m.title.or_else(|| Some(sid.clone())),
-                m.cwd.or(hint),
-                m.scheduled,
-            )
+            (m.title.or_else(|| Some(sid.clone())), m.cwd, m.scheduled)
         }
     };
     SessionSummary {
@@ -445,6 +446,57 @@ mod tests {
         assert!(rows[0].live);
         assert_eq!(rows[0].title.as_deref(), Some("hello"));
         assert_eq!(rows[0].cwd.as_deref(), Some("/tmp/p"));
+    }
+
+    /// Pi's session header names the cwd outright, and that is what the row
+    /// shows — the directory name under `sessions/` is a `--`-wrapped, `-`-joined
+    /// rendering of it that cannot be turned back into a path unambiguously (a
+    /// cwd holding a literal `-` is indistinguishable from a separator), and for
+    /// a while it was handed to `percent_decode` — Grok's rule — which leaves it
+    /// untouched and produced a cwd of `--Users-me-code-app--`.
+    #[test]
+    fn a_pi_row_reads_its_cwd_from_the_session_header() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![DiskFile {
+                agent: "pi".into(),
+                id: "2026-09-15T10-00-00-000Z_01a09d76-2125-7ab1-881e-9a258ab09c6e".into(),
+                mtime: 10.0,
+                cwd_hint: "--Users-me-code-app--".into(),
+                body: br#"{"type":"session","version":3,"id":"01a09d76-2125-7ab1-881e-9a258ab09c6e","timestamp":"2026-09-15T10:00:00.000Z","cwd":"/Users/me/code/app"}"#.to_vec(),
+                path: None,
+            }],
+            procs: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Pi, HostOs::Posix, dump);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cwd.as_deref(), Some("/Users/me/code/app"));
+    }
+
+    /// The same row built the way the remote's listing script reads it today:
+    /// `cwdenc` is the first segment under `sessions/`, wrapper dashes included.
+    /// This is the shape a real Pi file has, so it is the one that decides what
+    /// the hint must not be mistaken for.
+    #[test]
+    fn a_pi_row_without_a_header_does_not_report_the_wrapper_as_a_path() {
+        let dump = ListDump {
+            tmux: vec![],
+            files: vec![DiskFile {
+                agent: "pi".into(),
+                id: "2026-09-15T10-00-00-000Z_01a09d76-2125-7ab1-881e-9a258ab09c6e".into(),
+                mtime: 10.0,
+                cwd_hint: "--Users-me-code-app--".into(),
+                body: br#"{"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2026-09-15T10:00:01.000Z","message":{"role":"user","content":"hi"}}"#.to_vec(),
+                path: None,
+            }],
+            procs: vec![],
+        };
+        let rows = merge_sessions(AgentKind::Pi, HostOs::Posix, dump);
+        assert_eq!(rows.len(), 1);
+        // Not `--Users-me-code-app--`, and not a guess with the separator dashes
+        // turned back into slashes: when the header is missing there is no cwd
+        // to report, and `None` is the honest answer.
+        assert_eq!(rows[0].cwd, None);
     }
 
     #[test]
