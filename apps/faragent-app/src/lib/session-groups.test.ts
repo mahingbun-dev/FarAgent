@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   SESSION_PAGE,
+  allCollapsed,
   budgetGroups,
   groupByWorkspace,
+  lastPathSegment,
+  setGroupsCollapsed,
   sortSessions,
 } from "./session-groups.ts";
 import type { Session } from "@/lib/ipc";
@@ -87,4 +90,48 @@ test("budgetGroups over the whole list hides nothing", () => {
   const all = budgetGroups(groups, 100);
   assert.equal(all.hidden, 0);
   assert.equal(all.groups[0].sessions.length, 25);
+});
+
+test("lastPathSegment keeps only the final segment of a posix path", () => {
+  assert.equal(lastPathSegment("/srv/app/faragent"), "faragent");
+  assert.equal(lastPathSegment("/srv/app/faragent/"), "faragent");
+  assert.equal(lastPathSegment("/srv/app///"), "app");
+  assert.equal(lastPathSegment("app"), "app");
+});
+
+test("lastPathSegment returns a root whole, since it has no last segment", () => {
+  assert.equal(lastPathSegment("/"), "/");
+  assert.equal(lastPathSegment(""), "");
+  assert.equal(lastPathSegment("///"), "///");
+});
+
+test("lastPathSegment reads a windows path without mangling it", () => {
+  // A Windows remote reports `cwd` this way, and @/lib/panel/paths.ts's
+  // `basename` is deliberately not used here: it normalises to a posix root
+  // first, which would hand back a path the remote never named.
+  assert.equal(lastPathSegment("C:\\Users\\me\\app"), "app");
+  assert.equal(lastPathSegment("C:\\Users\\me\\app\\"), "app");
+  assert.equal(lastPathSegment("C:/Users/me/app"), "app");
+  assert.equal(lastPathSegment("C:\\"), "C:");
+});
+
+test("allCollapsed is false for an empty rail and for any expanded group", () => {
+  assert.equal(allCollapsed([], {}), false);
+  assert.equal(allCollapsed([], { a: true }), false);
+  assert.equal(allCollapsed(["a", "b"], { a: true, b: true }), true);
+  assert.equal(allCollapsed(["a", "b"], { a: true, b: false }), false);
+  // A key the rail has never seen is not collapsed, so the control offers to
+  // collapse rather than to expand.
+  assert.equal(allCollapsed(["a", "b"], { a: true }), false);
+});
+
+test("setGroupsCollapsed rebuilds the record instead of merging into it", () => {
+  const stale = { "\0scheduled": true, "old/host": true };
+  assert.deepEqual(setGroupsCollapsed(["a", "b"], true), { a: true, b: true });
+  assert.deepEqual(setGroupsCollapsed(["a"], false), { a: false });
+  // Every key the caller named is present; nothing else survives.
+  const next = setGroupsCollapsed(["a", "b"], true);
+  assert.equal(next["\0scheduled"], undefined);
+  assert.equal(next["old/host"], undefined);
+  assert.equal(Object.keys(stale).length, 2);
 });

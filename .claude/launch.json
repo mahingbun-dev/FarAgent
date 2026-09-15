@@ -6,6 +6,20 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "apps/faragent-app", "run", "dev"],
       "port": 1420
+    },
+    {
+      "name": "faragent-verify",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "apps/faragent-app",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "1421"
+      ],
+      "port": 1421
     }
   ]
 }

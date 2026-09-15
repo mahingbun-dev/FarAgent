@@ -6,7 +6,7 @@
  * prints as a word.
  */
 import { useMemo, useState } from "react";
-import { ChevronRight, Loader2, Plus, RefreshCw } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, Loader2, Plus, RefreshCw } from "lucide-react";
 import { Empty, Spinner } from "@/components/ui/empty";
 import { ProblemInline } from "@/components/shell/problem";
 import { useSessionLauncher } from "@/components/shell/session-launcher";
@@ -16,8 +16,11 @@ import type { Session } from "@/lib/ipc";
 import { AGENT_TITLES } from "@/lib/agents";
 import {
   SESSION_PAGE,
+  allCollapsed,
   budgetGroups,
   groupByWorkspace,
+  lastPathSegment,
+  setGroupsCollapsed,
   type WorkspaceGroup,
 } from "@/lib/session-groups";
 import { sessionTabKey } from "@/lib/tab-keys";
@@ -79,6 +82,7 @@ function markOf(session: Session): Mark {
 
 function GroupHeader({
   label,
+  title,
   count,
   collapsed,
   onToggle,
@@ -86,7 +90,10 @@ function GroupHeader({
   toggleTitle,
   newTitle,
 }: {
+  /** What the rail shows — the path's last segment, so the header stays readable. */
   label: string;
+  /** The whole path, revealed on hover: the label is the truncated form of it. */
+  title: string;
   count: number;
   collapsed: boolean;
   onToggle: () => void;
@@ -109,7 +116,9 @@ function GroupHeader({
             !collapsed && "rotate-90",
           )}
         />
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate" title={title}>
+          {label}
+        </span>
         <span className="shrink-0 tabular-nums opacity-60">{count}</span>
       </button>
       <button
@@ -159,7 +168,12 @@ export function SessionList() {
   if (!host || !alias) return null;
 
   const groupKey = (group: WorkspaceGroup) => group.cwd ?? "\0none";
-  const labelOf = (group: WorkspaceGroup) => group.cwd ?? t("sidebar.noWorkspace");
+  // The header shows the last segment — a full remote path is long enough to
+  // crowd out the session titles beneath it — and keeps the whole path for the
+  // hover title, so nothing is lost, only deferred.
+  const labelOf = (group: WorkspaceGroup) =>
+    group.cwd ? lastPathSegment(group.cwd) : t("sidebar.noWorkspace");
+  const titleOf = (group: WorkspaceGroup) => group.cwd ?? t("sidebar.noWorkspace");
 
   const sessionRow = (session: Session) => {
     const active = activeKey === sessionTabKey(alias, agent, session.id);
@@ -183,6 +197,17 @@ export function SessionList() {
   };
 
   const showScheduled = model.scheduled.length > 0 || agent === "codex";
+
+  /**
+   * Every group the rail is showing, including the scheduled one, so the
+   * one-click control acts on exactly what is on screen and nothing else.
+   */
+  const groupKeys = [
+    ...model.groups.map(groupKey),
+    ...(showScheduled ? ["\0scheduled"] : []),
+  ];
+  const everyCollapsed = allCollapsed(groupKeys, collapsed);
+
   const nothing =
     model.groups.length === 0 &&
     model.scheduled.length === 0 &&
@@ -199,6 +224,20 @@ export function SessionList() {
         {sessions.isFetching ? (
           <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
         ) : null}
+        <button
+          type="button"
+          onClick={() => setCollapsed(setGroupsCollapsed(groupKeys, !everyCollapsed))}
+          disabled={groupKeys.length === 0}
+          title={everyCollapsed ? t("sidebar.expandAll") : t("sidebar.collapseAll")}
+          aria-label={everyCollapsed ? t("sidebar.expandAll") : t("sidebar.collapseAll")}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        >
+          {everyCollapsed ? (
+            <ChevronsUpDown className="h-3 w-3" />
+          ) : (
+            <ChevronsDownUp className="h-3 w-3" />
+          )}
+        </button>
         <button
           type="button"
           onClick={() => void sessions.refetch()}
@@ -240,6 +279,7 @@ export function SessionList() {
             <div key={key}>
               <GroupHeader
                 label={labelOf(group)}
+                title={titleOf(group)}
                 count={group.sessions.length}
                 collapsed={isCollapsed}
                 onToggle={() =>
@@ -270,6 +310,7 @@ export function SessionList() {
           <>
             <GroupHeader
               label={t("sessions.scheduled")}
+              title={t("sessions.scheduled")}
               count={model.scheduled.length}
               collapsed={!!collapsed["\0scheduled"]}
               onToggle={() =>

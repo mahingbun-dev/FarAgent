@@ -15,6 +15,52 @@ export interface WorkspaceGroup {
   sessions: Session[];
 }
 
+/**
+ * The last segment of a workspace path — what the rail's group header shows,
+ * with the whole path kept for the hover title.
+ *
+ * Both dialects reach here: a session's `cwd` comes from the remote, and a
+ * Windows remote reports `C:\Users\me\app`. This deliberately does *not* reuse
+ * `@/lib/panel/paths.ts`'s `basename`, which normalises to a POSIX root before
+ * splitting and would hand back a `/`-prefixed path the remote never named.
+ *
+ * A root is returned whole (`/`, `C:`): it has no last segment, and an empty
+ * label would leave the group header blank.
+ */
+export function lastPathSegment(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, "");
+  if (trimmed === "") return path;
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut < 0 ? trimmed : trimmed.slice(cut + 1) || trimmed;
+}
+
+/**
+ * True when the rail has groups and every one of them is collapsed — the state
+ * the one-click control offers to reverse.
+ *
+ * An empty list is not "all collapsed": there is nothing to expand, so the
+ * caller can use this to decide whether the control is worth rendering.
+ */
+export function allCollapsed(
+  keys: string[],
+  collapsed: Record<string, boolean>,
+): boolean {
+  return keys.length > 0 && keys.every((key) => collapsed[key] === true);
+}
+
+/**
+ * The record that sets every key at once, for the one-click collapse/expand.
+ *
+ * Rebuilt rather than merged, so keys from a previous fetch or a different host
+ * do not linger and silently decide a later toggle.
+ */
+export function setGroupsCollapsed(
+  keys: string[],
+  collapsed: boolean,
+): Record<string, boolean> {
+  return Object.fromEntries(keys.map((key) => [key, collapsed]));
+}
+
 /** Newest first; `id` breaks ties so the rail's order is stable across fetches. */
 function byRecency(a: Session, b: Session): number {
   return b.mtime - a.mtime || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
