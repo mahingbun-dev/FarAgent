@@ -476,6 +476,40 @@ test("loadEarlier fetches the window before what is held, down to byte 0", async
   await tail.close();
 });
 
+test("a failed load-earlier keeps the records already held, and rejects", async () => {
+  // A failure to load *older* content must not take away the content already on
+  // screen. The tail's model is untouched when the read rejects, so the
+  // conversation the reader is looking at stays exactly as it was, and the
+  // strip's own state — `complete` is still false, so there is still older
+  // content to fetch — is unchanged too. This is the data half of "the failed
+  // load stays on the strip"; the view routes the rejection to the strip rather
+  // than to the whole-pane error, which is what keeps the two on screen
+  // together.
+  const remote = fakeRemote('{"a":1}\n{"b":2}\n{"c":3}\n');
+  let fail = false;
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    readFile: (path, opts) =>
+      fail ? Promise.reject(new Error("the read failed")) : remote.channel.readFile(path, opts),
+  };
+  const tail = await TranscriptTail.open(channel, PATH, { windowBytes: 10, chunkBytes: 10 });
+  assert.deepEqual(tail.records, [{ c: 3 }], "only the tail record is held initially");
+
+  fail = true;
+  await assert.rejects(tail.loadEarlier(), /the read failed/, "the failure is reported, not swallowed");
+
+  assert.deepEqual(tail.records, [{ c: 3 }], "the records already on screen survived the failed load");
+  assert.equal(tail.complete, false, "there is still older content, so the strip stays");
+  assert.equal(tail.unloadedBefore, 16, "the byte count the strip names is unchanged");
+
+  // The tail is still usable: the next load, with the read working again, lands.
+  fail = false;
+  await tail.loadEarlier();
+  assert.deepEqual(tail.records, [{ b: 2 }, { c: 3 }], "a retry after the failure still loads earlier turns");
+
+  await tail.close();
+});
+
 test("close drops the push handler and unsubscribes once", async () => {
   const remote = fakeRemote('{"a":1}\n');
   const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8 });
@@ -678,6 +712,56 @@ test("the knock stops once its budget is spent, quietly", async () => {
   assert.equal(attempts, 3, "no knock after the budget");
 
   await tail.close();
+});
+
+test("a close during the knock's subscribe still drops the watch it just took", async () => {
+  // The knock re-takes the watch, and `watch.subscribe` is a round trip. The
+  // subscription id is assigned only *after* the await, so a tab that closes
+  // while that round trip is in flight used to leak: `close()` read
+  // `this.subscription`, found it unset, and returned without dropping
+  // anything — and the knock then registered the id it took, which stayed
+  // subscribed on the remote (with its push handler) for the life of the
+  // helper connection. The window is one round trip; the fix closes it.
+  const remote = fakeRemote('{"a":1}\n');
+  let release: (sub: WatchSubscription) => void = () => undefined;
+  const inFlight = new Promise<WatchSubscription>((resolve) => {
+    release = resolve;
+  });
+  let subscribes = 0;
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    subscribe: () => {
+      subscribes += 1;
+      // The open's own attempt fails (nothing can push), so the tail knocks;
+      // the knock's attempt hangs until the test releases it.
+      return subscribes === 1 ? Promise.reject(notFound("no directory")) : inFlight;
+    },
+    stat: () => Promise.reject(notFound(PATH)),
+    readFile: () => Promise.reject(notFound(PATH)),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, {
+    awaitRetryMs: 1,
+    maxAwaitRetries: 5,
+  });
+  assert.equal(tail.waiting, true, "no file and no directory: nothing can push");
+
+  await sleep(); // the knock has begun and is awaiting its `subscribe`
+  assert.equal(subscribes, 2, "the knock reached `subscribe` and is in flight");
+
+  const closed = tail.close(); // the tab closes mid-knock
+  release({
+    subscription: 7,
+    path: enc(parentDir(PATH)),
+    recursive: false,
+    already: false,
+    gitDir: null,
+  });
+  await closed;
+  await sleep();
+
+  assert.deepEqual(remote.unsubscribes, [7], "the watch the knock took after the close leaked");
+  assert.equal(remote.handlerCount(), 0, "the push handler registered after the close leaked");
 });
 
 test("a not_found for a file this tail has read is a failure, not a wait", async () => {

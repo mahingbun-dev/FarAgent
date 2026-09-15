@@ -668,12 +668,26 @@ export class TranscriptTail {
     this.retryTimer = null;
     if (this.closed || !this.awaiting) return;
     if (this.subscription === null) {
+      let sub: WatchSubscription | null = null;
       try {
-        const sub = await this.channel.subscribe(parentDir(this.path), false);
-        this.subscription = sub.subscription;
-        this.offPush = this.channel.onPush(this.pushHandler);
+        sub = await this.channel.subscribe(parentDir(this.path), false);
       } catch (e) {
         this.reportError(e);
+      }
+      if (sub !== null) {
+        // `watch.subscribe` is a round trip, and the tab can close while it is
+        // in flight: `close()` read `this.subscription`, found it unset (it is
+        // assigned only *after* the await), and returned without dropping
+        // anything. The id this knock then took would stay subscribed on the
+        // remote — with its push handler — for the life of the helper
+        // connection. So re-check `closed` on the far side of the await and
+        // drop what was just taken rather than keep it.
+        if (this.closed) {
+          await this.dropSubscription(sub.subscription);
+          return;
+        }
+        this.subscription = sub.subscription;
+        this.offPush = this.channel.onPush(this.pushHandler);
       }
     }
     try {
@@ -683,6 +697,21 @@ export class TranscriptTail {
     }
     if (this.closed || !this.awaiting) return;
     this.scheduleAwaitRetry();
+  }
+
+  /**
+   * Drop one remote subscription, swallowing a channel that is already gone.
+   *
+   * Shared by {@link close} and the close-during-knock path in
+   * {@link retryAwait}: both hold an id the remote must be told about, and
+   * neither should throw if the connection died first.
+   */
+  private async dropSubscription(subscription: number): Promise<void> {
+    try {
+      await this.channel.unsubscribe({ subscription });
+    } catch {
+      // The connection may already be gone; there is nothing left to drop.
+    }
   }
 
   /** Drop the subscription and the push handler. Idempotent. */
@@ -698,11 +727,7 @@ export class TranscriptTail {
     const subscription = this.subscription;
     this.subscription = null;
     if (subscription === null) return;
-    try {
-      await this.channel.unsubscribe({ subscription });
-    } catch {
-      // The connection may already be gone; there is nothing left to drop.
-    }
+    await this.dropSubscription(subscription);
   }
 
   private notify(): void {
