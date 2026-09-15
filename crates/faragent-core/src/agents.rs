@@ -66,43 +66,59 @@ impl AgentKind {
         }
     }
 
-    /// Whether the CLI accepts `--session-id <uuid>` to pin a *new* session's
-    /// id. Measured against the CLIs themselves, not assumed:
+    /// Whether this CLI is a *candidate* for `--session-id <uuid>` on a new
+    /// launch — the local half of the gate, not the verdict.
     ///
-    /// * Claude Code (2.1.83) accepts it — `--session-id <uuid>` is documented
-    ///   as "Use a specific session ID for the conversation (must be a valid
-    ///   UUID)". Rejected beside `--resume` unless `--fork-session` is also
-    ///   given, which is why only a *new* launch emits it.
-    /// * Grok Build (1.0.25 on the target remote: `-s, --session-id` — "Use a
-    ///   specific session UUID for a **new** conversation (must be a valid
-    ///   UUID)"; measured rejecting `notauuid`). Same constraint with
-    ///   `--resume`, so again only a new launch emits it.
-    /// * Codex does not — `codex --help` documents no such flag, here or on
-    ///   the remote; the only place it takes an id is `codex resume [ID]`.
-    /// * Pi was not installed on the remote (or here) to measure, so it stays
-    ///   `false`: emitting a flag a CLI does not know is a hard launch failure,
-    ///   while omitting one only costs the new-session conversation view.
-    pub fn accepts_session_id(self) -> bool {
+    /// A candidate list is a fact about binaries we do not ship, so it may
+    /// only narrow who we *ask*; the answer comes from the remote, which puts
+    /// the question to the CLI's own `--help` at launch time
+    /// (`faragent_remote::remote::start_script`). That is why this is
+    /// permission to *offer* the flag, never to use it.
+    ///
+    /// * Claude Code and Grok Build were measured accepting it (2.1.83 and
+    ///   1.0.25: `-s, --session-id`, "for a new conversation, must be a valid
+    ///   UUID", rejecting `notauuid`). Both reject it beside `--resume` unless
+    ///   `--fork-session` is also given, which is why only a *new* launch
+    ///   offers it at all.
+    /// * Codex is not a candidate — `codex --help` documents no such flag,
+    ///   here or on the remote; the only place it takes an id is
+    ///   `codex resume [ID]`.
+    /// * Pi is not one either: it was not installed on the remote (or here) to
+    ///   measure, and emitting a flag a CLI does not know is a hard launch
+    ///   failure, while omitting one only costs the new-session chat view.
+    ///
+    /// An older Claude or Grok — one whose `--help` never mentions the flag —
+    /// is caught by the remote check and launched unpinned, exactly as before
+    /// this flag existed.
+    pub fn may_accept_session_id(self) -> bool {
         matches!(self, Self::Claude | Self::Grok)
     }
 
-    /// The session id the launched CLI will actually use, when the launch
-    /// determines it. A resume always names it; a new session names it only
-    /// for a CLI that accepts `--session-id`. `None` otherwise — the CLI picks
-    /// its own id and the caller must learn it later, if at all.
+    /// The session id the launched CLI will actually use, when the *local*
+    /// decision determines it.
+    ///
+    /// A resume always names it. A new session names it only for a candidate
+    /// agent — and only as a local prior: on POSIX the remote start script has
+    /// the last word (it may drop the flag for an older CLI) and reports what
+    /// it did, so `ensure_tmux_session` reads that report rather than this.
+    /// The one caller left is the Windows foreground launch, which pins
+    /// nothing new ([`Launch::NewUnpinned`]) and so needs no remote verdict.
+    /// `None` otherwise — the CLI picks its own id and the caller must learn
+    /// it later, if at all.
     pub fn launched_session_id<'a>(self, launch: Launch<'a>) -> Option<&'a str> {
         match launch {
             Launch::Resume(id) => Some(id),
-            Launch::New(id) if self.accepts_session_id() => Some(id),
+            Launch::New(id) if self.may_accept_session_id() => Some(id),
             Launch::New(_) | Launch::NewUnpinned => None,
         }
     }
 
-    /// Argv for a new or idle-resume launch. When `full_permissions` is true,
-    /// appends that agent's bypass flag (Codex inserts it before `resume`).
+    /// The argv that *offers* the id: `--session-id <id>` for a candidate
+    /// agent, the bare argv for anyone else. Only the remote may decide to
+    /// use it — see [`AgentKind::may_accept_session_id`].
     pub fn launch_argv(self, launch: Launch<'_>, full_permissions: bool) -> Vec<String> {
         let mut argv = match launch {
-            Launch::New(id) if self.accepts_session_id() => {
+            Launch::New(id) if self.may_accept_session_id() => {
                 let mut argv = self.new_argv();
                 argv.extend(["--session-id".into(), id.into()]);
                 argv
@@ -142,8 +158,9 @@ impl AgentKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launch<'a> {
     /// A fresh conversation, pinned to `id`. The CLI is told
-    /// `--session-id <id>` when it accepts one; otherwise the id only names
-    /// the tmux session and the CLI ids itself.
+    /// `--session-id <id>` only when it is a candidate *and* the remote
+    /// confirms it knows the flag; otherwise the id only names the tmux
+    /// session and the CLI ids itself.
     New(&'a str),
     /// A fresh conversation the CLI ids itself — the interactive Windows
     /// launch. faragent cannot pin an id there (the foreground `ssh -tt`
@@ -363,8 +380,10 @@ mod tests {
         assert!(id.ends_with(suffix));
     }
 
+    /// The candidate's argv *offers* the id; the remote start script decides
+    /// whether to use it (see `remote::start_script`).
     #[test]
-    fn a_new_claude_session_carries_the_session_id() {
+    fn a_new_claude_session_offers_the_session_id() {
         let id = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
         assert_eq!(
             AgentKind::Claude.launch_argv(Launch::New(id), false),
@@ -381,13 +400,13 @@ mod tests {
                 "bypassPermissions"
             ]
         );
-        assert!(AgentKind::Claude.accepts_session_id());
+        assert!(AgentKind::Claude.may_accept_session_id());
     }
 
     /// Grok Build's `-s, --session-id` was measured on the target remote
     /// (1.0.25) accepting a new-session id and rejecting a non-UUID.
     #[test]
-    fn a_new_grok_session_carries_the_session_id() {
+    fn a_new_grok_session_offers_the_session_id() {
         let id = "01a093cc-1e76-7213-84c0-93b702f47386";
         assert_eq!(
             AgentKind::Grok.launch_argv(Launch::New(id), false),
@@ -397,7 +416,7 @@ mod tests {
             AgentKind::Grok.launch_argv(Launch::New(id), true),
             vec!["grok", "--session-id", id, "--always-approve"]
         );
-        assert!(AgentKind::Grok.accepts_session_id());
+        assert!(AgentKind::Grok.may_accept_session_id());
     }
 
     #[test]
@@ -409,7 +428,7 @@ mod tests {
                 agent.new_argv(),
                 "{agent} must keep its bare argv: it does not accept --session-id"
             );
-            assert!(!agent.accepts_session_id());
+            assert!(!agent.may_accept_session_id());
         }
     }
 
@@ -451,7 +470,9 @@ mod tests {
         for agent in AgentKind::ALL {
             assert_eq!(agent.launched_session_id(Launch::Resume(id)), Some(id));
         }
-        // A new session pins only where the CLI takes the flag.
+        // A new session is a candidate only where the CLI *may* take the flag;
+        // the remote still has the last word, which is why the POSIX launch
+        // reads the start script's `pin` line instead of this.
         for agent in [AgentKind::Claude, AgentKind::Grok] {
             assert_eq!(agent.launched_session_id(Launch::New(id)), Some(id));
         }

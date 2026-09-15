@@ -157,11 +157,17 @@ pub fn ensure_tmux_session(
     // Passing the caller's `None` through to the argv here was the bug: the id
     // named the tmux session but never reached Claude Code, so the transcript
     // file could not be located. `Launch` makes the two cases distinct.
+    //
+    // Whether the CLI is actually told is not ours to decide: the start script
+    // asks the remote CLI's own `--help` and reports back. So the id we hand
+    // the caller is the one the *remote* says it pinned, never the one we
+    // hoped it would — an older CLI that has never heard of `--session-id`
+    // launches unpinned and reports `None`, which is the app's existing
+    // "transcript unknown, show the terminal" path, not an error.
     let launch = match session_id {
         Some(id) => Launch::Resume(id),
         None => Launch::New(&sid),
     };
-    let pinned = agent.launched_session_id(launch).map(str::to_string);
     let cwd_s = cwd.to_string_lossy();
     let script = remote::start_script(
         agent,
@@ -173,7 +179,7 @@ pub fn ensure_tmux_session(
     );
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { name } => Ok(StartedSession {
+        StartOutcome::Ok { name, pinned } => Ok(StartedSession {
             name,
             session_id: pinned,
         }),
@@ -203,7 +209,10 @@ pub fn ensure_win_session(
     // foreground `ssh -tt` gets no `--session-id`, and the shared helper — the
     // only thing that could read a transcript — is POSIX-only, so a Windows
     // conversation view is unreachable either way. A resume still reports the
-    // caller's own id, which the agent is told.
+    // caller's own id, which the agent is told. There is therefore nothing for
+    // the `--session-id` gate to decide here: it only ever narrows a *new*
+    // POSIX launch. A resume is safe on any version for the same reason it
+    // always worked — `--resume` is the flag every release knows.
     let launch = match session_id {
         Some(id) => Launch::Resume(id),
         None => Launch::NewUnpinned,
@@ -663,5 +672,33 @@ mod tests {
             serde_json::to_string(&unpinned).unwrap(),
             r#"{"name":"faragent-codex-01a09da3f4c3","session_id":null}"#
         );
+    }
+
+    /// Where the `--session-id` gate lands for the caller: `session_id` is the
+    /// id the *remote* reported pinning, so a CLI that does not know the flag
+    /// yields `null` — the app's existing "no conversation view" path — rather
+    /// than an id we hoped for and a transcript path that does not exist.
+    #[test]
+    fn the_reported_session_id_is_the_one_the_remote_pinned() {
+        let id = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
+        let build = |text: String| match remote::parse_start(&text).unwrap() {
+            StartOutcome::Ok { name, pinned } => StartedSession {
+                name,
+                session_id: pinned,
+            },
+            other => panic!("expected a started session, got {other:?}"),
+        };
+
+        let pinned = build(format!(
+            "FARAGENT_START_V1\nok\tcreated\tfaragent-claude-x\npin\t{id}\n"
+        ));
+        assert_eq!(pinned.session_id.as_deref(), Some(id));
+
+        let declined = build("FARAGENT_START_V1\nok\tcreated\tfaragent-claude-x\npin\t\n".into());
+        assert_eq!(declined.session_id, None);
+        // An older remote that never prints the line at all degenerates the
+        // same way, which is why the degradation needs no version check.
+        let older = build("FARAGENT_START_V1\nok\texists\tfaragent-claude-x\n".into());
+        assert_eq!(older.session_id, None);
     }
 }

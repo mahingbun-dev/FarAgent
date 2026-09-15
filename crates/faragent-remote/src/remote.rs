@@ -121,9 +121,20 @@ pub struct ListDump {
     pub procs: Vec<(String, String)>,
 }
 
+#[derive(Debug)]
 pub enum StartOutcome {
-    Ok { name: String },
-    Err { error: String, hint: String },
+    /// The session is up (or was already). `pinned` is the id the CLI was told
+    /// to use — the same id the caller must build the transcript path from —
+    /// and is `None` when nothing named one: a new session on a CLI that does
+    /// not know `--session-id`, or a launch that deliberately pins nothing.
+    Ok {
+        name: String,
+        pinned: Option<String>,
+    },
+    Err {
+        error: String,
+        hint: String,
+    },
 }
 
 pub fn write_tmux_conf_script() -> &'static str {
@@ -316,14 +327,6 @@ pub fn start_script(
     create_cwd: bool,
     full_permissions: bool,
 ) -> String {
-    let argv = agent.launch_argv(launch, full_permissions);
-    let inner = format!(
-        "exec {}",
-        argv.iter()
-            .map(|a| shell_single_quote(a))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
     let agent_q = shell_single_quote(agent.slug());
     let cwd_q = shell_single_quote(cwd);
     let name_q = shell_single_quote(tmux_name);
@@ -332,7 +335,34 @@ pub fn start_script(
         .map(|rest| format!("farssh-{rest}"))
         .unwrap_or_default();
     let legacy_q = shell_single_quote(&legacy_name);
+
+    let inner_of = |l: Launch<'_>| {
+        format!(
+            "exec {}",
+            agent
+                .launch_argv(l, full_permissions)
+                .iter()
+                .map(|a| shell_single_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    // `_inner` is the argv tmux is handed and `_pin` the id it names (`""` for
+    // none). A *new* session on a candidate agent starts out unpinned and is
+    // upgraded by `pin_block` only if the remote CLI says it knows the flag;
+    // everything else is decided here. The launcher prints the id it settled
+    // on, so the caller never has to guess what the remote did.
+    let (inner, pin, pin_block) = match launch {
+        Launch::Resume(id) => (inner_of(launch), id.to_string(), String::new()),
+        Launch::New(id) if agent.may_accept_session_id() => (
+            inner_of(Launch::NewUnpinned),
+            String::new(),
+            pin_block(&agent_q, id, &inner_of(Launch::New(id))),
+        ),
+        _ => (inner_of(Launch::NewUnpinned), String::new(), String::new()),
+    };
     let inner_q = shell_single_quote(&inner);
+    let pin_q = shell_single_quote(&pin);
     format!(
         r#"
 printf 'FARAGENT_START_V1\n'
@@ -345,15 +375,19 @@ if ! command -v {agent_q} >/dev/null 2>&1; then
   exit 0
 fi
 {cwd_block}
-if tmux -L {sock} -f "$HOME/.faragent/tmux.conf" has-session -t {name_q} 2>/dev/null; then
+_pin={pin_q}
+_inner={inner_q}
+{pin_block}if tmux -L {sock} -f "$HOME/.faragent/tmux.conf" has-session -t {name_q} 2>/dev/null; then
   printf 'ok\texists\t%s\n' {name_q}
+  printf 'pin\t%s\n' "$_pin"
   exit 0
 fi
 if [ -n {legacy_q} ] && tmux -L {legacy_sock} has-session -t {legacy_q} 2>/dev/null; then
   printf 'ok\texists\t%s\n' {legacy_q}
+  printf 'pin\t%s\n' "$_pin"
   exit 0
 fi
-_err=$(tmux -L {sock} -f "$HOME/.faragent/tmux.conf" new-session -d -s {name_q} -c {cwd_q} -- bash -lc {inner_q} 2>&1)
+_err=$(tmux -L {sock} -f "$HOME/.faragent/tmux.conf" new-session -d -s {name_q} -c {cwd_q} -- bash -lc "$_inner" 2>&1)
 _st=$?
 if [ "$_st" -ne 0 ]; then
   _err=$(printf '%s' "$_err" | tr '\t\n\r' '   ' | cut -c1-400)
@@ -361,15 +395,41 @@ if [ "$_st" -ne 0 ]; then
   exit 0
 fi
 printf 'ok\tcreated\t%s\n' {name_q}
+printf 'pin\t%s\n' "$_pin"
 "#,
         agent_q = agent_q,
         cwd_q = cwd_q,
         cwd_block = cwd_block(&cwd_q, create_cwd),
         name_q = name_q,
         legacy_q = legacy_q,
+        pin_q = pin_q,
         inner_q = inner_q,
+        pin_block = pin_block,
         sock = TMUX_SOCKET,
         legacy_sock = LEGACY_TMUX_SOCKET,
+    )
+}
+
+/// The remote half of the `--session-id` gate: the CLI is asked, in its own
+/// `--help`, whether it knows the flag. Help is the honest source — a version
+/// number is a fact about a release we neither ship nor control, and it would
+/// rot silently the moment the CLI gained or dropped the flag.
+///
+/// It *upgrades* `_inner`/`_pin`, so every way the check can go wrong — the
+/// flag is gone from a newer build, `--help` fails, prints nothing, or hangs
+/// until stdin closes — leaves the plain argv in place. That is the pre-wave
+/// launch, and it means a failed check can cost the chat view but never the
+/// session. The word boundaries keep `--no-session-id` and `--session-id-file`
+/// from matching.
+fn pin_block(agent_q: &str, session_id: &str, pinned_inner: &str) -> String {
+    let id_q = shell_single_quote(session_id);
+    let inner_q = shell_single_quote(pinned_inner);
+    format!(
+        r#"if {agent_q} --help </dev/null 2>&1 | grep -qE '(^|[[:space:]])--session-id([[:space:]=]|$)'; then
+  _inner={inner_q}
+  _pin={id_q}
+fi
+"#
     )
 }
 
@@ -518,6 +578,9 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
 pub fn parse_start(text: &str) -> Result<StartOutcome> {
     let body = after_magic(text, "FARAGENT_START_V1")?;
     let mut last: Option<StartOutcome> = None;
+    // A separate line so a remote that predates it simply omits it: `pinned`
+    // then stays `None`, which is the same answer as "nothing named an id".
+    let mut pinned: Option<String> = None;
     for line in body.lines() {
         let line = line.trim_end_matches('\r');
         let cols: Vec<&str> = line.splitn(3, '\t').collect();
@@ -525,6 +588,7 @@ pub fn parse_start(text: &str) -> Result<StartOutcome> {
             Some("ok") if cols.len() >= 3 => {
                 last = Some(StartOutcome::Ok {
                     name: cols[2].to_string(),
+                    pinned: None,
                 });
             }
             Some("err") if cols.len() >= 2 => {
@@ -533,10 +597,17 @@ pub fn parse_start(text: &str) -> Result<StartOutcome> {
                     hint: cols.get(2).unwrap_or(&"").to_string(),
                 });
             }
+            Some("pin") => {
+                pinned = cols.get(1).map(|s| s.to_string()).filter(|s| !s.is_empty());
+            }
             _ => {}
         }
     }
-    last.ok_or_else(|| anyhow!("start did not print ok/err: {}", snippet(text)))
+    let outcome = last.ok_or_else(|| anyhow!("start did not print ok/err: {}", snippet(text)))?;
+    Ok(match outcome {
+        StartOutcome::Ok { name, .. } => StartOutcome::Ok { name, pinned },
+        err => err,
+    })
 }
 
 pub fn jsonl_meta(body: &[u8], limit: usize) -> JsonlMeta {
@@ -1214,12 +1285,47 @@ agent	pi			missing
     fn parse_start_ok_and_err() {
         let ok = parse_start("FARAGENT_START_V1\nok\tcreated\tfaragent-grok-abc\n").unwrap();
         match ok {
-            StartOutcome::Ok { name } => assert_eq!(name, "faragent-grok-abc"),
+            StartOutcome::Ok { name, pinned } => {
+                assert_eq!(name, "faragent-grok-abc");
+                // No `pin` line at all — an older remote — reads as "pinned
+                // nothing", never as a parse failure.
+                assert_eq!(pinned, None);
+            }
             _ => panic!("expected ok"),
         }
         let err = parse_start("FARAGENT_START_V1\nerr\ttmux_missing\tInstall tmux\n").unwrap();
         match err {
             StartOutcome::Err { error, .. } => assert_eq!(error, "tmux_missing"),
+            _ => panic!("expected err"),
+        }
+    }
+
+    /// The `pin` line is what the caller turns into `session_id`; an empty one
+    /// is how the remote says "this launch named no id" (a CLI without
+    /// `--session-id`), and the app reads that as the pre-existing
+    /// "conversation unavailable, show the terminal" case.
+    #[test]
+    fn parse_start_reads_the_pin_line() {
+        let pinned = parse_start(&format!(
+            "FARAGENT_START_V1\nok\tcreated\tfaragent-claude-abc\npin\t{UUID}\n"
+        ))
+        .unwrap();
+        match pinned {
+            StartOutcome::Ok { pinned, .. } => assert_eq!(pinned.as_deref(), Some(UUID)),
+            _ => panic!("expected ok"),
+        }
+
+        let declined =
+            parse_start("FARAGENT_START_V1\nok\tcreated\tfaragent-claude-abc\npin\t\n").unwrap();
+        match declined {
+            StartOutcome::Ok { pinned, .. } => assert_eq!(pinned, None),
+            _ => panic!("expected ok"),
+        }
+
+        // An error still reports the error even if a stale pin line trails it.
+        let failed = parse_start("FARAGENT_START_V1\nerr\tagent_missing\tnope\npin\t\n").unwrap();
+        match failed {
+            StartOutcome::Err { error, .. } => assert_eq!(error, "agent_missing"),
             _ => panic!("expected err"),
         }
     }
@@ -1334,5 +1440,248 @@ file\tclaude\tabc123\t10.0\t-Users-me\taGVsbG8=\t/home/me/.claude/projects/-User
         assert!(s.contains("tmux -L farssh"));
         assert!(s.contains("$HOME/.farssh/tmux.conf"));
         assert!(!s.contains("-L faragent"));
+    }
+
+    /// A non-candidate agent is never handed the flag and never asked about
+    /// it — asking would only add a process spawn to every launch.
+    #[test]
+    fn a_non_candidate_agent_is_never_asked_about_the_flag() {
+        for agent in [AgentKind::Codex, AgentKind::Pi] {
+            let script = start_script(
+                agent,
+                "/tmp",
+                Launch::New(UUID),
+                "faragent-x-abc",
+                false,
+                false,
+            );
+            assert!(!script.contains("--session-id"), "{agent}: {script}");
+            assert!(
+                !script.contains("--help"),
+                "{agent} must not run a help probe: {script}"
+            );
+            // It still reports a (empty) pin, so the caller has one shape.
+            assert!(script.contains(r"pin\t"), "{agent}: {script}");
+        }
+    }
+
+    /// A resume is decided locally: the CLI is told the id, so it is reported
+    /// without any help probe.
+    #[test]
+    fn a_resume_reports_its_id_without_a_probe() {
+        let script = start_script(
+            AgentKind::Claude,
+            "/tmp",
+            Launch::Resume(UUID),
+            "faragent-claude-abc",
+            false,
+            false,
+        );
+        assert!(!script.contains("--help"), "{script}");
+        assert!(script.contains(&format!("_pin={UUID}")), "{script}");
+        let out = parse_start(&format!(
+            "FARAGENT_START_V1\nok\texists\tfaragent-claude-abc\npin\t{UUID}\n"
+        ))
+        .unwrap();
+        match out {
+            StartOutcome::Ok { pinned, .. } => assert_eq!(pinned.as_deref(), Some(UUID)),
+            _ => panic!("expected ok"),
+        }
+    }
+
+    /// Executes the generated start script against fake `tmux`/agent binaries,
+    /// so the gate is judged by what it actually does to the argv rather than
+    /// by the shape of its text.
+    #[cfg(unix)]
+    mod gate {
+        // Explicit rather than `super::*`: the tests module imports
+        // `pretty_assertions::assert_eq`, which made a globbed macro ambiguous.
+        use super::{parse_start, start_script, StartOutcome, UUID};
+        use faragent_core::agents::{AgentKind, Launch};
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::PathBuf;
+
+        /// A scratch dir for the fake PATH; removes itself on drop so no extra
+        /// dev-dependency is needed for one directory.
+        struct Scratch(PathBuf);
+
+        impl Scratch {
+            fn new(tag: &str) -> Self {
+                let mut p = std::env::temp_dir();
+                p.push(format!("faragent-gate-{tag}-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&p);
+                std::fs::create_dir_all(&p).expect("create scratch dir");
+                Self(p)
+            }
+
+            fn bin(&self, name: &str, body: &str) -> PathBuf {
+                let path = self.0.join(name);
+                std::fs::write(&path, body).expect("write fake binary");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod fake binary");
+                path
+            }
+
+            fn cwd(&self) -> String {
+                self.0.to_string_lossy().into_owned()
+            }
+
+            fn run(&self, script: &str) -> (std::process::Output, String, PathBuf) {
+                let log = self.0.join("tmux.log");
+                let out = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(script)
+                    .env("PATH", format!("{}:/usr/bin:/bin", self.0.display()))
+                    .env("HOME", &self.0)
+                    .env("FAKE_TMUX_LOG", &log)
+                    .output()
+                    .expect("bash should run");
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                (out, text, log)
+            }
+        }
+
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        /// `has-session` never finds anything; `new-session` always succeeds
+        /// and records the argv it was handed.
+        const FAKE_TMUX: &str = r#"#!/bin/sh
+case "$*" in
+  *has-session*) exit 1 ;;
+esac
+printf '%s\n' "$*" >> "$FAKE_TMUX_LOG"
+exit 0
+"#;
+
+        const CLI_ADVERTISES: &str = r#"#!/bin/sh
+if [ "$1" = "--help" ]; then
+  printf '  --session-id <uuid>   Use a specific session ID for the conversation\n'
+  exit 0
+fi
+exit 1
+"#;
+
+        const CLI_SILENT: &str = r#"#!/bin/sh
+if [ "$1" = "--help" ]; then
+  printf '  --resume <id>   Resume a conversation (no session-id flag here)\n'
+  exit 0
+fi
+exit 1
+"#;
+
+        /// A CLI whose `--help` cannot be had at all: the check prints nothing
+        /// and fails.
+        const CLI_UNPROBEABLE: &str = r#"#!/bin/sh
+exit 64
+"#;
+
+        fn launched(cwd: &str, agent: AgentKind, launch: Launch<'_>) -> String {
+            start_script(agent, cwd, launch, "faragent-claude-abc", false, false)
+        }
+
+        #[test]
+        fn a_cli_that_advertises_the_flag_is_pinned() {
+            let s = Scratch::new("advertise");
+            s.bin("tmux", FAKE_TMUX);
+            s.bin("claude", CLI_ADVERTISES);
+            let (out, text, log) = s.run(&launched(&s.cwd(), AgentKind::Claude, Launch::New(UUID)));
+            assert!(out.status.success(), "{out:?}");
+            match parse_start(&text).expect("start parses") {
+                StartOutcome::Ok { name, pinned } => {
+                    assert_eq!(name, "faragent-claude-abc");
+                    assert_eq!(pinned.as_deref(), Some(UUID), "{text}");
+                }
+                other => panic!("expected a created session, got {other:?}: {text}"),
+            }
+            // The tmux argv really carried the flag, not just the report.
+            let argv = std::fs::read_to_string(&log).expect("tmux was invoked");
+            assert!(argv.contains(&format!("--session-id {UUID}")), "{argv}");
+        }
+
+        #[test]
+        fn a_cli_that_does_not_advertise_the_flag_is_left_unpinned() {
+            let s = Scratch::new("silent");
+            s.bin("tmux", FAKE_TMUX);
+            s.bin("claude", CLI_SILENT);
+            let (out, text, log) = s.run(&launched(&s.cwd(), AgentKind::Claude, Launch::New(UUID)));
+            assert!(out.status.success(), "{out:?}");
+            match parse_start(&text).expect("start parses") {
+                // The launch still happened; only the pin is missing, which is
+                // the app's pre-existing "no conversation view" path.
+                StartOutcome::Ok { name, pinned } => {
+                    assert_eq!(name, "faragent-claude-abc");
+                    assert_eq!(pinned, None, "{text}");
+                }
+                other => panic!("expected a created session, got {other:?}: {text}"),
+            }
+            let argv = std::fs::read_to_string(&log).expect("tmux was invoked");
+            assert!(!argv.contains("--session-id"), "{argv}");
+            assert!(argv.contains("exec claude"), "bare argv expected: {argv}");
+        }
+
+        #[test]
+        fn a_help_check_that_fails_degrades_to_no_pin_not_a_failed_launch() {
+            let s = Scratch::new("unprobeable");
+            s.bin("tmux", FAKE_TMUX);
+            s.bin("claude", CLI_UNPROBEABLE);
+            let (out, text, log) = s.run(&launched(&s.cwd(), AgentKind::Claude, Launch::New(UUID)));
+            // The point of the whole gate: a check we could not complete must
+            // never turn a working launch into an error.
+            assert!(out.status.success(), "{out:?}");
+            assert!(!text.contains("err\t"), "{text}");
+            match parse_start(&text).expect("start parses") {
+                StartOutcome::Ok { pinned, .. } => assert_eq!(pinned, None, "{text}"),
+                other => panic!("expected a created session, got {other:?}: {text}"),
+            }
+            let argv = std::fs::read_to_string(&log).expect("tmux was invoked");
+            assert!(!argv.contains("--session-id"), "{argv}");
+        }
+
+        #[test]
+        fn the_word_boundaries_ignore_a_lookalike_flag() {
+            let s = Scratch::new("lookalike");
+            s.bin("tmux", FAKE_TMUX);
+            s.bin(
+                "claude",
+                r#"#!/bin/sh
+if [ "$1" = "--help" ]; then
+  printf '  --no-session-id   Not the flag we want\n  --session-id-file   Nor this\n'
+  exit 0
+fi
+exit 1
+"#,
+            );
+            let (_, text, log) = s.run(&launched(&s.cwd(), AgentKind::Claude, Launch::New(UUID)));
+            match parse_start(&text).expect("start parses") {
+                StartOutcome::Ok { pinned, .. } => assert_eq!(pinned, None, "{text}"),
+                other => panic!("expected ok, got {other:?}: {text}"),
+            }
+            let argv = std::fs::read_to_string(&log).expect("tmux was invoked");
+            assert!(!argv.contains("--session-id"), "{argv}");
+        }
+
+        #[test]
+        fn a_grok_launch_is_gated_the_same_way() {
+            let s = Scratch::new("grok");
+            s.bin("tmux", FAKE_TMUX);
+            s.bin("grok", CLI_ADVERTISES);
+            let script = launched(&s.cwd(), AgentKind::Grok, Launch::New(UUID));
+            let (_, text, log) = s.run(&script);
+            match parse_start(&text).expect("start parses") {
+                StartOutcome::Ok { pinned, .. } => {
+                    assert_eq!(pinned.as_deref(), Some(UUID), "{text}")
+                }
+                other => panic!("expected ok, got {other:?}: {text}"),
+            }
+            let argv = std::fs::read_to_string(&log).expect("tmux was invoked");
+            assert!(
+                argv.contains(&format!("exec grok --session-id {UUID}")),
+                "{argv}"
+            );
+        }
     }
 }
