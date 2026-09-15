@@ -655,17 +655,29 @@ mod tests {
     /// `session_id` is `null` (not absent) when the launch pinned no id.
     #[test]
     fn started_session_serialises_for_the_app() {
+        // The name is *derived* from the id, never chosen: `ensure_tmux_session`
+        // settles the id first and names the session after its last twelve
+        // alphanumerics (`agents::short_id`). Deriving it here is what makes this
+        // a claim about that contract rather than a second spelling of the same
+        // string — the fixture used to read `faragent-claude-15c76662-240`, which
+        // no code path can produce for this uuid, and the assertion could not
+        // tell, because all it checked was that the struct serialises.
+        let id = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
+        let name = agents::tmux_name(AgentKind::Claude, id);
+        assert_eq!(name, "faragent-claude-fd4f1b3053dd");
         let started = StartedSession {
-            name: "faragent-claude-15c76662-240".into(),
-            session_id: Some("15c76662-2409-4f37-bd81-fd4f1b3053dd".into()),
+            name,
+            session_id: Some(id.into()),
         };
         assert_eq!(
             serde_json::to_string(&started).unwrap(),
-            r#"{"name":"faragent-claude-15c76662-240","session_id":"15c76662-2409-4f37-bd81-fd4f1b3053dd"}"#
+            r#"{"name":"faragent-claude-fd4f1b3053dd","session_id":"15c76662-2409-4f37-bd81-fd4f1b3053dd"}"#
         );
 
+        // A launch the remote declined to pin reports `null`; its name still
+        // derives from the id the backend generated for the tmux session.
         let unpinned = StartedSession {
-            name: "faragent-codex-01a09da3f4c3".into(),
+            name: agents::tmux_name(AgentKind::Codex, "01a09da3f4c3"),
             session_id: None,
         };
         assert_eq!(
