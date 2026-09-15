@@ -211,8 +211,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          # 不能写 `dist/*`。upload-artifact 会把通配符之后的目录结构一并保留，
+          # 于是下载下来的是 dist/dmg/…、dist/appimage/…、dist/nsis/…，而
+          # `dist/*` 先匹配到的正是这几个**目录** —— gh 会挨个去读，报
+          # `read dist/dmg: is a directory`，然后整个发布失败。
+          #
+          # 也不用 `mapfile`：它是 bash 4 的内建，而 macOS 自带的还是 bash 3.2。
+          # 这个作业今天跑在 ubuntu 上所以没事，但没理由把一份发布脚本绑在
+          # runner 的 bash 版本上。下面的 $files 故意不加引号，靠词分割展开 ——
+          # 这些文件名是我们自己生成的，不含空格。
+          files=$(find dist -type f | sort)
+          gh release create "$GITHUB_REF_NAME" $files \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --generate-notes \
-          || gh release upload "$GITHUB_REF_NAME" dist/* \
+          || gh release upload "$GITHUB_REF_NAME" $files \
             --repo "$GITHUB_REPOSITORY" --clobber
