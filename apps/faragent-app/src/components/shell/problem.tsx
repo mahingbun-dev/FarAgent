@@ -70,6 +70,7 @@ export function ProblemInline({
   onOpen: (tab: TabInput) => void;
 }) {
   const lang = useStore((s) => s.lang);
+  const agent = useStore((s) => s.agent);
   const diag = asDiagnosis(error);
   if (!diag) {
     return <p className="text-sm text-danger">{errorMessage(error)}</p>;
@@ -92,6 +93,11 @@ export function ProblemInline({
               host,
               // A login shell is not a session: there is no cwd to root at.
               cwd: null,
+              // Nor is it any one agent's. The rail's current agent is carried
+              // onto the tab so the field is never absent; it decides nothing
+              // here, because `transcript: null` already means "terminal only".
+              agent,
+              transcript: null,
               spec: { kind: "login" },
             })
           }

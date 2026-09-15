@@ -108,6 +108,12 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
         subtitle: target,
         host: target,
         cwd: cwd || null,
+        agent: forAgent,
+        // The file the conversation view tails. `null` for a row the list
+        // inferred from tmux or a process scan — the session exists but has no
+        // transcript yet, which is the chat view's "nothing here yet" state
+        // rather than a reason to refuse the view.
+        transcript: sess?.transcript ?? null,
         spec:
           os === "windows"
             ? { kind: "win_agent", agent: forAgent, cwd, session_id: sess?.id ?? null }

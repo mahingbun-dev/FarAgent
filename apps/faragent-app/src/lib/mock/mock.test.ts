@@ -20,6 +20,11 @@ import { HelperError, decodeText, encodePath, helperErrorText } from "../helper.
 import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
+import { adapt } from "../chat/adapters/claude.ts";
+import type { ToolEvent } from "../chat/events.ts";
+import { groupEvents } from "../chat/sidechain.ts";
+import { diffTextOf } from "../chat/tool-input.ts";
+import { TAIL_WINDOW_BYTES } from "../chat/transcript.ts";
 import * as fx from "./fixtures.ts";
 import { HELPER_FIXTURES } from "./helper.ts";
 import { dispatch, mockedCommands } from "./handlers.ts";
@@ -237,8 +242,17 @@ test("only the Claude session rows carry a transcript path", () => {
   // Codex or Grok row would be a lie the app would then try to tail. And at
   // least one Claude row must carry it, or the tail has no fixture to reach.
   const withPath = fx.listSessions("claude").filter((s) => s.transcript);
-  assert.equal(withPath.length, 1, "exactly the one seeded row points at a transcript");
-  assert.equal(withPath[0].transcript, HELPER_FIXTURES.transcript);
+  // Three seeded rows: the parser's small transcript, the renderer's long one,
+  // and the empty one the honest-empty-state branch is reachable through.
+  assert.deepEqual(
+    withPath.map((s) => s.transcript).sort(),
+    [
+      HELPER_FIXTURES.emptyTranscript,
+      HELPER_FIXTURES.longTranscript,
+      HELPER_FIXTURES.transcript,
+    ].sort(),
+    "exactly the three seeded rows point at a transcript",
+  );
 
   for (const agent of ["codex", "grok", "pi"] as const) {
     assert.ok(
@@ -246,6 +260,100 @@ test("only the Claude session rows carry a transcript path", () => {
       `${agent} rows must not point at a Claude transcript`,
     );
   }
+});
+
+/**
+ * The long transcript is the conversation view's fixture, and these are the
+ * properties the view depends on it having. Asserted through the real adapter
+ * and the real fold rather than by counting jsonl lines, because those two are
+ * what turn the file into rows: a fixture that stopped producing, say, a pending
+ * call would still look right as text.
+ */
+test("the long transcript is over the tail window and holds every shape the view draws", () => {
+  const jsonl = fx.longTranscriptJsonl();
+  const bytes = new TextEncoder().encode(jsonl).length;
+  assert.ok(
+    bytes > TAIL_WINDOW_BYTES,
+    `the fixture must not fit in one tail window (${bytes} bytes vs ${TAIL_WINDOW_BYTES})`,
+  );
+
+  const records = jsonl
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as unknown);
+  const events = adapt(records);
+  assert.ok(
+    events.length > 3000,
+    `thousands of events, so the list has to virtualise: ${events.length}`,
+  );
+
+  const tools = events.filter((e): e is ToolEvent => e.kind === "tool");
+  assert.ok(
+    tools.some((e) => e.result === null),
+    "a call still running — the normal live case",
+  );
+  assert.ok(
+    tools.some((e) => e.result?.isError === true),
+    "a failed call, which must not look like a successful one",
+  );
+  assert.ok(
+    tools.some((e) => e.name === "Edit" || e.name === "Write"),
+    "an edit or a write, which is what produces a diff",
+  );
+  assert.ok(
+    events.some((e) => e.kind === "thinking"),
+    "reasoning, which the view collapses",
+  );
+
+  const items = groupEvents(events);
+  assert.ok(
+    items.some((item) => item.kind === "sidechain"),
+    "a subagent run, which the view nests rather than splicing in",
+  );
+  assert.ok(
+    items.some((item) => item.kind === "tools" && item.events.length > 1),
+    "a run of several calls, which is what the collapsed row's sentence counts",
+  );
+
+  // The diff path, through the same reader the renderer uses.
+  const edit = tools.find((e) => diffTextOf(e.input) !== null);
+  assert.ok(edit, "at least one call describes an edit");
+  assert.ok(diffTextOf(edit.input)?.text.startsWith("diff --git"), "and reads as a patch");
+
+  // And the properties that only hold because the shapes sit at the *end* of
+  // the file: the tail reads the last `TAIL_WINDOW_BYTES`, so a shape placed
+  // anywhere else would be invisible when the session is opened. Asserted on
+  // the tail rather than on the whole file, because "the fixture has one" and
+  // "the reader can see one" are different claims and only the second matters.
+  const all = new TextEncoder().encode(jsonl);
+  const tailBytes = all.subarray(Math.max(0, all.length - TAIL_WINDOW_BYTES));
+  // Drop the leading partial line, as `frameLines` does with a tail window.
+  const tailText = new TextDecoder().decode(tailBytes);
+  const tailLines = tailText.split("\n").slice(1).filter((line) => line.includes("{"));
+  const tailRecords = tailLines.map((line) => JSON.parse(line) as unknown);
+  const tailTools = adapt(tailRecords).filter((e): e is ToolEvent => e.kind === "tool");
+  const tailItems = groupEvents(adapt(tailRecords));
+  assert.ok(tailRecords.length > 400, `a substantial window: ${tailRecords.length} records`);
+  assert.ok(
+    tailItems.length > 100,
+    `and more rows than a viewport can hold: ${tailItems.length}`,
+  );
+  assert.ok(
+    tailTools.some((e) => e.result === null),
+    "the pending call is inside the window",
+  );
+  assert.ok(
+    tailTools.some((e) => e.result?.isError === true),
+    "the failed call is inside the window",
+  );
+  assert.ok(
+    tailItems.some((item) => item.kind === "sidechain"),
+    "the sidechain block is inside the window",
+  );
+  assert.ok(
+    tailTools.some((e) => diffTextOf(e.input)?.text.includes("@@") === true),
+    "the edit's patch is inside the window",
+  );
 });
 
 test("the transcript fixture is jsonl with the four kinds and a matched tool pair", () => {

@@ -196,6 +196,18 @@ interface SessionSeed {
 export const TRANSCRIPT_PATH =
   "/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk1live.jsonl";
 
+/**
+ * A session whose transcript file exists and is empty.
+ *
+ * This is the honest-state fixture: a session that has started but written no
+ * records yet, which is the one case the conversation view has to answer with
+ * words rather than with a pane that is merely blank. It is a *registered empty
+ * file* rather than an unregistered path on purpose — an unregistered path is
+ * the error state (`fs.read` rejects), which is a different thing to draw.
+ */
+export const EMPTY_TRANSCRIPT_PATH =
+  "/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk3idle.jsonl";
+
 export function transcriptJsonl(): string {
   const session = "01H8ZQk1live";
   const t = (n: number): string =>
@@ -311,6 +323,404 @@ export function transcriptJsonl(): string {
 }
 
 /**
+ * A second Claude session's transcript: the one the **conversation view** is
+ * exercised against.
+ *
+ * `transcriptJsonl` above is the parser's fixture — seven records, one of each
+ * kind, small enough to assert on by index. This one is the renderer's, and it
+ * is built to the opposite brief: **long enough that a virtualised list is the
+ * only way to draw it**, and containing every shape the conversation view has a
+ * separate rendering for, so none of them has to be reached by hand-editing a
+ * file on a remote machine.
+ *
+ * What it deliberately contains:
+ *
+ * - **Thousands of events.** `cycles` tool-call/result pairs plus the fixed
+ *   parts, which lands about 4,400 events and 2,000 rows with the default —
+ *   over eleven tail windows' worth of file. So the loaded tail is itself 184
+ *   rows, and `chat.earlier` ("earlier turns are not loaded") is reachable
+ *   without any setup.
+ * - **The shapes at the *end*, where the tail lands.** A tail reads the last
+ *   `TAIL_WINDOW_BYTES`, so a shape placed at the start of the file would be
+ *   invisible on open. The showcase is therefore after the bulk:
+ *   - **Markdown, in all the shapes `remark-gfm` is there for** — headings, a
+ *     nested list, a table, inline code, a fenced block with a language, a link.
+ *   - **Thinking**, collapsed by the view.
+ *   - **A successful call**, and **an edit and a write that produce diffs** —
+ *     `old_string`/`new_string`, and a bare `content`, which
+ *     `lib/chat/tool-input.ts` synthesises a patch from.
+ *   - **A failed call.** A `tool_result` with `is_error: true`.
+ *   - **A sidechain run.** A contiguous block of `isSidechain` records — a
+ *     subagent's turn — so the nesting path has a subject.
+ *   - **A pending call.** The last record is a `tool_use` with no result, which
+ *     is the normal live case: the agent is running the tool right now.
+ *
+ * Built with `JSON.stringify`, like the parser's fixture, so an escaping slip
+ * cannot masquerade as a bug in the reader.
+ */
+export const LONG_TRANSCRIPT_PATH =
+  "/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk2run.jsonl";
+
+/** The workspace the long transcript's session ran in. */
+const LONG_CWD = "/srv/app/faragent";
+
+/**
+ * The long transcript, as jsonl.
+ *
+ * `cycles` is the number of tool-call/result pairs in the bulk. The fixed parts
+ * add a hundred-odd records around them, which the defaults turn into a file of
+ * about **2.8 MiB and 4,400 events** — eleven times the tail window, and 184
+ * rows inside it, so opening the session shows the end of a conversation and
+ * offers to load the rest.
+ */
+export function longTranscriptJsonl(cycles = 2500): string {
+  const session = "01H8ZQk2run";
+  const base = Date.UTC(2026, 8, 14, 10, 0, 0);
+  const records: unknown[] = [];
+  let tick = 0;
+  let serial = 0;
+
+  const stamp = (): string => new Date(base + (tick += 1) * 1000).toISOString();
+  const uuid = (): string => `L${String((serial += 1)).padStart(5, "0")}`;
+
+  /** A `user` record whose content is a plain string: one turn of prose. */
+  const ask = (text: string, sidechain = false): void => {
+    records.push({
+      type: "user",
+      uuid: uuid(),
+      timestamp: stamp(),
+      sessionId: session,
+      cwd: LONG_CWD,
+      gitBranch: "main",
+      ...(sidechain ? { isSidechain: true } : {}),
+      message: { role: "user", content: text },
+    });
+  };
+
+  /** An `assistant` record carrying content blocks, in order. */
+  const say = (content: unknown[], sidechain = false): void => {
+    records.push({
+      type: "assistant",
+      uuid: uuid(),
+      timestamp: stamp(),
+      sessionId: session,
+      cwd: LONG_CWD,
+      gitBranch: "main",
+      ...(sidechain ? { isSidechain: true } : {}),
+      message: {
+        id: `msg_${uuid()}`,
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content,
+      },
+    });
+  };
+
+  const text = (body: string) => ({ type: "text", text: body });
+  const think = (body: string) => ({ type: "thinking", thinking: body, signature: "sig" });
+
+  /**
+   * A call and its result, written as the two records they really are.
+   *
+   * `result: null` writes the call and **no** result record, which is how a
+   * pending call is spelled — the agent has not finished the tool yet.
+   */
+  const call = (
+    id: string,
+    name: string,
+    input: unknown,
+    result: { content: string; isError?: boolean } | null,
+    sidechain = false,
+  ): void => {
+    say([{ type: "tool_use", id, name, input }], sidechain);
+    if (result === null) return;
+    records.push({
+      type: "user",
+      uuid: uuid(),
+      timestamp: stamp(),
+      sessionId: session,
+      cwd: LONG_CWD,
+      ...(sidechain ? { isSidechain: true } : {}),
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: id,
+            content: result.content,
+            ...(result.isError ? { is_error: true } : {}),
+          },
+        ],
+      },
+      sourceToolAssistantUUID: "L00000",
+    });
+  };
+
+  // --- the preamble: prose in every Markdown shape the renderer claims to
+  // handle, so a missing `remark-gfm` or a broken component override shows up
+  // on the first screen rather than five hundred turns in.
+  ask(
+    "The rail keeps dropping the lease when I switch tabs. Read the module and tell me what owns it.",
+  );
+  say([
+    think(
+      "The title says the lease is keyed by slot, but the commit that fixed this said tab. One of the two is stale, and the code is the one that runs.",
+    ),
+    text(
+      [
+        "## What owns the lease",
+        "",
+        "`lib/attach-lease.ts` keys the slot on **the tab id**, not the slot:",
+        "",
+        "```ts",
+        "export function attachLease(tabId: string): Lease {",
+        "  return acquire(`attach:${tabId}`);",
+        "}",
+        "```",
+        "",
+        "Three things follow from that, and only the first is obvious:",
+        "",
+        "1. A slot can be handed to a different tab, so a slot id is not stable.",
+        "2. A remount of the *same* tab must not drop the lease.",
+        "   - which is what `createLease`'s deferred close is for",
+        "   - and why the key carries no attempt counter",
+        "3. Two tabs on one host are two slots, and two slots are two attaches.",
+        "",
+        "| surface | keyed by | survives a remount |",
+        "| --- | --- | --- |",
+        "| attach | tab id | yes |",
+        "| helper | host | yes |",
+        "| transcript | host + path | yes |",
+        "",
+        "See [the lease module](https://example.invalid/lease.ts) for the close path.",
+      ].join("\n"),
+    ),
+  ]);
+
+  // --- the bulk. Alternating tools with plain-prose turns between them, so the
+  // list is a realistic mix of one-line rows and paragraphs rather than a
+  // column of identical rows — which is also what makes the measured-height
+  // path (as opposed to the estimate) the one that gets exercised.
+  //
+  // It is deliberately the *middle* of the file and not its end: the tail reads
+  // the last `TAIL_WINDOW_BYTES`, so whatever is at the end is what a reader
+  // sees on open, and the shapes below are the ones worth landing on.
+  const FILES = [
+    "src/state.ts",
+    "src/lib/lease.ts",
+    "src/lib/attach-lease.ts",
+    "src/lib/use-attach.ts",
+    "src/components/TerminalView.tsx",
+    "src/components/shell/workspace-tabs.tsx",
+    "src/lib/chat/transcript.ts",
+    "src/lib/chat/events.ts",
+    "src/lib/chat/sidechain.ts",
+    "src/lib/panel/diff.ts",
+  ];
+
+  for (let i = 0; i < cycles; i++) {
+    if (i % 25 === 0) {
+      ask(`Continue with step ${i / 25} of the plan.`);
+    }
+    // Prose every third cycle, so a run of tool calls is bounded at three and
+    // the list has a paragraph-to-row ratio a real conversation has. Without
+    // this the whole bulk would fold into a handful of enormous tool rows.
+    if (i % 3 === 0) {
+      say([text(`Step ${i / 3}: reading \`${FILES[i % FILES.length]}\` to see who holds the lease.`)]);
+    }
+    const file = `${LONG_CWD}/${FILES[i % FILES.length]}`;
+    call(`call_L_r${i}`, "Read", { file_path: file }, {
+      content: `// ${file}\n// line 1 of a file the agent looked at\n${"// filler\n".repeat(6)}`,
+    });
+    if (i % 5 === 0) {
+      call(
+        `call_L_g${i}`,
+        "Grep",
+        { pattern: "createLease", path: `${LONG_CWD}/src` },
+        { content: `src/lib/lease.ts:${40 + i}:export function createLease` },
+      );
+    }
+    if (i % 7 === 0) {
+      call(
+        `call_L_e${i}`,
+        "Edit",
+        {
+          file_path: file,
+          old_string: `// filler ${i}`,
+          new_string: `// filler ${i} — checked`,
+        },
+        { content: "The file has been updated." },
+      );
+    }
+    if (i % 40 === 0) {
+      say([
+        think(
+          `Step ${i} looked like the previous one; the only difference is which module the lease is read from.`,
+        ),
+        text(
+          `Read \`${FILES[i % FILES.length]}\` and found nothing new: the lease is still held by the tab.`,
+        ),
+      ]);
+    }
+  }
+
+  // --- the showcase. Everything below is inside the tail window, so it is what
+  // a reader sees when the session opens: prose in every Markdown shape the
+  // renderer claims to handle, a call that succeeded, an edit and a write that
+  // produce diffs, a call that failed, and a subagent's turn.
+  say([
+    think(
+      "The lease is right; the bug is that nothing told the reader which view they are in. Worth showing the shapes in one place.",
+    ),
+    text(
+      [
+        "## Wrapping up",
+        "",
+        "`attachLease` keys on the tab id, and the table below is the whole reason:",
+        "",
+        "| surface | keyed by | survives a remount |",
+        "| --- | --- | --- |",
+        "| attach | tab id | yes |",
+        "| helper | host | yes |",
+        "| transcript | host + path | yes |",
+        "",
+        "1. A slot can be handed to a different tab.",
+        "2. A remount of the *same* tab must not drop the lease.",
+        "   - which is what `createLease`'s deferred close is for",
+        "   - and why the key carries no attempt counter",
+        "",
+        "```ts",
+        "export function attachLease(tabId: string): Lease {",
+        "  return acquire(`attach:${tabId}`);",
+        "}",
+        "```",
+        "",
+        "See [the lease module](https://example.invalid/lease.ts) for the close path.",
+      ].join("\n"),
+    ),
+  ]);
+
+  say([text("Spot-checking the tests before I touch anything.")]);
+  call(
+    "call_L_bash",
+    "Bash",
+    { command: "pnpm --filter faragent-app test 2>&1 | tail -20", description: "run the app tests" },
+    {
+      content: [
+        "> faragent-app@0.2.0 test",
+        "> node --test \"src/**/*.test.ts\"",
+        "",
+        "# tests 48",
+        "# pass 48",
+        "# fail 0",
+        "# duration_ms 812.4",
+      ].join("\n"),
+    },
+  );
+
+  say([text("Now the comment, which is the part that was actually wrong.")]);
+  call(
+    "call_L_edit",
+    "Edit",
+    {
+      file_path: `${LONG_CWD}/src/lib/attach-lease.ts`,
+      old_string: [
+        "export function attachLease(tabId: string): Lease {",
+        "  // one attach per tab, not per slot",
+        "  return acquire(`attach:${tabId}`);",
+        "}",
+      ].join("\n"),
+      new_string: [
+        "export function attachLease(tabId: string): Lease {",
+        "  // One attach per tab, so a slot handed to another tab cannot take this",
+        "  // tab's ssh child with it. The key carries no attempt counter: a",
+        "  // remount of the same tab must join the lease it already holds.",
+        "  return acquire(`attach:${tabId}`);",
+        "}",
+      ].join("\n"),
+    },
+    { content: "The file has been updated. Here's the result of running `cat -n` on a snippet." },
+  );
+
+  call(
+    "call_L_write",
+    "Write",
+    {
+      file_path: `${LONG_CWD}/src/lib/chat/virtual-window.ts`,
+      content: [
+        "export function rowTops(heights: ReadonlyArray<number | null>, estimate: number, gap: number): number[] {",
+        "  const tops = new Array<number>(heights.length + 1);",
+        "  tops[0] = 0;",
+        "  for (let i = 0; i < heights.length; i++) {",
+        "    const height = heights[i];",
+        "    tops[i + 1] = tops[i] + (typeof height === 'number' && height > 0 ? height : estimate) + gap;",
+        "  }",
+        "  return tops;",
+        "}",
+      ].join("\n"),
+    },
+    { content: "File created successfully." },
+  );
+
+  say([text("The Rust side no longer compiles, which is the next thing to look at.")]);
+  call(
+    "call_L_fail",
+    "Bash",
+    { command: "cargo test --manifest-path crates/faragent/Cargo.toml", description: "run the rust tests" },
+    {
+      content: [
+        "error[E0308]: mismatched types",
+        "  --> crates/faragent/src/lease.rs:88:9",
+        "   |",
+        "88 |     Ok(lease)",
+        "   |        ^^^^^ expected `Lease`, found `Option<Lease>`",
+        "",
+        "error: could not compile `faragent` (lib test) due to 1 previous error",
+      ].join("\n"),
+      isError: true,
+    },
+  );
+
+  // --- a subagent's turn. Contiguous, because the fold takes a maximal run of
+  // `isSidechain` records as one block, and this is what proves it nests rather
+  // than splicing itself into the main thread.
+  say([think("This is a subagent's reasoning and must not read as the main agent's.")], true);
+  ask("Find every call site of `attachLease` and report the file and line.", true);
+  call(
+    "call_L_sub_grep",
+    "Grep",
+    { pattern: "attachLease\\(", path: `${LONG_CWD}/src`, output_mode: "content" },
+    {
+      content: [
+        "src/components/TerminalView.tsx:94:  const lease = attachLease(tabId);",
+        "src/lib/attach-lease.ts:12:export function attachLease(tabId: string): Lease {",
+        "src/lib/attach-lease.test.ts:31:  const lease = attachLease('tab-1');",
+      ].join("\n"),
+    },
+    true,
+  );
+  say(
+    [
+      text(
+        "Two production call sites: `TerminalView` holds the lease and the module defines it. The test is the third.",
+      ),
+    ],
+    true,
+  );
+
+  // --- the coda: a call with no result record at all. This is the state the
+  // conversation is in *while the agent is working*, and it is the one a
+  // renderer is most likely to draw as broken.
+  say([
+    text("Last check before I summarise:"),
+    { type: "tool_use", id: "call_L_pending", name: "Read", input: { file_path: `${LONG_CWD}/README.md` } },
+  ]);
+
+  return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+}
+
+/**
  * One row per rail mark — `live`, `running`, `idle` and `scheduled` — spread
  * over three workspaces plus the no-cwd bucket, so grouping, group counts,
  * collapse and all four status dots are reachable in a single screen.
@@ -321,8 +731,8 @@ export function transcriptJsonl(): string {
 const SESSION_SEEDS: SessionSeed[] = [
   // /srv/app/faragent
   { id: "01H8ZQk1live", title: "fix attach lease", cwd: "/srv/app/faragent", age: 0, live: true, running: true, transcript: TRANSCRIPT_PATH },
-  { id: "01H8ZQk2run", title: "rework the rail", cwd: "/srv/app/faragent", age: 2, running: true },
-  { id: "01H8ZQk3idle", title: "update the README", cwd: "/srv/app/faragent", age: 6 },
+  { id: "01H8ZQk2run", title: "rework the rail", cwd: "/srv/app/faragent", age: 2, running: true, transcript: LONG_TRANSCRIPT_PATH },
+  { id: "01H8ZQk3idle", title: "update the README", cwd: "/srv/app/faragent", age: 6, transcript: EMPTY_TRANSCRIPT_PATH },
   { id: "01H8ZQk4idle", title: "bump xterm", cwd: "/srv/app/faragent", age: 11 },
   // /srv/app/docs
   { id: "01H8ZQk5docs", title: "translate the manual", cwd: "/srv/app/docs", age: 18 },

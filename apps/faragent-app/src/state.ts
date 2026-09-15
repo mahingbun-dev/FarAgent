@@ -7,6 +7,7 @@
 import { useCallback } from "react";
 import { create } from "zustand";
 import { PANEL } from "@/design";
+import { adapterFor } from "@/lib/chat/adapters";
 import { translate } from "@/lib/i18n";
 import {
   appCacheEnabled as readAppCacheEnabled,
@@ -18,6 +19,23 @@ import type { AgentKind, AttachSpec, Host, Lang } from "@/lib/ipc";
 
 /** What the workspace shows. Sessions live in tabs; settings is a plain view. */
 export type View = "workspace" | "settings";
+
+/**
+ * Which way a session tab is looking at its session.
+ *
+ * A tab has two views of one session, and they are not interchangeable:
+ *
+ * - `terminal` is the agent's own TUI, and it is the **only** surface that can
+ *   answer a permission prompt or take a slash command. It stays mounted
+ *   whichever view is showing.
+ * - `chat` is the session's transcript, rendered (`components/chat/`). It is
+ *   read-only by construction — nothing here writes to the PTY.
+ *
+ * `chat` is only offered to an agent that has an adapter (see
+ * `lib/chat/adapters/index.ts`); a tab whose agent has none starts and stays on
+ * the terminal, which is the designed fallback rather than a degraded state.
+ */
+export type TabView = "chat" | "terminal";
 
 /**
  * The right-hand panel's state, per tab.
@@ -57,10 +75,61 @@ export interface Tab {
    * `null` cwd makes the panel fall back to the host's home directory.
    */
   cwd: string | null;
+  /**
+   * The agent this tab belongs to.
+   *
+   * It is here rather than read back off the rail because a tab outlives the
+   * rail's selection: switching the agent switcher to Codex must not change what
+   * an open Claude tab is showing. It is also what decides whether the tab has a
+   * chat view at all — only an agent with an adapter does.
+   *
+   * A login or install tab names the agent it is about (`spec.kind` carries it
+   * for an install run); neither has a session behind it, so neither reaches the
+   * chat whatever this says.
+   */
+  agent: AgentKind;
+  /**
+   * The remote path of this session's conversation file, or `null` when there is
+   * none to read.
+   *
+   * `null` is the ordinary case for a row the rail inferred from tmux or a
+   * process scan, and for a login or install tab. The chat view says so rather
+   * than showing an empty pane.
+   */
+  transcript: string | null;
+  /** Which view is showing. See {@link TabView}. */
+  view: TabView;
   panel: PanelState;
 }
 
-export type TabInput = Omit<Tab, "id" | "panel"> & { panel?: Partial<PanelState> };
+export type TabInput = Omit<Tab, "id" | "panel" | "view"> & {
+  panel?: Partial<PanelState>;
+  /**
+   * Which view to open on. Omit to take {@link defaultTabView}, which is what
+   * every caller does — an explicit value is for a caller that has a reason.
+   * Re-opening an existing tab never changes its view: the reader's choice
+   * stands.
+   */
+  view?: TabView;
+};
+
+/** Whether this tab's agent has a conversation view at all. */
+export function tabHasChatView(tab: Tab): boolean {
+  return adapterFor(tab.agent) !== null;
+}
+
+/**
+ * The view a freshly opened tab starts on.
+ *
+ * Chat when there is something to render — the agent has an adapter and the
+ * session list named a transcript — and the terminal otherwise. An agent with no
+ * adapter has no chat view to open, and a tab with no transcript has no file to
+ * read, so both open on the terminal rather than on a pane that would say
+ * nothing.
+ */
+function defaultTabView(tab: Pick<TabInput, "agent" | "transcript">): TabView {
+  return tab.transcript !== null && adapterFor(tab.agent) !== null ? "chat" : "terminal";
+}
 
 /**
  * Two tabs are the same tab if they show the same thing. The key says that
@@ -98,6 +167,15 @@ interface Store {
   selectTab: (id: string) => void;
   closeTab: (id: string) => void;
   setPanel: (id: string, patch: Partial<PanelState>) => void;
+  /**
+   * Switch a tab between its terminal and its conversation.
+   *
+   * Not `setView`, which is already the shell's own workspace↔settings switch —
+   * two different things called a view in one store is a name that would be
+   * misread at every call site. This sits beside `setPanel` because it is the
+   * same shape: one tab, one field of it.
+   */
+  setTabView: (id: string, view: TabView) => void;
 
   /**
    * Whether the panel keeps a copy of what it reads on this machine.
@@ -158,6 +236,13 @@ export const useStore = create<Store>((set) => ({
                   subtitle: input.subtitle,
                   spec: input.spec,
                   cwd: input.cwd ?? tab.cwd,
+                  // The transcript path is learned from the session list, which
+                  // is the surface that has it; a re-open from one that does not
+                  // know it keeps the path the tab already had, exactly as it
+                  // keeps the cwd. `view` is deliberately absent: which way the
+                  // reader is looking is theirs, not the opener's.
+                  agent: input.agent,
+                  transcript: input.transcript ?? tab.transcript,
                 }
               : tab,
           ),
@@ -166,6 +251,7 @@ export const useStore = create<Store>((set) => ({
       const tab: Tab = {
         ...input,
         id: `tab-${(nextTabId += 1)}`,
+        view: input.view ?? defaultTabView(input),
         panel: { ...DEFAULT_PANEL, ...input.panel },
       };
       return { view: "workspace", tabs: [...state.tabs, tab], activeTabId: tab.id };
@@ -188,6 +274,10 @@ export const useStore = create<Store>((set) => ({
       tabs: state.tabs.map((tab) =>
         tab.id === id ? { ...tab, panel: { ...tab.panel, ...patch } } : tab,
       ),
+    })),
+  setTabView: (id, view) =>
+    set((state) => ({
+      tabs: state.tabs.map((tab) => (tab.id === id ? { ...tab, view } : tab)),
     })),
 
   appCacheEnabled: readAppCacheEnabled(),

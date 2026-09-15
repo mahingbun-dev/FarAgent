@@ -60,7 +60,16 @@ export interface PanelHelperValue {
 
 const PanelHelperContext = createContext<PanelHelperValue | null>(null);
 
-/** One channel per host, held across StrictMode's immediate remount. */
+/**
+ * One channel per host, held across StrictMode's immediate remount.
+ *
+ * **The key is the host alone, so everything on a host that needs a helper
+ * shares this one connection.** That is not an optimisation, it is the protocol:
+ * a second `helper_open` for the same host replaces the first
+ * (`helper.rs::adopt`), so a chat view that opened its own would hang up the
+ * panel's ssh session — and the panel's would hang up the chat's. Keying by host
+ * and refcounting the holders is what makes the two coexist.
+ */
 const lease = createLease<HelperConnection>();
 
 interface HelperState {
@@ -151,3 +160,18 @@ export function usePanelHelper(): PanelHelperValue {
   if (!value) throw new Error("usePanelHelper outside PanelHelperProvider");
   return value;
 }
+
+/**
+ * The same channel, under the name that says what it is rather than who first
+ * needed it.
+ *
+ * The chat view reads the remote too (it tails a transcript over `fs.read` and
+ * `watch.subscribe`), and it must join *this* connection rather than open one —
+ * see the lease's note above. These aliases exist so a second consumer does not
+ * have to import something called "Panel…" to say so, and so the day the panel
+ * moves the chat does not move with it.
+ */
+export type HelperStatus = PanelHelperStatus;
+export type HelperValue = PanelHelperValue;
+export const HelperProvider = PanelHelperProvider;
+export const useHelper = usePanelHelper;

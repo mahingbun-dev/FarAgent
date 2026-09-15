@@ -178,6 +178,10 @@ export function AgentSwitcher() {
               host: host.alias,
               // An install run is not a session: no cwd to root a tree at.
               cwd: null,
+              agent: install.agent,
+              // And no conversation either — an install script writes no
+              // transcript, so this tab has only its terminal.
+              transcript: null,
               spec: { kind: "install", script: plan.script, os: p.os },
             });
           }}

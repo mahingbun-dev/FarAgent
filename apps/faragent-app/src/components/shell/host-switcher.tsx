@@ -52,6 +52,7 @@ export function HostSwitcher() {
   const t = useT();
   const lang = useStore((s) => s.lang);
   const host = useStore((s) => s.host);
+  const agent = useStore((s) => s.agent);
   const selectHost = useStore((s) => s.selectHost);
   const openTab = useStore((s) => s.openTab);
   const qc = useQueryClient();
@@ -310,6 +311,11 @@ export function HostSwitcher() {
               host: problem.host,
               // A login shell is not a session: there is no cwd to root a tree at.
               cwd: null,
+              // Nor is it one agent's. The rail's current agent is carried onto
+              // the tab so the field is never absent; it decides nothing here,
+              // because `transcript: null` already means "terminal only".
+              agent,
+              transcript: null,
               spec: { kind: "login" },
             });
           }}

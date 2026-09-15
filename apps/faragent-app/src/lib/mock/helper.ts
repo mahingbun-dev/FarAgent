@@ -33,7 +33,13 @@ import { b64ToBytes, bytesToB64 } from "../bytes.ts";
 import type { Diagnosis } from "../ipc.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
 import type { MockHandler } from "./handlers.ts";
-import { TRANSCRIPT_PATH, transcriptJsonl } from "./fixtures.ts";
+import {
+  EMPTY_TRANSCRIPT_PATH,
+  LONG_TRANSCRIPT_PATH,
+  TRANSCRIPT_PATH,
+  longTranscriptJsonl,
+  transcriptJsonl,
+} from "./fixtures.ts";
 
 // ---------------------------------------------------------------------------
 // The protocol's own numbers, restated
@@ -487,6 +493,18 @@ function seedFilesystem(): void {
   // `fs.stat` and `fs.read` — the two ops `lib/chat/transcript.ts` tails with —
   // answer it exactly as they answer any other file.
   addFile(TRANSCRIPT_PATH, () => textBytes(transcriptJsonl()));
+
+  // --- and a second Claude session's conversation, this one long enough that
+  // the conversation view has to virtualise it: three thousand-odd events,
+  // several hundred kilobytes over the tail window, with a sidechain, a failed
+  // call, an edit, a write and a call still running. `longTranscriptJsonl`'s
+  // own note lists what it is for; this is only where it is served from.
+  addFile(LONG_TRANSCRIPT_PATH, () => textBytes(longTranscriptJsonl()));
+
+  // --- and a third, registered but empty: a session that has started and
+  // written nothing yet. The conversation view has to name that state rather
+  // than draw a blank pane, and this is what makes it reachable in a browser.
+  addFile(EMPTY_TRANSCRIPT_PATH, () => new Uint8Array());
 
   // --- a loose scratch cwd: no repository above it all the way to `/`, which
   // is what makes the Git tab's "not a repository" state reachable from a real
@@ -1425,4 +1443,11 @@ export const HELPER_FIXTURES = {
   bigRepoChanges: 620,
   /** One Claude session's conversation jsonl, for `lib/chat/transcript.ts`. */
   transcript: TRANSCRIPT_PATH,
+  /**
+   * A second Claude session's conversation, long enough to need virtualising
+   * and deep enough into the file to start with "earlier turns not loaded".
+   */
+  longTranscript: LONG_TRANSCRIPT_PATH,
+  /** A session whose conversation file exists and holds no records yet. */
+  emptyTranscript: EMPTY_TRANSCRIPT_PATH,
 } as const;
