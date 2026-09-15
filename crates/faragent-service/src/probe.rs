@@ -81,10 +81,7 @@ fn format_agent_line_lang(kind: AgentKind, probe: &Probe, lang: Lang) -> String 
 }
 
 fn should_retry_other_os(err: &anyhow::Error) -> bool {
-    match err.downcast_ref::<TransportError>() {
-        Some(t) if t.timed_out => false,
-        _ => true,
-    }
+    !matches!(err.downcast_ref::<TransportError>(), Some(t) if t.timed_out)
 }
 
 #[cfg(test)]
