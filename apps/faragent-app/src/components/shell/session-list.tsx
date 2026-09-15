@@ -108,7 +108,7 @@ function GroupHeader({
         onClick={onToggle}
         aria-expanded={!collapsed}
         title={toggleTitle}
-        className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-micro font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-sm font-semibold text-foreground transition-colors"
       >
         <ChevronRight
           className={cn(
