@@ -202,7 +202,7 @@ git add -A && git commit -m "app: a chat adapter for Grok transcripts"
 - Modify: `apps/faragent-app/src/lib/chat/adapters/index.ts` (one entry)
 - Modify: `apps/faragent-app/src/lib/mock/fixtures.ts`
 
-**Blocked on a real sample.** This machine's Anthropic credentials belong to the Claude desktop app's local proxy and Pi is refused by it (403), so Pi cannot produce a session until one of: the user runs `pi` and completes `/login`, or supplies a usable provider key. Until then this task is implemented against the installed package's `docs/session-format.md` and every shape is marked `unverified`. Do not ship it as measured.
+**One sample was obtained, partway.** This machine's Anthropic credentials belong to the Claude desktop app's local proxy and Pi is refused by it (403) — but that refusal wrote a five-line session file into `~/.pi/agent/sessions/` before it failed, and that file was read. It confirms the header, the entry envelope, the eight-hex `id`, the two timestamp spellings and the `text` block; it cannot confirm tools, reasoning or the extension roles, because a session that ran none holds none. Those still rest on the installed package's `docs/session-format.md` and are marked `unverified`. It also supplied the one measured shape the document never shows: a failed turn, `content: []` with the error in `errorMessage`, which is drawn rather than dropped.
 
 The load-bearing decisions:
 
