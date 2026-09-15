@@ -105,6 +105,12 @@ Do not commit `target/` or a remote `~/.faragent` dump.
 2. Disk scanner branch in `crates/faragent-remote/src/remote.rs` `list_script` (POSIX) **and** `crates/faragent-remote/src/win.rs` `list_script` (Windows).
 3. Tests for resume argv and the probe/list parsers.
 4. User-guide table (EN + ZH).
+5. A chat adapter in `apps/faragent-app/src/lib/chat/adapters/` — a function `(records, firstIndex) => ChatEvent[]` plus one entry in that directory's registry — if the conversation view should draw this agent's transcripts. Write it against a **real transcript**, not against what the format is documented to be: where you cannot measure a shape, mark it `unverified` at the field and in the fixture instead of guessing one into existence.
+
+Two things are easy to conflate and are not the same question:
+
+- **Reading** a transcript needs an adapter. `adapterFor` returning `null` is a real answer — it means the tab has no chat view and keeps its terminal, which is the right thing before the records have been understood.
+- **Naming** a new session's transcript file at launch needs `AgentKind::may_accept_session_id` (`crates/faragent-core/src/agents.rs`). An agent whose CLI picks its own session id cannot have its path computed until the rail scans the disk; see `apps/faragent-app/src/lib/chat/transcript-path.ts`, which returns `null` for exactly those agents and says why.
 
 Prefer a vendor CLI that can **resume by id** and stores transcripts under the home directory. If it has no interactive TUI, it does not belong in this product’s attach path.
 

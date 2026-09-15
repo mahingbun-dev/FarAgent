@@ -420,6 +420,17 @@ faragent github-sync --host home-mac           # copy this machine's gh login on
 
 Auth files (hint only, never copied locally): e.g. `~/.grok/auth.json`, `~/.codex/auth.json`. If the native TUI asks you to log in, do it **on that remote**. Device-code flows (`grok login --device-auth`) are the usual headless path.
 
+### The conversation view
+
+In the app, a session opens on its conversation — read from the agent's own transcript on the remote — with its terminal one click away, and the terminal is what a session opens on when no conversation can be read. All four agents have this view.
+
+Two things are worth knowing, because neither is a defect:
+
+- **A session you just started on Codex or Pi opens on the terminal, not on its conversation.** `claude` and `grok` can be told which session id to use, so the app knows where the file will be before the agent has written it. `codex` and `pi` choose their own id and do not report it, so the path cannot be named until the session rail scans the remote and finds the file. Reopen the session from the rail and the conversation is there.
+- **Pi's conversation view is the least proven of the four.** Its adapter was written from Pi's own format documentation rather than from a real session file, because no Pi session was available to read while it was built. If a Pi conversation renders oddly, that is the most likely place to look.
+
+The view reads the same transcript file the terminal session writes; it adds no network calls of its own and sends nothing back.
+
 ## Detach, disconnect, come back
 
 1. `Ctrl-g d` — clean detach, manager TUI returns.
