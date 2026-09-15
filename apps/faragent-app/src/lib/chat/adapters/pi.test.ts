@@ -1,16 +1,24 @@
 /**
  * `chat/adapters/pi.ts` — turning a Pi session's records into events.
  *
- * ## These fixtures are documentation-shaped, not measured
+ * ## These fixtures are documentation-shaped, with two measured exceptions
  *
  * Every other adapter in this directory was built against a transcript read off
- * a disk, and its comments say where each shape was seen. **This one could not
- * be.** No Pi session exists on the development machine, and the credentials to
- * run one were not available: the local Anthropic auth belongs to the Claude
- * desktop app's own proxy and Pi is refused by it. The shape below therefore
- * comes from Pi's own `docs/session-format.md` (shipped inside
- * `@mariozechner/pi-coding-agent`), and every fixture here is marked
+ * a disk, and its comments say where each shape was seen. Most of this one could
+ * not be: Pi's credentials were not available here (the local Anthropic auth
+ * belongs to the Claude desktop app's own proxy, and Pi is refused by it), so
+ * the shapes below come from Pi's own `docs/session-format.md`, shipped inside
+ * `@mariozechner/pi-coding-agent`, and the fixtures resting on it alone are
+ * marked
  * `unverified` — see the module doc of `pi.ts`.
+ *
+ * Two things here are not documentation-shaped. A real session does exist — the
+ * refused run wrote five lines into `~/.pi/agent/sessions/` before it failed —
+ * and it fixes the header, the entry envelope, the eight-hex `id`, the two
+ * timestamp spellings and the `text` block; the fixtures for those are not
+ * marked unverified, because a real file agrees with them. And the failed turn
+ * is taken from that file outright, `errorMessage` and all — see the test that
+ * covers it.
  *
  * That marking is the point. A shape read from a document is a shape that has
  * never been contradicted by a real file, which is a weaker thing than a shape
@@ -296,6 +304,66 @@ test("empty and blank text contributes nothing", () => {
     assistant("b2c3d4e5", [text(""), thinking("  "), { type: "image", data: "…" }]),
   ]);
   assert.deepEqual(events, []);
+});
+
+test("a failed turn is drawn as what it was, not dropped", () => {
+  // The one shape in this file that is **measured** rather than documented, and
+  // it was not in `docs/session-format.md`'s worked examples at all. A real Pi
+  // session on this machine holds a turn that never reached the model:
+  //
+  // ```
+  // {"role":"assistant","content":[],"stopReason":"error",
+  //  "errorMessage":"403 {\"error\":{\"type\":\"forbidden\",…}}"}
+  // ```
+  //
+  // Drawing the empty `content` alone loses the turn completely — the reader
+  // sees a session that appears not to have answered, rather than one that was
+  // refused, which is the more misleading of the two.
+  const failure = '403 {"error":{"type":"forbidden","message":"Request not allowed"}}';
+  const events = adapt([
+    header(),
+    userText("09610e41", "reply with the single word: ok"),
+    entry("0f2e881e", "09610e41", {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: failure,
+      timestamp: 1789456707200,
+    }),
+  ]);
+  assert.deepEqual(kinds(events), ["message", "message"]);
+  const shown = events[1] as MessageEvent;
+  assert.equal(shown.role, "assistant");
+  assert.equal(shown.markdown, failure, "the failure itself, rather than an empty row");
+  // `:error` rather than `:0`: the turn's blocks are numbered from 0, and this
+  // row is not one of them — a turn that spoke and then failed has both.
+  assert.equal(shown.id, "0f2e881e:error");
+});
+
+test("a stop reason alone does not invent a message", () => {
+  // `stopReason` is on every assistant message and is `stop` for the ordinary
+  // case — reading it as content would put a row under every single turn.
+  // Only the error carries text of its own.
+  for (const stopReason of ["stop", "length", "toolUse", "aborted"]) {
+    const events = adapt([
+      header(),
+      entry("b2c3d4e5", null, { role: "assistant", content: [], stopReason }),
+    ]);
+    assert.deepEqual(events, [], stopReason);
+  }
+});
+
+test("an error beside real content is reported after it, not instead of it", () => {
+  const events = adapt([
+    header(),
+    assistant("b2c3d4e5", [text("here is what I found")], "root", {
+      stopReason: "error",
+      errorMessage: "connection reset",
+    }),
+  ]);
+  assert.deepEqual(kinds(events), ["message", "message"]);
+  assert.equal((events[0] as MessageEvent).markdown, "here is what I found");
+  assert.equal((events[1] as MessageEvent).markdown, "connection reset");
 });
 
 // ---------------------------------------------------------------------------

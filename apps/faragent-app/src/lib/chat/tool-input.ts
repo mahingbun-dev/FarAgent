@@ -21,10 +21,34 @@
 export type InputObject = Record<string, unknown>;
 
 /** True for a plain JSON object — the only shape a tool input may have. */
+function isObject(value: unknown): value is InputObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The tool input as an object, whatever spelling it arrived in.
+ *
+ * Two spellings are real and both are measured. Claude hands over
+ * `tool_use.input` already parsed; Codex hands over `function_call.arguments`
+ * as the JSON **string** the CLI recorded, because `events.ts` promises each
+ * adapter passes the value through as it found it rather than reshaping it. So
+ * this is where the string is parsed — which is exactly the guessing the module
+ * doc above says belongs here and nowhere else.
+ *
+ * It stays total. A string that is not JSON, a JSON string that holds an array,
+ * a number or `null`, and every non-string that is not an object all answer
+ * `null`; each caller already reads `null` as "this field is not here", so a
+ * miss degrades one field of one row rather than the row, or the list.
+ */
 export function asObject(value: unknown): InputObject | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as InputObject)
-    : null;
+  if (isObject(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The first of `keys` whose value is a non-empty string, or `null`. */
@@ -70,14 +94,56 @@ function toLines(value: string): string[] {
 
 // ---------------------------------------------------------------- the fields
 
-/** The path a tool call names, under any of the spellings agents use. */
+/**
+ * The path a tool call names, under any of the spellings agents use.
+ *
+ * Claude's tools say `file_path` (and `notebook_path` for a notebook); Grok's
+ * `read_file` says `target_file` and its `list_dir` says `target_directory`.
+ * Those two are not guesses — measured across 73 Grok sessions, `read_file` is
+ * the most common tool there by a factor of two (2,354 calls) and `list_dir`
+ * follows the same spelling (140). Without them the row for a Grok
+ * conversation's most frequent call reads "read a file" and names none.
+ */
 export function filePathOf(input: unknown): string | null {
-  return firstString(input, ["file_path", "filePath", "path", "notebook_path"]);
+  return firstString(input, [
+    "file_path",
+    "filePath",
+    "path",
+    "notebook_path",
+    "target_file",
+    "target_directory",
+  ]);
 }
 
-/** The shell command a tool call runs, first line only. */
+/**
+ * The shell command a tool call runs, first line only.
+ *
+ * `command` is a **string** in Claude's `Bash` and an **argv array** in Codex's
+ * `shell` (`["bash","-lc","…"]`), so both spellings are read. An array is joined
+ * with spaces — the command as it would have been typed — rather than having its
+ * flags interpreted: which element is "the real command" is the shell's business,
+ * and picking one here would put a plausible-looking command on screen that the
+ * CLI never ran.
+ *
+ * An empty array, or one holding anything but strings, is not a command and
+ * answers `null` like any other miss — which the caller already draws as "ran a
+ * command" rather than as a blank.
+ */
 export function commandOf(input: unknown): string | null {
-  return firstLine(firstString(input, ["command", "cmd"]));
+  const obj = asObject(input);
+  if (!obj) return null;
+  for (const key of ["command", "cmd"]) {
+    const value = obj[key];
+    if (typeof value === "string") return firstLine(value);
+    if (
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((part) => typeof part === "string")
+    ) {
+      return firstLine(value.join(" "));
+    }
+  }
+  return null;
 }
 
 /** The pattern or query a search tool was given. */

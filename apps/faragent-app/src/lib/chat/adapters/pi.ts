@@ -4,16 +4,29 @@
  * Turns the records `lib/chat/transcript.ts` parsed out of a session's `.jsonl`
  * into the unified model in `../events.ts`.
  *
- * ## This adapter is built from a document, and says so
+ * ## This adapter is mostly built from a document, and says which parts are not
  *
  * Every other adapter here was written against a transcript read off a disk,
  * and each records where a shape was seen — a real 15,000-line Claude session,
- * 511 Codex rollouts, 73 Grok sessions. **This one had no such sample.** Pi was
+ * 511 Codex rollouts, 73 Grok sessions. Pi was
  * not installed on the development machine, and once it was, the credentials to
  * run a session were not available to us: the local Anthropic auth belongs to
- * the Claude desktop app's own proxy, and Pi is refused by it. So the shapes
- * below come from Pi's own documentation — `docs/session-format.md`, shipped
+ * the Claude desktop app's own proxy, and Pi is refused by it. So most of the
+ * shapes below come from Pi's own documentation — `docs/session-format.md`, shipped
  * inside `@mariozechner/pi-coding-agent` — and nowhere else.
+ *
+ * **One real session does exist, and was read.** The refusal above wrote a
+ * five-line file into `~/.pi/agent/sessions/` before failing, and it confirms
+ * the header, the entry envelope, the eight-hex `id`, the split between the
+ * entry's ISO timestamp and the message's unix one, and the `text` block
+ * spelling — everything this adapter was built to expect of an ordinary turn.
+ * It could not confirm the rest: a session that ran no tools and produced no
+ * reasoning holds no `thinking` block, no `toolCall`, no `toolResult`, and none
+ * of the four extension roles, so those still rest on the document alone. Where
+ * a shape could not be measured it is marked `unverified` in the tests and at
+ * the field, and whoever first reads a fuller Pi session should treat those
+ * markers as a checklist. The one shape taken from that file rather than from
+ * the document is the failed turn, below.
  *
  * The distinction is worth keeping visible rather than tidying away. A shape
  * read from a document has never been contradicted by a real file, which is a
@@ -187,6 +200,34 @@ export function adapt(records: unknown[], firstIndex = 0): ChatEvent[] {
 
     const content = message.content;
 
+    /**
+     * The row a failed turn gets, when this turn failed.
+     *
+     * A turn that never reached the model says so in `errorMessage` and nowhere
+     * else: its `content` is empty, because nothing came back to put in it.
+     * Dropping that leaves a session that reads as though it simply answered
+     * nothing, when what happened is that it was refused — and the reader has no
+     * way to tell the two apart. The row is emitted after whatever prose the
+     * turn did produce.
+     *
+     * This is the only shape in this adapter taken from a **real file** rather
+     * than from `docs/session-format.md`: that document lists `stopReason` and
+     * `errorMessage` in its types but never shows one, and a measured Pi session
+     * on this machine holds
+     * `{"role":"assistant","content":[],"stopReason":"error","errorMessage":"403 …"}`.
+     * `stopReason` is read only as a gate — it is `stop` on every ordinary turn,
+     * and a row under every ordinary turn is the opposite mistake.
+     */
+    const emitFailure = (): void => {
+      if (role !== "assistant" || message.stopReason !== "error") return;
+      const failure = message.errorMessage;
+      if (typeof failure !== "string" || failure.trim() === "") return;
+      const id = `${recordId}:error`;
+      if (emittedIds.has(id)) return;
+      emittedIds.add(id);
+      events.push({ kind: "message", id, role, markdown: failure, sidechain, timestamp });
+    };
+
     // A bare string is a whole turn's prose: one message. `UserMessage`
     // documents this spelling and `AssistantMessage` documents only a block
     // array — but the string is read for either role, because when it appears it
@@ -198,10 +239,14 @@ export function adapt(records: unknown[], firstIndex = 0): ChatEvent[] {
         emittedIds.add(id);
         events.push({ kind: "message", id, role, markdown: content, sidechain, timestamp });
       }
+      emitFailure();
       return;
     }
 
-    if (!Array.isArray(content)) return;
+    if (!Array.isArray(content)) {
+      emitFailure();
+      return;
+    }
 
     content.forEach((block, blockIndex) => {
       if (!isObject(block)) return;
@@ -269,6 +314,9 @@ export function adapt(records: unknown[], firstIndex = 0): ChatEvent[] {
           return;
       }
     });
+
+    // After the turn's own prose, so the failure reads as what came of it.
+    emitFailure();
   });
 
   return events;

@@ -690,6 +690,29 @@ test("an empty transcript adapts to nothing", () => {
   assert.deepEqual(adapt([]), []);
 });
 
+test("a record with no ordinal is still numbered from the window's first index", () => {
+  // Unreachable against today's corpus — all 61,982 measured records carry an
+  // `ordinal` — so this is not a bug being fixed but a rule being kept. An id
+  // that drifted on a `loadEarlier` would be worse than no id at all, and Grok
+  // and Pi already number this way, so the one adapter that could not be caught
+  // doing it should not be the exception.
+  const bare = {
+    type: "response_item",
+    timestamp: T0,
+    payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+  };
+
+  const alone = adapt([bare], 0);
+  assert.equal(alone.length, 1);
+  assert.equal(alone[0].id, "r0:0");
+
+  // The same record with a window opened in front of it: `firstIndex` drops, and
+  // the record keeps the name it had.
+  const withEarlier = adapt([{ type: "session_meta", timestamp: T0, payload: {} }, bare], -1);
+  assert.equal(withEarlier.length, 1);
+  assert.equal(withEarlier[0].id, "r0:0", "the earlier window did not renumber it");
+});
+
 // ---------------------------------------------------------------------------
 // End to end, over a rollout framed the way the reader frames one
 // ---------------------------------------------------------------------------

@@ -36,6 +36,23 @@ test("asObject accepts a plain object and refuses everything else", () => {
   assert.equal(asObject([1, 2]), null, "an array is not an input object");
 });
 
+test("asObject reads a JSON string as the object it holds", () => {
+  // Codex writes a tool call's `arguments` as a JSON **string** where Claude
+  // writes an object, and `events.ts` promises each adapter hands the value over
+  // as it found it — so the string arrives here, which is the "a string where an
+  // object is expected" this module's own doc opens with. Before this, every
+  // field reader below answered `null` for every Codex call: a tool row read
+  // "ran a command" instead of the command, and an edit showed no diff.
+  assert.deepEqual(asObject('{"command":"ls"}'), { command: "ls" });
+  assert.deepEqual(asObject("{}"), {}, "an empty object is still an object");
+  assert.equal(asObject("not json"), null, "an unparsable string is a miss, not a throw");
+  assert.equal(asObject('["a"]'), null, "a JSON array is not an input object");
+  assert.equal(asObject('"a string"'), null, "a JSON string is not an input object");
+  assert.equal(asObject("null"), null);
+  assert.equal(asObject("7"), null);
+  assert.equal(asObject(""), null);
+});
+
 test("firstString takes the first non-empty string under any spelling", () => {
   assert.equal(firstString({ path: "a", file_path: "b" }, ["file_path", "path"]), "b");
   assert.equal(firstString({ path: "" }, ["path"]), null, "an empty string is a miss");
@@ -50,6 +67,30 @@ test("firstLine keeps the first line and drops a leading blank one", () => {
   assert.equal(firstLine(""), null);
   assert.equal(firstLine(undefined), null);
   assert.equal(firstLine("  spaced  "), "spaced");
+});
+
+test("commandOf reads an argv array, which is how Codex records a command", () => {
+  // Claude's `Bash` holds a string; Codex's `shell` holds an argv array. Joining
+  // it with spaces is the command as it would have been typed, and reads nothing
+  // into the flags — `bash -lc '<script>'` really is what the CLI ran, argv and
+  // all. Without this a Codex tool row has no command to name, and falls back to
+  // "ran a command", which is the one thing the row exists not to say.
+  assert.equal(commandOf({ command: ["bash", "-lc", "ls -la"] }), "bash -lc ls -la");
+  assert.equal(commandOf({ command: ["ls", "-la"] }), "ls -la");
+  assert.equal(commandOf({ command: ["ls", "a\nb"] }), "ls a", "still one line");
+  assert.equal(commandOf({ command: [] }), null, "an empty argv is not a command");
+  assert.equal(commandOf({ command: ["ls", 7] }), null, "a non-string member is not one");
+  assert.equal(commandOf({ command: [["ls"]] }), null, "nor is a nested array");
+});
+
+test("a path is read under the spelling each agent's CLI uses", () => {
+  // Measured across 73 Grok sessions: `read_file` names its argument
+  // `target_file` (2,354 calls) and `list_dir` names it `target_directory`
+  // (140). Neither is a spelling Claude uses, and `read_file` is Grok's most
+  // common tool by a factor of two — without these the row says "read a file"
+  // and names none, for the call a Grok conversation is mostly made of.
+  assert.equal(filePathOf({ target_file: "/srv/app/a.ts" }), "/srv/app/a.ts");
+  assert.equal(filePathOf({ target_directory: "/srv/app" }), "/srv/app");
 });
 
 test("the named field readers fall back to null, not to a guess", () => {

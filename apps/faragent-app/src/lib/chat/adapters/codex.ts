@@ -200,7 +200,7 @@ function reasoningText(payload: Record<string, unknown>): string {
  * everything else — including every `event_msg`, which holds a second write of
  * the same conversation — contributes nothing. Never throws.
  */
-export function adapt(records: unknown[]): ChatEvent[] {
+export function adapt(records: unknown[], firstIndex = 0): ChatEvent[] {
   // The caller is typed to hand over an array, but this value crosses a file
   // another program is writing: guarding the container is the same promise as
   // guarding the records, and it is one line.
@@ -234,12 +234,16 @@ export function adapt(records: unknown[]): ChatEvent[] {
     // constant rather than a field being read.
     const sidechain = false;
     const timestamp = typeof record.timestamp === "string" ? record.timestamp : null;
-    // The record's `ordinal` names its events; a record without one still gets
-    // stable ids from its position, which is all a list key needs.
+    // The record's `ordinal` names its events. Every measured record has one —
+    // 61,982 of them, unique within their file and monotonic — so the fallback
+    // below is unreachable against today's corpus. It is still numbered from
+    // `firstIndex` rather than from the array position, because an id that
+    // drifted on a `loadEarlier` would be worse than no id: the renderer keys
+    // its list on these and remembers the reader's scroll position by them.
     const recordId =
       typeof record.ordinal === "number" && Number.isFinite(record.ordinal)
         ? String(record.ordinal)
-        : `r${recordIndex}`;
+        : `r${firstIndex + recordIndex}`;
 
     switch (payload.type) {
       case "message": {
