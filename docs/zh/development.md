@@ -105,6 +105,12 @@ CI 里还没有远程 mock。单测覆盖 config 解析、argv、助手语法。
 2. 磁盘扫描：`crates/faragent-remote/src/remote.rs` 的 `list_script`（POSIX）**和** `crates/faragent-remote/src/win.rs` 的 `list_script`（Windows）
 3. resume argv 测试，以及 probe/list 解析测试
 4. 更新中英用户手册表格
+5. 对话视图适配器：`apps/faragent-app/src/lib/chat/adapters/` 下一个 `(records, firstIndex) => ChatEvent[]` 函数，外加该目录注册表里的一行——前提是这个 agent 的 transcript 要能在对话视图里画出来。**照真实 transcript 写，不要照格式文档写**；量不到的形状，在字段上和 fixture 里标 `unverified`，而不是编一个看起来合理的出来
+
+有两件事容易混为一谈，但它们不是同一个问题：
+
+- **读** transcript 需要适配器。`adapterFor` 返回 `null` 是一个真实的答案——它表示这个 tab 没有对话视图、继续显示终端，在记录形状被弄懂之前这正是对的
+- **在启动时命名**一个新会话的 transcript 文件，取决于 `AgentKind::may_accept_session_id`（`crates/faragent-core/src/agents.rs`）。CLI 自己挑 session id 的 agent，在 rail 扫描磁盘之前算不出路径；见 `apps/faragent-app/src/lib/chat/transcript-path.ts`，它正是对这类 agent 返回 `null`，并写明了原因
 
 需要能按 id resume、家目录里有会话文件、并且有交互式 TUI。没有原生 TUI 的不要接到 attach 路径上。
 

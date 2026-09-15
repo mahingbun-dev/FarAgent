@@ -159,8 +159,11 @@ function ChatBody({ tab, attach }: { tab: Tab; attach: TabAttach }) {
    * conversation.
    */
   const items = useMemo(
-    () => (adapter ? groupEvents(adapter(transcript.records.slice())) : []),
-    [adapter, transcript.records],
+    () =>
+      adapter
+        ? groupEvents(adapter(transcript.records.slice(), transcript.firstIndex))
+        : [],
+    [adapter, transcript.records, transcript.firstIndex],
   );
 
   /**

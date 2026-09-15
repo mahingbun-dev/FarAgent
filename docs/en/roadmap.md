@@ -15,16 +15,16 @@ v0.2's Windows remote runs agents in the **foreground**: quitting the agent (or 
 | Live | `[live]` works on Windows remotes; the process-scan `[running]` heuristic stays for foreign processes |
 | Upload | Shipped to the remote on first use, with the user's confirmation; no admin rights, nothing in the registry |
 
-## 2. App frontend — shipped, apart from one piece
+## 2. App frontend — shipped
 
-The **application frontend** landed in v0.2: a designed window rather than only the terminal picker. What is left is the conversation itself.
+The **application frontend** landed in v0.2: a designed window rather than only the terminal picker.
 
 | Area | State |
 | --- | --- |
 | Shell | **Shipped.** Host and agent switchers, and a session rail grouped by the workspace each session runs in. |
 | Panel | **Shipped.** A read-only file tree / preview / changes / Git view, reading the remote over a helper channel (`git.diff`, `git.branches`, push-driven refresh). No Git writes, by design. |
 | Terminal | **Shipped.** The remote agent's own TUI, attached inside the app, so vibe coding still uses the vendor interface. |
-| Conversation | **Not yet.** Rendering one conversation per agent from the agent's own transcript, with the terminal kept as the escape hatch. |
+| Conversation | **Shipped.** One conversation per agent, rendered from the agent's own transcript, with the terminal kept as the escape hatch. Each adapter was written against real transcripts — Claude's, 511 Codex rollouts, 73 Grok sessions — except Pi's, which follows the CLI's own format documentation and marks the shapes it could not measure `unverified`. |
 
 The manager UI can evolve; remote execution and credentials stay on the host.
 

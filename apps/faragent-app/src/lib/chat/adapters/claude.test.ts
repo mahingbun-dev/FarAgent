@@ -20,6 +20,7 @@ import { frameLines, parseRecord } from "../transcript.ts";
 import { transcriptJsonl } from "../../mock/fixtures.ts";
 import { adapt } from "./claude.ts";
 import { adapterFor } from "./index.ts";
+import { AGENTS, type AgentKind } from "../../agents.ts";
 
 type Rec = Record<string, unknown>;
 
@@ -424,11 +425,25 @@ test("adapterFor returns the Claude adapter for claude", () => {
   assert.equal(adapterFor("claude"), adapt);
 });
 
-test("adapterFor returns null for every agent without an adapter yet", () => {
-  // `null` is what tells the caller to keep showing the terminal.
-  for (const agent of ["codex", "grok", "pi"] as const) {
-    assert.equal(adapterFor(agent), null, `${agent} must have no chat view yet`);
+test("every agent has an adapter, and each one is its own function", () => {
+  // This used to assert the opposite for Codex, Grok and Pi, which had no chat
+  // view at all. Each adapter has its own suite; what is checked here is only
+  // that the registry wires all four up and has not wired one to another's
+  // records.
+  const seen = new Set<unknown>();
+  for (const agent of AGENTS) {
+    const found = adapterFor(agent);
+    assert.notEqual(found, null, `${agent} must have a chat view`);
+    assert.ok(!seen.has(found), `${agent} must not share another agent's adapter`);
+    seen.add(found);
   }
+});
+
+test("adapterFor is still null for an agent the model has not been taught", () => {
+  // `null` is what tells the caller to keep showing the terminal, and that has
+  // to survive an agent being added to the union before its records are
+  // understood — which is how Pi first shipped, and how the next one will.
+  assert.equal(adapterFor("nova" as AgentKind), null);
 });
 
 // ---------------------------------------------------------------------------

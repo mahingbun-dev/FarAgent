@@ -239,10 +239,13 @@ test("the session fixture groups into workspaces the rail can render", () => {
   );
 });
 
-test("only the Claude session rows carry a transcript path", () => {
-  // The transcript path is Claude's (`~/.claude/projects/…`); stamping it onto a
-  // Codex or Grok row would be a lie the app would then try to tail. And at
-  // least one Claude row must carry it, or the tail has no fixture to reach.
+test("each agent's session rows carry a path in that agent's own layout", () => {
+  // A transcript path is not a property of a row: Claude files by project slug,
+  // Codex by date, Grok under a percent-encoded cwd. Stamping Claude's path onto
+  // a Codex row would be a lie the app would then try to tail — which is what
+  // this test used to guard — but so would leaving every non-Claude row
+  // transcript-less now that all four agents have a conversation view, because
+  // then three of the four adapters could not be walked in a browser at all.
   const withPath = fx.listSessions("claude").filter((s) => s.transcript);
   // Three seeded rows: the parser's small transcript, the renderer's long one,
   // and the empty one the honest-empty-state branch is reachable through.
@@ -253,15 +256,31 @@ test("only the Claude session rows carry a transcript path", () => {
       HELPER_FIXTURES.longTranscript,
       HELPER_FIXTURES.transcript,
     ].sort(),
-    "exactly the three seeded rows point at a transcript",
+    "exactly the three seeded Claude rows point at a transcript",
   );
 
-  for (const agent of ["codex", "grok", "pi"] as const) {
-    assert.ok(
-      fx.listSessions(agent).every((s) => !s.transcript),
-      `${agent} rows must not point at a Claude transcript`,
-    );
-  }
+  // One row per other agent: the same first session, in that agent's layout.
+  assert.deepEqual(
+    fx
+      .listSessions("codex")
+      .filter((s) => s.transcript)
+      .map((s) => s.transcript),
+    [HELPER_FIXTURES.codexTranscript],
+  );
+  assert.deepEqual(
+    fx
+      .listSessions("grok")
+      .filter((s) => s.transcript)
+      .map((s) => s.transcript),
+    [HELPER_FIXTURES.grokTranscript],
+  );
+  assert.deepEqual(
+    fx
+      .listSessions("pi")
+      .filter((s) => s.transcript)
+      .map((s) => s.transcript),
+    [HELPER_FIXTURES.piTranscript],
+  );
 });
 
 /**

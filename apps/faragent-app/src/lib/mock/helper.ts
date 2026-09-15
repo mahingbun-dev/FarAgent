@@ -34,10 +34,16 @@ import type { Diagnosis } from "../ipc.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
 import type { MockHandler } from "./handlers.ts";
 import {
+  CODEX_TRANSCRIPT_PATH,
   EMPTY_TRANSCRIPT_PATH,
+  GROK_TRANSCRIPT_PATH,
   LONG_TRANSCRIPT_PATH,
+  PI_TRANSCRIPT_PATH,
   TRANSCRIPT_PATH,
+  codexTranscriptJsonl,
+  grokTranscriptJsonl,
   longTranscriptJsonl,
+  piTranscriptJsonl,
   transcriptJsonl,
 } from "./fixtures.ts";
 
@@ -570,6 +576,17 @@ function seedFilesystem(): void {
   // written nothing yet. The conversation view has to name that state rather
   // than draw a blank pane, and this is what makes it reachable in a browser.
   addFile(EMPTY_TRANSCRIPT_PATH, () => new Uint8Array());
+
+  // --- and the same first session as the other three agents file it, so the
+  // conversation view can be walked end-to-end through *their* adapters too.
+  // One conversation in four record shapes: switching the rail's agent shows
+  // the same turns, which is what makes an adapter's mistake visible as a
+  // difference rather than as silence. Pi's is the odd one out — assembled from
+  // its format documentation, since no Pi session could be read; see
+  // `piTranscriptJsonl`.
+  addFile(CODEX_TRANSCRIPT_PATH, () => textBytes(codexTranscriptJsonl()));
+  addFile(GROK_TRANSCRIPT_PATH, () => textBytes(grokTranscriptJsonl()));
+  addFile(PI_TRANSCRIPT_PATH, () => textBytes(piTranscriptJsonl()));
 
   // --- a loose scratch cwd: no repository above it all the way to `/`, which
   // is what makes the Git tab's "not a repository" state reachable from a real
@@ -1515,4 +1532,8 @@ export const HELPER_FIXTURES = {
   longTranscript: LONG_TRANSCRIPT_PATH,
   /** A session whose conversation file exists and holds no records yet. */
   emptyTranscript: EMPTY_TRANSCRIPT_PATH,
+  /** The same conversation as `transcript`, in each other agent's layout. */
+  codexTranscript: CODEX_TRANSCRIPT_PATH,
+  grokTranscript: GROK_TRANSCRIPT_PATH,
+  piTranscript: PI_TRANSCRIPT_PATH,
 } as const;
