@@ -10,7 +10,8 @@
  *
  * So the tests are written as the two halves of that claim:
  *
- * - the **counts** are right (only top-level user turns, matched exactly), and
+ * - the **counts** are right (only top-level user turns, and only ones that are
+ *   the same message — see the whitespace and slash-verb cases below), and
  * - the **rows** are right: for a sent message, `items` plus the surviving
  *   echoes name it exactly once, both before and after the transcript catches
  *   up.
@@ -25,6 +26,8 @@ import {
   absorb,
   echoItem,
   echoItems,
+  matchKey,
+  sameMessage,
   seenFor,
   transcriptCount,
   type PendingEcho,
@@ -155,6 +158,62 @@ test("two sends of the same text wait for two records", () => {
   const two = [user("status?"), user("status?")];
   assert.deepEqual(absorb(inFlight, two), []);
   assert.equal(countText(drawn(two, inFlight), "status?"), 2);
+});
+
+// ------------------------------------------- the record is not always verbatim
+
+test("a record that differs only in whitespace is still that message", () => {
+  // The differences a real remote introduces without meaning to: a line buffer
+  // trims trailing spaces, a paste's CRLF can arrive as LF, and a message typed
+  // across lines can be recorded with its newlines collapsed. Each of them used
+  // to leave the echo on screen beside the record — a guaranteed duplicate for
+  // the plainest of sends.
+  assert.equal(
+    transcriptCount([user("why is the rail empty?")], "why is the rail empty? "),
+    1,
+    "the line buffer ate the trailing space",
+  );
+  assert.deepEqual(absorb([echo("why is the rail empty? ")], [user("why is the rail empty?")]), []);
+
+  assert.equal(transcriptCount([user("first\nsecond")], "first\r\nsecond"), 1, "CRLF arrived as LF");
+  assert.equal(
+    transcriptCount([user("first second")], "first\n\n  second"),
+    1,
+    "the newlines were collapsed",
+  );
+
+  const pending = [echo("first\r\nsecond")];
+  assert.deepEqual(absorb(pending, [user("first\nsecond")]), []);
+});
+
+test("a slash command is absorbed by the record that kept only its verb", () => {
+  // A TUI parses a slash command's argument for itself, so what reaches the
+  // transcript is `/compact` where the reader typed `/compact focus on tests`.
+  // Without this rule the completion path is a *guaranteed* duplicate.
+  assert.equal(sameMessage("/compact focus on tests", "/compact"), true);
+  assert.equal(sameMessage("/compact", "/compact focus on tests"), true);
+  assert.equal(sameMessage("/clear", "/clear everything"), true);
+  assert.equal(sameMessage("/compact focus on tests", "/clear"), false, "a different command");
+
+  // Bounded: the rule needs a slash line on both sides, so it can never absorb a
+  // sentence — which is what makes it safe to have at all.
+  assert.equal(sameMessage("/compact focus on tests", "compact focus on tests"), false);
+  assert.equal(sameMessage("run the tests", "/run the tests"), false);
+
+  const pending = [echo("/compact focus on tests")];
+  assert.deepEqual(absorb(pending, [user("/compact")]), [], "absorbed by the verb alone");
+  assert.equal(absorb(pending, [user("/clear")]).length, 1, "a different command absorbs nothing");
+});
+
+test("an empty message matches nothing, and normalising is not case-folding", () => {
+  assert.equal(matchKey("  \n\t "), "");
+  assert.equal(sameMessage("", ""), false);
+  assert.equal(sameMessage("   ", "\n"), false);
+  // Two messages that differ in case or punctuation are two messages: folding
+  // them would make an edit look like the same send, which is the silently
+  // swallowed line this module keeps choosing against.
+  assert.equal(sameMessage("Hello", "hello"), false);
+  assert.equal(sameMessage("hi!", "hi"), false);
 });
 
 // -------------------------------------------------------------- what is drawn

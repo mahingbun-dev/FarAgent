@@ -144,6 +144,26 @@ function echoToTerminal(session: MockAttach, line: string): void {
 }
 
 /**
+ * The line as the *agent* writes it down, which is not quite the line as it was
+ * typed.
+ *
+ * A TUI's line buffer submits without trailing spaces, and a slash command is
+ * recorded as its verb — the argument is parsed out by the TUI and never reaches
+ * the transcript. Both are real differences between what the reader typed and
+ * what the record holds, and the echo model has to tolerate them (see
+ * `lib/chat/echo.ts`); the mock reproduces them so that tolerance is exercised
+ * in a browser and not only in a unit test. A multi-line submission is left
+ * whole: this buffer submits on CR, so its interior LFs are part of the one
+ * message.
+ */
+function recordText(line: string): string {
+  const trimmed = line.replace(/[ \t]+$/, "");
+  if (trimmed.includes("\n") || !trimmed.startsWith("/")) return trimmed;
+  const space = trimmed.indexOf(" ");
+  return space === -1 ? trimmed : trimmed.slice(0, space);
+}
+
+/**
  * One submitted line: answer it in the terminal, and let the agent write it down.
  *
  * A line is echoed whether or not it belongs to a session with a transcript —
@@ -155,8 +175,9 @@ function submit(session: MockAttach, line: string): void {
   if (line !== "") echoToTerminal(session, line);
   const target = fx.transcriptForSpec(session.spec);
   if (target === null) return;
+  const record = recordText(line);
   setTimeout(() => {
-    if (!appendFile(target.path, fx.userTurnJsonl(target.sessionId, line, atSeconds()))) {
+    if (!appendFile(target.path, fx.userTurnJsonl(target.sessionId, record, atSeconds()))) {
       return;
     }
     // The write is only half of it: a tailable transcript is one whose directory

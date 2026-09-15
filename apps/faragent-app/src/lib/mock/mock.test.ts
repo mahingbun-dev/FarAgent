@@ -468,9 +468,39 @@ test("a line typed into an attach is echoed back and lands in the session's tran
   };
   assert.equal(record.type, "user");
   assert.equal(record.message?.role, "user");
-  // Verbatim, including the `?`: the composer's echo matches the record by its
-  // text, so a mock that decorated the line would leave every send doubled.
+  // Verbatim, including the `?`. The record is the line as an agent would write
+  // it down — trailing spaces trimmed, a slash command reduced to its verb — but
+  // nothing else, and a mock that decorated the text would leave every send
+  // doubled.
   assert.equal(record.message?.content, "why is the rail empty?");
+
+  await ipc.attachClose(id);
+});
+
+test("the mock records a slash command the way a TUI does: the verb, not the argument", async () => {
+  // A real TUI parses a slash command's argument out for itself, so what reaches
+  // the transcript is `/compact` where the reader typed `/compact focus on
+  // tests`. The echo model has to tolerate exactly that difference (`sameMessage`
+  // in lib/chat/echo.ts), and this is the half of it a browser cannot show
+  // without a remote that behaves this way.
+  const channel = new Channel<AttachEvent>();
+  const spec = {
+    kind: "tmux",
+    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION),
+  } as const;
+  const id = await ipc.attachOpen({ host: HOST, spec, cols: 80, rows: 24, onEvent: channel });
+
+  // The trailing space is part of the point: a line buffer eats it too.
+  await ipc.attachWrite(
+    id,
+    bytesToB64(new TextEncoder().encode("/compact focus on tests \r")),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  const written = await readThroughHelper(HOST, HELPER_FIXTURES.emptyTranscript);
+  const last = written.trim().split("\n").pop() ?? "{}";
+  const record = JSON.parse(last) as { message?: { content?: unknown } };
+  assert.equal(record.message?.content, "/compact");
 
   await ipc.attachClose(id);
 });
