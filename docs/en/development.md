@@ -142,7 +142,16 @@ Do not add without a separate plan:
 
 ## Release sketch
 
-Tagged releases build on GitHub Actions (ubuntu/macos/windows) and attach per-OS archives; `cargo install --path crates/faragent-cli` still works. `tmux.conf` on a POSIX remote is rewritten from the embedded template on each start.
+Tagged releases build on GitHub Actions and attach two independent sets of artifacts:
+
+- the **command-line binary** per platform (linux x86_64, macOS arm64 and x86_64, Windows x86_64), as before;
+- the **desktop installers** from `apps/faragent-app` — `.dmg` (macOS arm64), `.AppImage` and `.deb` (linux x86_64), and an `nsis` `.exe` (Windows x86_64).
+
+The desktop bundle carries the `faragent-helper` binary for **all five** remote platforms, not just its own: the app talks to whatever host you point it at, so a bundle missing one leaves that host unusable — and it would fail at use, not at build. No single runner can build all five (Apple targets need a macOS host, MSVC needs Windows), so the workflow builds them on three runners and merges the trees. See the `helper` and `app` jobs in `.github/workflows/release.yml`, and `scripts/build-helper.sh`, which skips a platform it cannot build with a printed reason rather than failing.
+
+The installers are **unsigned**. macOS quarantines a downloaded `.dmg` and refuses the first open until the reader right-clicks and chooses Open; Windows shows a SmartScreen warning. Signing and notarising is a later step and needs an Apple Developer account.
+
+`cargo install --path crates/faragent-cli` still works. The workflow also takes a manual dispatch, which builds everything and stops before the Release step — the artifacts land in that run — so the packaging can be checked without cutting a tag. `tmux.conf` on a POSIX remote is rewritten from the embedded template on each start.
 
 ## License
 

@@ -142,7 +142,16 @@ Windows 客户端没有 ControlMaster（Win32 OpenSSH）：`ssh::mux_capable()` 
 
 ## 发布
 
-打 tag 后由 GitHub Actions（ubuntu/macos/windows）出各平台产物并附到 Release；`cargo install --path crates/faragent-cli` 依旧可用。POSIX 远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
+打 tag 后由 GitHub Actions 出两组互不相干的产物：
+
+- **命令行二进制**，各平台一份（linux x86_64、macOS arm64 与 x86_64、Windows x86_64），和以前一样；
+- **桌面安装包**，来自 `apps/faragent-app`：`.dmg`（macOS arm64）、`.AppImage` 与 `.deb`（linux x86_64）、`nsis` 的 `.exe`（Windows x86_64）。
+
+桌面安装包里带的是**全部五个**远端平台的 `faragent-helper`，不只是它自己那个：应用连的是你指向的那台主机，少带一个就等于那类主机用不了——而且失败会发生在使用时，不在打包时。没有任何一台 runner 能造齐五个（Apple 目标要 macOS 主机，MSVC 要 Windows），所以 workflow 在三条 runner 上分别构建再合并。见 `.github/workflows/release.yml` 的 `helper` 与 `app` 两个 job，以及 `scripts/build-helper.sh`——它造不了的平台是「跳过并打印原因」，不是失败。
+
+安装包**没有签名**。macOS 会把下载来的 `.dmg` 标记隔离并拒绝首次打开，除非用户右键选「打开」；Windows 会弹 SmartScreen 警告。签名与公证是后面的事，需要 Apple 开发者账号。
+
+`cargo install --path crates/faragent-cli` 依旧可用。workflow 也支持手动触发：它会把所有产物构建出来、但在 Release 那一步之前停下（产物留在该次 run 里），所以不打 tag 也能验证打包。POSIX 远程的 `tmux.conf` 每次 start 都会用嵌入模板覆盖。
 
 ## 许可证
 

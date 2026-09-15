@@ -1,15 +1,20 @@
-# Release：推送 v* tag 时跨平台构建二进制并创建 GitHub Release
-# 发版：git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+# Release：推送 v* tag 时跨平台构建二进制与桌面安装包，并创建 GitHub Release
+# 发版：git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+#
+# 也可以手动触发（workflow_dispatch）：那时只跑构建、不建 Release，产物留在该次
+# run 的 Artifacts 里 —— 用来验证打包链路，不必先打一个 tag。
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write   # 创建 Release 并上传产物
 
 jobs:
+  # --- 命令行二进制。与桌面应用是两条独立的线，互不依赖。 ---
   build:
     strategy:
       fail-fast: false
@@ -54,8 +59,133 @@ jobs:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
 
+  # --- helper 二进制。桌面安装包要把五个平台的 helper 全带上（它连的是各种远端），
+  # 而没有任何一台 runner 能造齐五个：Apple 目标只在 macOS、MSVC 只在 Windows。
+  # 所以矩阵按 runner 分工，产物靠 merge-multiple 汇到一棵树里 —— 见下面 app 的
+  # download 步骤。造不了的平台由脚本「跳过并打印原因」，不是失败。
+  helper:
+    name: helper (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platforms: "--platform linux-x86_64 --platform linux-aarch64"
+            targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+            zig: true
+          - os: macos-latest
+            platforms: "--platform darwin-arm64 --platform darwin-x86_64"
+            targets: x86_64-apple-darwin
+            zig: false
+          - os: windows-latest
+            platforms: "--platform windows-x86_64"
+            targets: ""
+            zig: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Add cross targets
+        if: matrix.targets != ''
+        shell: bash
+        run: rustup target add ${{ matrix.targets }}
+
+      # Linux 目标用 musl 静态链接，需要 zig 当链接器。
+      - uses: goto-bus-stop/setup-zig@v2
+        if: matrix.zig
+
+      - name: Install cargo-zigbuild
+        if: matrix.zig
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build helper artifacts
+        shell: bash
+        run: bash scripts/build-helper.sh ${{ matrix.platforms }}
+
+      # 每个平台一个子目录，artifact 保留这层结构；app 那边 merge-multiple 下载
+      # 之后就正好是 resources/helper/<platform>/faragent-helper。
+      - name: Upload helper artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: faragent-helper-${{ matrix.os }}
+          path: apps/faragent-app/src-tauri/resources/helper/*/
+          if-no-files-found: error
+
+  # --- 桌面安装包。 ---
+  app:
+    name: app (${{ matrix.os }})
+    needs: helper
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            bundles: dmg
+          - os: ubuntu-latest
+            bundles: appimage,deb
+          - os: windows-latest
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 构建产物落在 workspace 根的 target/（Cargo 的共享 target 目录），不是
+      # apps/faragent-app/src-tauri/target/ —— 下面的上传路径按前者写。
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/faragent-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/faragent-app
+        run: npm ci
+
+      # 五个平台的 helper 全都要在包里，一个都不能少：少了哪个，装了这款应用的
+      # 人就连不上那一类远端，而失败会发生在使用时、不在打包时。
+      - name: Fetch the helper binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: faragent-helper-*
+          merge-multiple: true
+          path: apps/faragent-app/src-tauri/resources/helper
+
+      - name: Install the Linux WebKit dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Build the desktop bundle
+        working-directory: apps/faragent-app
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Upload the installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: faragent-app-${{ matrix.os }}
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  # --- 把两边的产物汇成一个 Release。
   release:
-    needs: build
+    # 手动触发时不建 Release：那时 GITHUB_REF_NAME 是分支名，会造出一个叫
+    # "main" 的版本。
+    if: github.event_name == 'push'
+    needs: [build, app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
