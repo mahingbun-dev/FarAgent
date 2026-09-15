@@ -202,10 +202,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # 这个作业不 checkout —— 它不需要源码，只要下载下来的产物 —— 于是工作目录
+      # 里没有 `.git`，而 `gh` 默认就是靠它推断"这是哪个仓库"的。它报
+      # `fatal: not a git repository`，退出码 1，Release 一个都没建。v0.1.0 的
+      # 发布就是这么失败的，而且两个月没人发现，因为那次失败什么都没弄坏 ——
+      # 只是没有下载页而已。`--repo` 把这件事说明白，比补一个 checkout 少一步。
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --generate-notes \
-          || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          || gh release upload "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
