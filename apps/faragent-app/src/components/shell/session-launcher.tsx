@@ -26,7 +26,7 @@ import { useProbe, useSessions } from "@/components/shell/use-shell-data";
 import { asDiagnosis, errorMessage, ipc } from "@/lib/ipc";
 import type { AgentKind, Session } from "@/lib/ipc";
 import { AGENT_TITLES, tmuxName } from "@/lib/agents";
-import { claudeTranscriptPath } from "@/lib/chat/transcript-path";
+import { transcriptPathFor } from "@/lib/chat/transcript-path";
 import { sessionTabKey } from "@/lib/tab-keys";
 import { useStore, useT } from "@/state";
 
@@ -155,11 +155,16 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
         // the path is derived from the id the launch pinned (see
         // `lib/chat/transcript-path.ts`); until the file lands, the tail waits
         // on it rather than failing (see `lib/chat/transcript.ts`).
+        //
+        // Which agents can answer that at all is the dispatcher's business, not
+        // this call site's: it returns `null` for Codex and Pi, whose CLI picks
+        // its own id. Spelling the agent list out here is what kept the rule
+        // from applying to any agent but Claude.
         const transcript =
           resume !== null
             ? resume.transcript ?? null
-            : launched.session_id !== null && agent === "claude"
-              ? claudeTranscriptPath(launched.session_id, cwd, home, os)
+            : launched.session_id !== null
+              ? transcriptPathFor(agent, launched.session_id, cwd, home, os)
               : null;
         attach(hostAlias, agent, resume, launched.name, cwd, transcript);
         void qc.invalidateQueries({ queryKey: ["sessions", hostAlias, agent, os] });
