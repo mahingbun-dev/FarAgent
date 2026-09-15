@@ -23,9 +23,26 @@ Records are filed by date, **not under a cwd**. Top-level `type` is one of `sess
 
 Three measured facts drive the adapter:
 
-1. **The same text is written twice.** Once in `event_msg` `payload.type === "item_completed"` (as `payload.item.type` `UserMessage` / `AgentMessage`) and once in the `response_item` that follows it. Verified record by record. The adapter reads **`response_item` only**; reading both renders every message twice.
-2. **Thinking is not renderable.** Every measured `reasoning` record has `summary: []` and `content: null`; the body exists only as `encrypted_content`. The adapter therefore emits no `ThinkingEvent`. This is a finding, not an omission, and it belongs in the module doc so it is not "fixed" later by guessing at a summary field.
+1. **The same text is written twice.** Once in `event_msg` `payload.type === "item_completed"` (as `payload.item.type` `UserMessage` / `AgentMessage`, with block type spelled `Text` rather than `output_text`) and once in the `response_item` that follows it, verbatim. The adapter reads **`response_item` only**; reading both renders every message twice. The converse is also a real state and is tested: a record whose `item_completed` has landed but whose `response_item` has not yet yields **no** event, because no code path reads `event_msg`.
+2. **Thinking is readable, and the field that carries it moved.** A first look at April 2026 records found every `reasoning` with `summary: []` and `content: null`, which reads as "the body is only ever encrypted". That shape is real but it is the **older** one, and generalising from it was wrong. Across all 511 rollouts on this machine (5,606 `reasoning` records):
+
+   | `summary` | `content` | count | when |
+   | --- | --- | --- | --- |
+   | `[]` | `null` | 162 | April 2026 only |
+   | `[]` | `[{type: "reasoning_text", text}]` | 2,294 | June 2026 on |
+   | `[{type: "summary_text", text}]` | `null` | 3,150 | June 2026 on |
+
+   **97% carry readable prose.** The adapter therefore reads `content`'s `reasoning_text` blocks, falling back to `summary`'s `summary_text` blocks, and emits a `ThinkingEvent` for whichever holds text. The two fields never both held text in the measured corpus, but the fallback order is written down rather than assumed away — a future change to either spelling should degrade to a missing row, not a crash or a duplicate.
 3. **`arguments` is a string.** Unlike Claude's `tool_use.input`, which is already an object. `ToolEvent.input` is typed `unknown` and `events.ts` promises it is kept verbatim as the adapter found it, so it is passed through unparsed.
+
+Four more measured facts shape the rest of the adapter:
+
+4. **`message.role` has a third value, `developer`** (181 records), carrying permission and skill instructions. `ChatEvent` has exactly two roles, and folding these into either would misreport who spoke, so they are dropped — deliberately, and the module says so.
+5. **A record has no `uuid`**, unlike Claude's. It has a top-level `ordinal` (61,982 records, unique and monotonic) and that is what names an event: `loadEarlier` prepends records, so an array index would drift and remount the whole list.
+6. **`response_item` carries payload types the model does not draw** — `custom_tool_call`, `custom_tool_call_output`, `web_search_call`, `tool_search_call`, `tool_search_output` were all measured. Unrecognised means skipped, as in `claude.ts`.
+7. **`function_call_output` has no error signal.** Measured records hold `{call_id, output}` and, sometimes, `id`. The nearest thing to a failure is an `exit_code` *inside* the `output` JSON string, which is not read because `output` is passed through verbatim. `isError` is therefore the conservative `false`, marked `unverified` at the field.
+
+An opening `user` message in every rollout is `# AGENTS.md instructions` followed by `<environment_context>` — injected context rather than something the reader typed. The adapter passes them through as ordinary user turns; whether to fold them is a renderer question and is left to the renderer.
 
 ### Grok — `~/.grok/sessions/<percent-encoded-cwd>/<uuid>/chat_history.jsonl`
 
@@ -64,7 +81,7 @@ Pi 0.73.0 is installed locally (`/opt/homebrew/bin/pi`) and ships `docs/session-
 | Codex | `response_item/message`, role assistant, `output_text` blocks | `MessageEvent{role:"assistant"}` |
 | Codex | `response_item/function_call` | `ToolEvent{id: call_id, input: arguments verbatim}` |
 | Codex | `response_item/function_call_output` | fills `ToolEvent.result` |
-| Codex | `response_item/reasoning` | **nothing** (see above) |
+| Codex | `response_item/reasoning`, text from `content`'s `reasoning_text` or `summary`'s `summary_text` | `ThinkingEvent` |
 | Grok | `user`, text blocks | `MessageEvent{role:"user"}` |
 | Grok | `assistant.content` | `MessageEvent{role:"assistant"}` |
 | Grok | `assistant.tool_calls[]` | `ToolEvent{id: tool_calls[].id, input: arguments verbatim}` |
@@ -117,4 +134,4 @@ The adapters are pure functions over parsed records, exercised by `node --test` 
 
 ## Out of scope
 
-Windows remotes (the framed helper channel is POSIX-only, so no chat view exists there for any agent), a chat view for an agent whose transcript cannot be read, rendering Codex reasoning that is only ever encrypted, and back-filling a Codex or Pi new session's path by scanning for the CLI's chosen id.
+Windows remotes (the framed helper channel is POSIX-only, so no chat view exists there for any agent), a chat view for an agent whose transcript cannot be read, folding Codex's injected `AGENTS.md` / `<environment_context>` preamble at the adapter rather than the renderer, and back-filling a Codex or Pi new session's path by scanning for the CLI's chosen id.

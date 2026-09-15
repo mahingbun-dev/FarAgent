@@ -124,10 +124,12 @@ git add -A && git commit -m "app: dispatch a new session's transcript path per a
 
 Read the spec's Codex section before writing. The load-bearing decisions, all measured:
 
-- Read **`response_item` only**. `event_msg` repeats the same text; reading both doubles every message. Test this explicitly — a fixture containing both spellings must yield exactly one event per message.
-- `reasoning` emits **nothing**. Measured `summary: []`, `content: null`, body encrypted. Say so in the module doc.
+- Read **`response_item` only**. `event_msg` repeats the same text; reading both doubles every message. Test this explicitly — a fixture containing both spellings must yield exactly one event per message, and a fixture holding only the `event_msg` half must yield none.
+- `reasoning` becomes a `ThinkingEvent`, with the text taken from `content`'s `reasoning_text` blocks and `summary`'s `summary_text` blocks as the fallback. The corpus is 97% readable and the readable field moved in June 2026 — see the spec's table, and put that table (not a one-line claim) in the module doc.
+- `message.role` has a third value, `developer`, which is dropped: `ChatEvent` has two roles and folding these into either would misreport who spoke.
+- Name events by the record's `ordinal`, not its array index — `loadEarlier` prepends records and would drift an index.
 - `function_call.arguments` is a JSON **string**, passed to `ToolEvent.input` verbatim, unparsed.
-- `call_id` is both the event id and the pairing key for `function_call_output`.
+- `call_id` is both the event id and the pairing key for `function_call_output`. There is no error signal in that record, so `isError` is the conservative `false`, marked `unverified`.
 - `sidechain` is always `false`; there is no flag in the record.
 
 - [ ] **Step 1: Write the failing tests**
@@ -242,7 +244,7 @@ git add -A && git commit -m "remote: read Pi's cwd from its session header, not 
 
 - [ ] **Step 1:** *Adding an agent* gains a step 5 — register a chat adapter — and a sentence that `may_accept_session_id` decides whether a new session's transcript path is knowable at launch.
 - [ ] **Step 2:** roadmap: mark whatever this work completes. Read the file first; do not invent entries.
-- [ ] **Step 3:** user-guide: the "which agents have a conversation view" text goes from Claude-only to all four, and says that Codex's reasoning is encrypted and therefore not shown.
+- [ ] **Step 3:** user-guide: the "which agents have a conversation view" text goes from Claude-only to all four.
 - [ ] **Step 4:** both languages, same meaning. `localized-text`-style drift between zh and en is the failure mode here.
 
 ---
