@@ -174,8 +174,9 @@ interface SessionSeed {
   scheduled?: boolean;
   /**
    * The conversation file the row points at, when the list carried one. Only the
-   * first Claude row sets it, so a session with no transcript (the common case:
-   * a tmux- or process-only row) is also reachable in the fixture.
+   * first row sets it — a session with no transcript at all (the common case: a
+   * tmux- or process-only row) has to stay reachable in the fixture too — and
+   * `seedTranscript` decides which agent's path that becomes.
    */
   transcript?: string;
 }
@@ -210,6 +211,26 @@ export const TRANSCRIPT_PATH =
  */
 export const EMPTY_TRANSCRIPT_PATH =
   "/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk3idle.jsonl";
+
+/**
+ * The same first session, in each other agent's own layout.
+ *
+ * A transcript path is not a property of a row. Claude files by project slug,
+ * Codex by date, Grok under a percent-encoded cwd, Pi under a `--`-wrapped one —
+ * so each agent needs its own path, and its own records behind it. Without both,
+ * the conversation view can only be walked end-to-end for Claude, which is
+ * exactly the gap this file used to have: `listSessions` stripped the path from
+ * every non-Claude row on the reasoning that "the row that has one is a Claude
+ * row", and that stopped being true when the other three adapters landed.
+ */
+export const CODEX_TRANSCRIPT_PATH =
+  "/home/deploy/.codex/sessions/2026/09/14/rollout-2026-09-14T09-00-00-01H8ZQk1live.jsonl";
+
+export const GROK_TRANSCRIPT_PATH =
+  "/home/deploy/.grok/sessions/%2Fsrv%2Fapp%2Ffaragent/01H8ZQk1live/chat_history.jsonl";
+
+export const PI_TRANSCRIPT_PATH =
+  "/home/deploy/.pi/agent/sessions/--srv-app-faragent--/2026-09-14T09-00-00-000Z_01H8ZQk1live.jsonl";
 
 export function transcriptJsonl(): string {
   const session = "01H8ZQk1live";
@@ -323,6 +344,299 @@ export function transcriptJsonl(): string {
     },
   ];
   return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+}
+
+/**
+ * The same conversation as `transcriptJsonl`, in Codex's record shapes.
+ *
+ * The turns are deliberately identical across the four fixtures, so switching
+ * the rail between agents shows one conversation rather than four unrelated
+ * ones — which is also what makes a mistake in one adapter show up as a
+ * *difference* against the other three.
+ *
+ * Two things here exist to catch a specific mistake rather than to look
+ * realistic: the opening user turn is written **twice** (as `event_msg`'s
+ * `UserMessage` item, then as the `response_item` that follows it), which is
+ * what a real rollout does and what a reader that draws both would double; and
+ * the `reasoning` record carries its body in `content`, the spelling that
+ * replaced the older `summary` one and the one 97% of a real corpus uses.
+ */
+export function codexTranscriptJsonl(): string {
+  const t = (n: number): string =>
+    new Date(Date.UTC(2026, 8, 14, 9, 0, n)).toISOString();
+  const session = "01H8ZQk1live";
+  const userText = "Why does the attach lease key on the tab id and not the slot?";
+  const records: unknown[] = [
+    {
+      timestamp: t(0),
+      ordinal: 0,
+      type: "session_meta",
+      payload: {
+        session_id: session,
+        id: session,
+        timestamp: t(0),
+        cwd: "/srv/app/faragent",
+        originator: "codex_cli",
+        cli_version: "0.28.0",
+      },
+    },
+    {
+      timestamp: t(1),
+      ordinal: 1,
+      type: "event_msg",
+      payload: {
+        type: "item_completed",
+        thread_id: session,
+        turn_id: "rollout-1",
+        item: { type: "UserMessage", id: "item-1", content: [{ type: "Text", text: userText }] },
+      },
+    },
+    {
+      timestamp: t(1),
+      ordinal: 2,
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text: userText }] },
+    },
+    {
+      timestamp: t(2),
+      ordinal: 3,
+      type: "response_item",
+      payload: {
+        type: "reasoning",
+        summary: [],
+        content: [{ type: "reasoning_text", text: "The reader is asking what makes the lease key stable." }],
+        encrypted_content: "gAAAAA…",
+      },
+    },
+    {
+      timestamp: t(3),
+      ordinal: 4,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Let me read the lease module first." }],
+      },
+    },
+    {
+      timestamp: t(4),
+      ordinal: 5,
+      type: "response_item",
+      // An arguments value is a JSON *string* in this format, unlike Claude's
+      // already-parsed `tool_use.input`.
+      payload: {
+        type: "function_call",
+        name: "shell",
+        arguments: JSON.stringify({
+          command: ["bash", "-lc", "sed -n '1,40p' src/lib/attach-lease.ts"],
+          workdir: "/srv/app/faragent",
+        }),
+        call_id: "call_01H8ZQk1a",
+      },
+    },
+    {
+      timestamp: t(5),
+      ordinal: 6,
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call_01H8ZQk1a",
+        output: JSON.stringify({
+          output: "18→export function attachLease(tabId: string): Lease {\n",
+          metadata: { exit_code: 0 },
+        }),
+      },
+    },
+    {
+      timestamp: t(6),
+      ordinal: 7,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "A slot can be handed to a different tab, so the slot id is not stable enough to own the lease; the tab id is.",
+          },
+        ],
+      },
+    },
+  ];
+  return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+}
+
+/**
+ * The same conversation in Grok's record shapes.
+ *
+ * Grok writes the assistant's prose as a **bare string** with its tool calls in
+ * a separate `tool_calls` array, keeps reasoning in `summary` parts rather than
+ * a `content` block, and puts no timestamp on anything — all four measured, and
+ * all four a different answer from the two adapters above. The `system` record
+ * is here because every real session opens with the system prompt and it must
+ * not be drawn as a turn.
+ */
+export function grokTranscriptJsonl(): string {
+  const records: unknown[] = [
+    { type: "system", content: "You are Grok 4.6 released by xAI." },
+    {
+      type: "user",
+      content: [{ type: "text", text: "Why does the attach lease key on the tab id and not the slot?" }],
+    },
+    {
+      type: "reasoning",
+      id: "rs_01H8ZQk1a",
+      summary: [{ type: "summary_text", text: "The reader is asking what makes the lease key stable." }],
+      encrypted_content: "Vh3p1X9n…",
+      status: "ok",
+    },
+    {
+      type: "assistant",
+      content: "Let me read the lease module first.",
+      tool_calls: [
+        {
+          id: "call-01H8ZQk1a-0",
+          name: "read_file",
+          arguments: JSON.stringify({ target_file: "/srv/app/faragent/src/lib/attach-lease.ts" }),
+        },
+      ],
+      model_id: "grok-4.6",
+    },
+    {
+      type: "tool_result",
+      tool_call_id: "call-01H8ZQk1a-0",
+      content: "18→export function attachLease(tabId: string): Lease {\n",
+    },
+    {
+      type: "assistant",
+      content:
+        "A slot can be handed to a different tab, so the slot id is not stable enough to own the lease; the tab id is.",
+      tool_calls: [],
+      model_id: "grok-4.6",
+    },
+  ];
+  return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+}
+
+/**
+ * The same conversation in Pi's record shapes — **from its documentation, not
+ * from a session**.
+ *
+ * Unlike the three above, no Pi session was available to read while this was
+ * built (see `chat/adapters/pi.ts` for why), so this fixture is assembled from
+ * `docs/session-format.md` inside the Pi package. It is enough to walk the
+ * conversation view end-to-end through Pi's adapter and to keep that path from
+ * rotting; it is **not** evidence that Pi writes this, and it should be the
+ * first thing replaced when a real session can be read.
+ */
+export function piTranscriptJsonl(): string {
+  const t = (n: number): string =>
+    new Date(Date.UTC(2026, 8, 14, 9, 0, n)).toISOString();
+  const records: unknown[] = [
+    {
+      type: "session",
+      version: 3,
+      id: "01H8ZQk1live",
+      timestamp: t(0),
+      cwd: "/srv/app/faragent",
+    },
+    {
+      type: "message",
+      id: "a1b2c3d4",
+      parentId: null,
+      timestamp: t(1),
+      message: {
+        role: "user",
+        content: "Why does the attach lease key on the tab id and not the slot?",
+        timestamp: Date.UTC(2026, 8, 14, 9, 0, 1),
+      },
+    },
+    {
+      type: "message",
+      id: "b2c3d4e5",
+      parentId: "a1b2c3d4",
+      timestamp: t(2),
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "The reader is asking what makes the lease key stable." },
+          { type: "text", text: "Let me read the lease module first." },
+          {
+            type: "toolCall",
+            id: "call_01H8ZQk1a",
+            name: "read",
+            // An object in this format, not a JSON string — see the Codex fixture.
+            arguments: { path: "/srv/app/faragent/src/lib/attach-lease.ts" },
+          },
+        ],
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        stopReason: "toolUse",
+        timestamp: Date.UTC(2026, 8, 14, 9, 0, 2),
+      },
+    },
+    {
+      type: "message",
+      id: "c3d4e5f6",
+      parentId: "b2c3d4e5",
+      timestamp: t(3),
+      message: {
+        role: "toolResult",
+        toolCallId: "call_01H8ZQk1a",
+        toolName: "read",
+        content: [{ type: "text", text: "18→export function attachLease(tabId: string): Lease {\n" }],
+        isError: false,
+        timestamp: Date.UTC(2026, 8, 14, 9, 0, 3),
+      },
+    },
+    {
+      type: "message",
+      id: "d4e5f6a7",
+      parentId: "c3d4e5f6",
+      timestamp: t(4),
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "A slot can be handed to a different tab, so the slot id is not stable enough to own the lease; the tab id is.",
+          },
+        ],
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        stopReason: "stop",
+        timestamp: Date.UTC(2026, 8, 14, 9, 0, 4),
+      },
+    },
+  ];
+  return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+}
+
+/**
+ * The conversation file a seed's row points at, for the agent being asked for.
+ *
+ * Only the `live` seed has a file behind it, so only that one names a path —
+ * every other row stays the transcript-less state the rail's tmux-only rows are.
+ * The path is chosen by agent because it is the agent's own layout that decides
+ * where the file lives, which is why this cannot be a field on the seed.
+ */
+function seedTranscript(agent: AgentKind, seed: SessionSeed): string | null {
+  switch (agent) {
+    case "claude":
+      // Three rows, three fixtures: the parser's small transcript, the
+      // renderer's long one, and the empty one.
+      return seed.transcript ?? null;
+    // One row, one fixture. The other agents have the first session only, in
+    // their own layout, so exactly the row Claude's `TRANSCRIPT_PATH` belongs
+    // to names a file — pointing the long and empty rows at that same path
+    // would put three rows on one conversation and lose both fixtures.
+    case "codex":
+      return seed.transcript === TRANSCRIPT_PATH ? CODEX_TRANSCRIPT_PATH : null;
+    case "grok":
+      return seed.transcript === TRANSCRIPT_PATH ? GROK_TRANSCRIPT_PATH : null;
+    case "pi":
+      return seed.transcript === TRANSCRIPT_PATH ? PI_TRANSCRIPT_PATH : null;
+  }
 }
 
 /**
@@ -794,11 +1108,9 @@ export function listSessions(agent: AgentKind): Session[] {
       running: !!seed.running,
       tmux: seed.live ? tmuxName(agent, seed.id) : null,
       scheduled: !!seed.scheduled,
-      // A transcript path is agent-specific (Claude's lives under
-      // `~/.claude/projects`), and the row that has one is a Claude row — so it is
-      // stripped for every other agent rather than leaked onto a Codex or Grok
-      // row, which is what an un-gated stamp would do.
-      transcript: agent === "claude" ? (seed.transcript ?? null) : null,
+      // The path is the agent's own layout, so it is chosen per agent rather
+      // than stamped from the seed — see `seedTranscript`.
+      transcript: seedTranscript(agent, seed),
     })),
     ...launchedRows(agent),
   ];
