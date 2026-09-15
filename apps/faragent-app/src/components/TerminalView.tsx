@@ -1,46 +1,23 @@
 /**
- * The terminal: one xterm.js instance per open tab, wired to a PTY session
- * in the Rust core over a Tauri channel. Every byte that reaches the remote
- * agent (and every byte it renders) passes through here unchanged — same
- * passthrough contract as the TUI.
+ * The terminal: one xterm.js instance per open tab, rendered from the bytes of
+ * a PTY session in the Rust core over a Tauri channel. Every byte that reaches
+ * the remote agent (and every byte it renders) passes through here unchanged —
+ * same passthrough contract as the TUI.
+ *
+ * This component is now only the *rendering* half. The attach itself — the
+ * lease, the channel, the pending-write queue, resize — lives in `useAttach`,
+ * so the same connection can back a chat view that renders no xterm (Phase 3).
+ * What is left here is the xterm instance, its fit, and the two callbacks that
+ * turn an attach event into terminal output.
  */
 import { useEffect, useRef } from "react";
-import { Channel } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { asDiagnosis, errorMessage, ipc } from "@/lib/ipc";
-import type { AttachEvent, AttachSpec, Diagnosis } from "@/lib/ipc";
-import { b64ToBytes, bytesToB64 } from "@/lib/bytes";
-import { createAttachLease } from "@/lib/attach-lease";
-
-/** Survive React StrictMode's immediate unmount/remount without SIGHUP-ing ssh. */
-const attachLease = createAttachLease();
-
-/**
- * The event channel of every live attach, keyed exactly like the lease.
- *
- * This has to be one channel **per key**, for the same reason the lease has to
- * be one slot per key. A `Channel` is bound to a callback id at construction
- * and the backend sends to *that* id, so a remount must re-bind `onmessage` on
- * the channel the attach was opened with — a fresh one is a channel nothing
- * will ever be delivered to. As a single module-level slot this was overwritten
- * by the second tab that mounted, and the first tab's next re-run then went
- * deaf; as a map, a remount finds its own entry however many tabs are open.
- *
- * The entry's lifetime is the lease's: created by the mount that opens the
- * attach, dropped in the same close callback that closes it.
- */
-const channels = new Map<string, Channel<AttachEvent>>();
-
-function channelFor(key: string): Channel<AttachEvent> {
-  const live = channels.get(key);
-  if (live) return live;
-  const channel = new Channel<AttachEvent>();
-  channels.set(key, channel);
-  return channel;
-}
+import type { AttachSpec, Diagnosis } from "@/lib/ipc";
+import { b64ToBytes } from "@/lib/bytes";
+import { useAttach } from "@/lib/use-attach";
 
 /** Read a CSS custom property so the terminal shares the app's palette. */
 function cssVar(name: string, fallback: string): string {
@@ -48,10 +25,6 @@ function cssVar(name: string, fallback: string): string {
     .getPropertyValue(name)
     .trim();
   return v || fallback;
-}
-
-function writePty(id: number, data: string) {
-  ipc.attachWrite(id, bytesToB64(new TextEncoder().encode(data))).catch(() => {});
 }
 
 export function TerminalView({
@@ -66,17 +39,48 @@ export function TerminalView({
   onExit: (code: number) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const specKey = JSON.stringify(spec);
+  const term = useRef<Terminal | null>(null);
+
+  // Input, output and size all flow through the terminal's ref, so the attach
+  // never holds a stale terminal across a remount.
+  const attach = useAttach({
+    host,
+    spec,
+    // `0×0` while the xterm below does not exist yet (this runs before the
+    // effect that creates it); the hook floors that to its 80×24 default, which
+    // is also what an un-fitted xterm reports. The ResizeObserver re-sizes to
+    // the real fit the moment the terminal is on screen.
+    size: () =>
+      term.current
+        ? { cols: term.current.cols, rows: term.current.rows }
+        : { cols: 0, rows: 0 },
+    onEvent: (event) => {
+      const t = term.current;
+      if (!t) return;
+      if (event.kind === "data") {
+        t.write(b64ToBytes(event.b64));
+      } else if (event.kind === "exit") {
+        t.write(`\r\n\x1b[2m── faragent: exit ${event.code} ──\x1b[0m\r\n`);
+        onExit(event.code);
+      } else {
+        t.write(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`);
+      }
+    },
+    onDiagnosis,
+    onError: (message) => {
+      term.current?.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
+    },
+    onOpen: () => term.current?.focus(),
+  });
 
   useEffect(() => {
     const el = container.current;
     if (!el) return;
 
-    const key = `${host}\0${specKey}`;
     const background = cssVar("--background", "#faf9f5");
     const foreground = cssVar("--foreground", "#2d2a26");
     const accent = cssVar("--primary", "#c96442");
-    const term = new Terminal({
+    const t = new Terminal({
       cursorBlink: true,
       fontSize: 13,
       fontFamily: cssVar("--font-mono", "ui-monospace, Menlo, monospace"),
@@ -91,9 +95,10 @@ export function TerminalView({
       },
     });
     const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(el);
+    t.loadAddon(fit);
+    t.loadAddon(new WebLinksAddon());
+    t.open(el);
+    term.current = t;
     requestAnimationFrame(() => {
       try {
         fit.fit();
@@ -102,58 +107,9 @@ export function TerminalView({
       }
     });
 
-    let sessionId: number | null = null;
-    let disposed = false;
-    const pending: string[] = [];
-
-    term.onData((data) => {
-      if (sessionId === null) {
-        pending.push(data);
-        return;
-      }
-      writePty(sessionId, data);
-    });
-
-    const channel = channelFor(key);
-    channel.onmessage = (event) => {
-      if (event.kind === "data") {
-        term.write(b64ToBytes(event.b64));
-      } else if (event.kind === "exit") {
-        term.write(
-          `\r\n\x1b[2m── faragent: exit ${event.code} ──\x1b[0m\r\n`,
-        );
-        onExit(event.code);
-      } else {
-        term.write(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`);
-      }
-    };
-
-    void attachLease
-      .acquire(key, () =>
-        ipc.attachOpen({
-          host,
-          spec: JSON.parse(specKey) as AttachSpec,
-          cols: Math.max(term.cols, 80),
-          rows: Math.max(term.rows, 24),
-          onEvent: channel,
-        }),
-      )
-      .then((id) => {
-        if (disposed) return;
-        sessionId = id;
-        for (const data of pending) writePty(id, data);
-        pending.length = 0;
-        if (term.cols >= 2 && term.rows >= 2) {
-          ipc.attachResize(id, term.cols, term.rows).catch(() => {});
-        }
-        term.focus();
-      })
-      .catch((e) => {
-        if (disposed) return;
-        const d = asDiagnosis(e);
-        if (d) onDiagnosis(d);
-        else term.write(`\r\n\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
-      });
+    // Every keystroke is input to the remote PTY, queued by the hook until the
+    // attach has a session id.
+    t.onData((data) => attach.write(data));
 
     const observer = new ResizeObserver(() => {
       try {
@@ -161,22 +117,20 @@ export function TerminalView({
       } catch {
         return;
       }
-      if (sessionId === null || term.cols < 2 || term.rows < 2) return;
-      ipc.attachResize(sessionId, term.cols, term.rows).catch(() => {});
+      attach.resize(t.cols, t.rows);
     });
     observer.observe(el);
 
     return () => {
-      disposed = true;
       observer.disconnect();
-      term.dispose();
-      attachLease.release(key, (id) => {
-        channels.delete(key);
-        ipc.attachClose(id).catch(() => {});
-      });
+      t.dispose();
+      term.current = null;
     };
+    // The terminal is a pure function of its element; it does not depend on the
+    // attach, whose closed-over `write`/`resize` are stable callbacks. The
+    // attach's own effect (in `useAttach`) is keyed on host and spec.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [host, specKey]);
+  }, []);
 
   return <div ref={container} className="h-full w-full px-2 py-1.5" />;
 }
