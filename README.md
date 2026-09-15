@@ -79,7 +79,7 @@ flowchart LR
 ## Features
 
 - **Four agents, one picker** — Claude Code, Codex, Grok Build, Pi; missing ones show as `not installed · enter to install`.
-- **Native vibe coding** — not a reimplemented chat UI. Slash commands, diffs, and permission prompts are the agent’s own.
+- **Native vibe coding** — slash commands, diffs and permission prompts are the agent's own; none of them is reimplemented. What FarAgent draws is the shell around them: an app window, a session rail grouped by workspace, and a read-only file / Git panel fed by a helper channel on the remote. Rendering the conversation itself, outside the agent's TUI, is [planned](docs/en/roadmap.md) and does not exist yet.
 - **Session list** — idle transcripts from disk plus **live** tmux panes.
 - **Safe reconnect** — live sessions only attach, so you do not get two Codex agents rewriting the same tree ([openai/codex#30424](https://github.com/openai/codex/issues/30424)).
 - **Remote stays yours** — official installers run on the host after you confirm the commands; API keys stay remote; protocol servers bind nowhere; traffic is SSH.

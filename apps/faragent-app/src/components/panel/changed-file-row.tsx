@@ -1,0 +1,173 @@
+/**
+ * One changed file, expandable to its own patch.
+ *
+ * Shared by the Changes tab (grouped by staged/unstaged) and the Git tab (the
+ * repository's own file list) so the two cannot drift into showing different
+ * things about the same file.
+ *
+ * The patch is fetched when the row is first opened and not before — the
+ * `enabled` flag on `usePanelGitDiff` is the whole mechanism, and it is what
+ * keeps a 600-file change set to one request until somebody asks for more.
+ *
+ * What comes back is capped twice before it is rendered: `sliceDiff` bounds the
+ * rows one patch may mount, and past `HIGHLIGHT_MAX_CHARS` the rows are shown
+ * without syntax colouring. Neither is silent — the truncation notice is
+ * rendered *above* the rows and repeated where they stop, and both copies sit
+ * outside the horizontal scroller.
+ *
+ * ## When there is no `git.diff` to ask for
+ *
+ * The bash fallback does not speak `git.diff`, so the row is not expandable
+ * there — this reads the connection's op list (via `usePanelHelper`) rather than
+ * offering a control that would fail with `unknown op`. The row is then a plain
+ * `div`, not a `button`: a control that cannot do its job should not be
+ * announced as one. The reason itself is the tab's job to state, because the
+ * tabs know where to put one sentence for the whole list instead of one per row
+ * (see `changes-panel.tsx` / `git-panel.tsx`).
+ */
+import { useState } from "react";
+import { ChevronRight } from "lucide-react";
+import { Spinner } from "@/components/ui/empty";
+import { DiffFileView, FileStatusBadge } from "@/components/panel/diff-view";
+import { usePanelGitDiff } from "@/components/panel/queries";
+import { usePanelHelper } from "@/components/panel/helper-context";
+import { decodeText, helperErrorText, type GitStatusFile } from "@/lib/helper";
+import { parseUnifiedDiff, sliceDiff } from "@/lib/panel/diff";
+import { HIGHLIGHT_MAX_CHARS } from "@/lib/panel/file";
+import { languageForPath } from "@/lib/panel/highlight";
+import { cn } from "@/lib/utils";
+import { useStore, useT } from "@/state";
+
+export function ChangeRow({ file, repo }: { file: GitStatusFile; repo: string }) {
+  const t = useT();
+  const lang = useStore((s) => s.lang);
+  const { connection, capabilities } = usePanelHelper();
+  const [open, setOpen] = useState(false);
+  const path = decodeText(file.path);
+  const expandable = capabilities.diff;
+  const patch = usePanelGitDiff(connection, repo, path, file.staged, open);
+
+  const parsed = patch.data?.diff ? decodeText(patch.data.diff) : "";
+  // Sliced before it is rendered, not after: one file's patch can hold six
+  // figures of rows, and every row that reaches the DOM is a row the
+  // highlighter scans and React mounts.
+  const slice = sliceDiff(parseUnifiedDiff(parsed));
+  // Above this the scanner is what would make the panel feel slow, so the rows
+  // are shown as plain text — the file preview's own rule, applied to a patch.
+  // The rows themselves are still shown.
+  const highlight = parsed.length <= HIGHLIGHT_MAX_CHARS;
+  const truncationNotice = slice.truncated
+    ? t("changes.diffTruncated", { lines: slice.shown, total: slice.total })
+    : null;
+
+  const rowClass = cn(
+    "flex w-full items-center gap-2 px-2 py-1 text-left text-xs",
+    expandable && "hover:bg-surface-hover",
+    open && expandable && "bg-surface-selected",
+  );
+  const cells = (
+    <>
+      {expandable ? (
+        <ChevronRight
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-90",
+          )}
+        />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate font-mono" title={path}>
+        {file.origPath ? (
+          <>
+            <span className="text-muted-foreground">
+              {decodeText(file.origPath)} →{" "}
+            </span>
+            {path}
+          </>
+        ) : (
+          path
+        )}
+      </span>
+      <span className="shrink-0 font-mono text-micro text-muted-foreground">
+        {file.index}
+        {file.worktree}
+      </span>
+      <FileStatusBadge status={file.status} />
+    </>
+  );
+
+  return (
+    <div className="border-b border-border last:border-b-0">
+      {expandable ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          title={open ? t("changes.hideDiff") : t("changes.showDiff")}
+          className={rowClass}
+        >
+          {cells}
+        </button>
+      ) : (
+        // Not a button: there is nothing to open. The `title` carries the reason
+        // the row has no chevron, for the reader who wonders about the one row
+        // that looks different in a list where nothing is expandable.
+        <div className={rowClass} title={t("changes.noDiffOp")}>
+          {cells}
+        </div>
+      )}
+
+      {open ? (
+        patch.isLoading ? (
+          <Spinner label={t("file.loading")} />
+        ) : patch.error ? (
+          <p className="px-2 py-1 text-xs text-danger">
+            {t("git.error", { message: helperErrorText(patch.error, lang) })}
+          </p>
+        ) : slice.files.length > 0 ? (
+          <div className="pb-1">
+            {/* Above the rows, not only after them. The panel scrolls
+                vertically: a notice that sits below up to 2000 rows is a notice
+                the reader reaches only after the diff has stopped making sense,
+                which is exactly when they stop reading. It is still outside the
+                horizontal scroller — that part of the old reasoning holds, a
+                notice that scrolls sideways can be missed too. */}
+            {truncationNotice ? (
+              <p className="border-b border-border px-2 py-1 text-xs text-warning">
+                {truncationNotice}
+              </p>
+            ) : null}
+            <div className="overflow-x-auto">
+              <div className="min-w-fit">
+                {slice.files.map((diffFile, i) => (
+                  <DiffFileView
+                    key={i}
+                    file={diffFile}
+                    language={
+                      highlight ? languageForPath(diffFile.path || path) : "plain"
+                    }
+                  />
+                ))}
+              </div>
+            </div>
+            {/* Repeated where the rows actually stop, so the cut is explained at
+                the point the reader meets it. Hidden from assistive tech: the
+                copy above is the announcement, and two identical alerts for one
+                fact is noise. */}
+            {truncationNotice ? (
+              <p
+                aria-hidden
+                className="border-t border-border px-2 py-1 text-xs text-warning"
+              >
+                {truncationNotice}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="px-2 pb-1 text-xs text-muted-foreground">
+            {patch.data?.binary ? t("changes.binaryDiff") : t("changes.noDiff")}
+          </p>
+        )
+      ) : null}
+    </div>
+  );
+}

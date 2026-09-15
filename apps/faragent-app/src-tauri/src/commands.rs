@@ -97,6 +97,10 @@ pub async fn list_sessions(
 /// Start (or resume) a session. `createCwd = true` may create the working
 /// directory on the remote; with `false` a missing directory comes back as
 /// `cwd_missing` — a question for the user, not an error.
+///
+/// Returns the tmux/display name *and* the session id the remote CLI was
+/// pinned to (`null` when it was not — a fresh Codex/Grok/Pi session, or any
+/// fresh Windows one). The app needs the id to compute the transcript path.
 #[tauri::command]
 pub async fn ensure_session(
     host: String,
@@ -104,7 +108,7 @@ pub async fn ensure_session(
     cwd: String,
     session_id: Option<String>,
     create_cwd: bool,
-) -> Result<String, StartError> {
+) -> Result<sessions::StartedSession, StartError> {
     let host_for_task = host.clone();
     match spawn_blocking(move || {
         let os = transport::host_os(&host_for_task).unwrap_or_default();

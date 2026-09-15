@@ -1,6 +1,6 @@
 //! Drive the system OpenSSH client. Never reimplements the wire protocol.
 
-use crate::{AttachOptions, AttachStream, ExecOutput, Transport, TransportError};
+use crate::{AttachOptions, AttachStream, CommandStream, ExecOutput, Transport, TransportError};
 use anyhow::{anyhow, Context, Result};
 use faragent_core::paths::faragent_home;
 pub use faragent_core::shell::shell_single_quote;
@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -560,8 +560,18 @@ impl OpenSshTransport {
     }
 
     fn command_flavor(&self, flavor: Flavor) -> Command {
+        self.command_flavor_with(flavor, &[])
+    }
+
+    /// [`command_flavor`](Self::command_flavor) with extra flags inserted
+    /// **before the destination** — OpenSSH stops parsing options at the host
+    /// name, so anything after it becomes part of the remote command.
+    fn command_flavor_with(&self, flavor: Flavor, extra: &[&str]) -> Command {
         let mut cmd = Command::new("ssh");
         for arg in self.args(flavor) {
+            cmd.arg(arg);
+        }
+        for arg in extra {
             cmd.arg(arg);
         }
         cmd.arg(&self.host);
@@ -571,10 +581,20 @@ impl OpenSshTransport {
 
     /// Copy-pasteable version of what we ran, for error reports.
     pub fn command_line(&self, flavor: Flavor, remote: &str) -> String {
+        self.command_line_ext(flavor, &[], remote)
+    }
+
+    /// [`command_line`](Self::command_line) with extra flags placed between
+    /// the auth bundle and the host (`-T` for the stdio stream).
+    fn command_line_ext(&self, flavor: Flavor, extra: &[&str], remote: &str) -> String {
         let mut s = String::from("ssh");
         for arg in self.args(flavor) {
             s.push(' ');
             s.push_str(&shell_single_quote(&arg));
+        }
+        for arg in extra {
+            s.push(' ');
+            s.push_str(&shell_single_quote(arg));
         }
         s.push(' ');
         s.push_str(&shell_single_quote(&self.host));
@@ -610,8 +630,33 @@ impl OpenSshTransport {
         self.exec_stdio(&bash_login_command(bash_lc), stdin)
     }
 
+    /// [`exec_login_stdin`](Self::exec_login_stdin) with a caller-chosen
+    /// deadline. A multi-megabyte payload (the `faragent-helper` binary) can
+    /// need far longer than [`EXEC_TIMEOUT`] to cross a slow link; the short
+    /// timeout stays the default so nothing else changes.
+    pub fn exec_login_stdin_timeout(
+        &self,
+        bash_lc: &str,
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<ExecOutput> {
+        self.exec_stdio_timeout(&bash_login_command(bash_lc), stdin, timeout)
+    }
+
     /// Run a caller-built remote command line, piping `stdin` into it.
     pub fn exec_stdio(&self, remote: &str, stdin: &[u8]) -> Result<ExecOutput> {
+        self.exec_stdio_timeout(remote, stdin, EXEC_TIMEOUT)
+    }
+
+    /// [`exec_stdio`](Self::exec_stdio) with a caller-chosen deadline. Piped
+    /// input and output make a large `stdin` safe on the wire; the deadline is
+    /// the only knob that changes.
+    pub fn exec_stdio_timeout(
+        &self,
+        remote: &str,
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<ExecOutput> {
         let flavor = self.flavor();
         let mut cmd = self.command_flavor(flavor);
         cmd.arg("--");
@@ -624,7 +669,7 @@ impl OpenSshTransport {
         if let Some(mut s) = child.stdin.take() {
             s.write_all(stdin).ok();
         }
-        self.wait_child(child, &line, EXEC_TIMEOUT)
+        self.wait_child(child, &line, timeout)
     }
 
     /// Run a PowerShell script on a Windows remote: the default shell (cmd)
@@ -806,6 +851,89 @@ impl OpenSshTransport {
             master: pair.master,
             child,
         })
+    }
+}
+
+impl OpenSshTransport {
+    /// Open a **non-PTY** byte stream to a long-running remote command: all
+    /// three stdio piped, `-T` passed explicitly so no pty is ever allocated,
+    /// and no timeout — the stream lives until dropped or the remote exits.
+    ///
+    /// This is the transport a framed protocol rides (the `faragent-helper`
+    /// NDJSON channel). For an interactive terminal use [`attach_stream`]
+    /// instead; that path needs `ssh -tt` and must not be confused with this
+    /// one. `args()` and askpass are shared with every other run, so
+    /// ControlMaster reuse and password hosts behave identically.
+    ///
+    /// [`attach_stream`]: OpenSshTransport::attach_stream
+    pub fn spawn_stdio_stream(&self, remote_line: &str) -> Result<CommandStream> {
+        let (mut cmd, line) = self.stdio_stream_command(remote_line);
+        let mut child = cmd.spawn().map_err(|e| self.spawn_error(&line, e))?;
+        let reader = child.stdout.take().ok_or_else(|| {
+            anyhow!("ssh stdout was not piped; cannot open a command stream ({line})")
+        })?;
+        let writer = child.stdin.take().ok_or_else(|| {
+            anyhow!("ssh stdin was not piped; cannot open a command stream ({line})")
+        })?;
+        let stderr_pipe = child.stderr.take();
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&stderr);
+        let stderr_thread = thread::spawn(move || drain_stderr(stderr_pipe, sink));
+        Ok(CommandStream {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+            child,
+            stderr,
+            stderr_thread: Some(stderr_thread),
+        })
+    }
+
+    /// [`spawn_stdio_stream`](Self::spawn_stdio_stream) under the login shell
+    /// (`bash -lc`), so nvm / Homebrew / `~/.local/bin` stay on PATH for the
+    /// remote process — the deployment path for `faragent-helper`.
+    pub fn spawn_login_stdio_stream(&self, script: &str) -> Result<CommandStream> {
+        self.spawn_stdio_stream(&bash_login_command(script))
+    }
+
+    /// The command a stdio stream is built from, plus its copy-pasteable
+    /// rendering. Split out so the argv (and, above all, the **absence** of
+    /// `-tt`) is testable without a reachable host.
+    fn stdio_stream_command(&self, remote_line: &str) -> (Command, String) {
+        let flavor = self.flavor();
+        // `-T` is the explicit negation of `-t`: never allocate a remote pty.
+        // It must sit before the destination or OpenSSH would treat it as part
+        // of the remote command.
+        let mut cmd = self.command_flavor_with(flavor, &["-T"]);
+        cmd.arg("--");
+        cmd.arg(remote_line);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let line = self.command_line_ext(flavor, &["-T"], remote_line);
+        (cmd, line)
+    }
+}
+
+/// Keep only the newest [`crate::STDERR_TAIL_LIMIT`] bytes, so a remote that
+/// spams stderr cannot grow this process without bound.
+fn drain_stderr(pipe: Option<impl Read>, sink: Arc<Mutex<Vec<u8>>>) {
+    let Some(mut pipe) = pipe else {
+        return;
+    };
+    let mut chunk = [0u8; 4096];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if let Ok(mut buf) = sink.lock() {
+                    buf.extend_from_slice(&chunk[..n]);
+                    let overflow = buf.len().saturating_sub(crate::STDERR_TAIL_LIMIT);
+                    if overflow > 0 {
+                        buf.drain(..overflow);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1036,6 +1164,289 @@ Host ignored
             cmd.is_ascii(),
             "ps_stdin_command must stay ASCII on the ssh command line"
         );
+    }
+
+    /// Build a transport with no `~/.faragent` side effects and no `ssh -V`
+    /// probe, so a unit test can inspect the argv it would run.
+    fn test_transport(host: &str) -> OpenSshTransport {
+        OpenSshTransport {
+            host: host.into(),
+            mode: AuthMode::Key,
+            control_path: Some("/tmp/faragent-test-cm/%r@%h:%p".into()),
+            persist: KEY_PERSIST.into(),
+            mux: true,
+        }
+    }
+
+    #[test]
+    fn stdio_stream_is_non_pty_and_rides_the_login_shell() {
+        let t = test_transport("example.invalid");
+        let (cmd, line) = t.stdio_stream_command(&bash_login_command("run helper"));
+        assert_eq!(cmd.get_program(), "ssh");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "-T"),
+            "must disable the pty: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "-t" || a == "-tt"),
+            "a command stream must never request a pty: {args:?}"
+        );
+        // Flags come before the destination; `--` ends option parsing.
+        let dash_dash = args.iter().position(|a| a == "--").expect("-- separator");
+        let host_at = args
+            .iter()
+            .position(|a| a == "example.invalid")
+            .expect("host");
+        assert!(host_at < dash_dash, "{args:?}");
+        assert!(args.iter().position(|a| a == "-T").unwrap() < host_at);
+        assert_eq!(args.last().unwrap(), "bash -lc 'run helper'");
+        // The copy-pasteable rendering must show what we really ran.
+        assert!(line.contains(" -T "), "{line}");
+        assert!(!line.contains(" -tt"), "{line}");
+        assert!(line.ends_with(" -- bash -lc 'run helper'"), "{line}");
+    }
+
+    /// `PATH` is process-global, so two tests that shadow `ssh` at once would
+    /// see each other's stand-in. Every test that installs a [`PathGuard`]
+    /// holds this first. Poisoning is ignored: a failed test must not wedge
+    /// the rest of the suite.
+    #[cfg(unix)]
+    static SSH_STUB_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    fn lock_ssh_stub() -> std::sync::MutexGuard<'static, ()> {
+        SSH_STUB_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Puts a directory in front of `PATH` for the duration of a test and
+    /// restores it even if the test panics. Only ever used by tests that
+    /// shadow `ssh`, and the shadow directory contains nothing else.
+    #[cfg(unix)]
+    struct PathGuard(Option<std::ffi::OsString>);
+
+    #[cfg(unix)]
+    impl PathGuard {
+        fn prepend(dir: &Path) -> Self {
+            let saved = std::env::var_os("PATH");
+            let mut joined = dir.as_os_str().to_os_string();
+            if let Some(s) = &saved {
+                joined.push(":");
+                joined.push(s);
+            }
+            std::env::set_var("PATH", joined);
+            Self(saved)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+
+    /// The real spawn path, end to end, against a stand-in for `ssh`: proves
+    /// all three stdio are piped (stdin reaches the child, stdout and stderr
+    /// reach us) and that `Drop` really reaps the child.
+    #[cfg(unix)]
+    #[test]
+    fn stdio_stream_pipes_all_three_stdio_and_drop_reaps_the_child() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::fs::PermissionsExt;
+
+        let _stub = lock_ssh_stub();
+        let dir = tempfile::tempdir().unwrap();
+        let argv_file = dir.path().join("argv");
+        let pid_file = dir.path().join("pid");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > '{argv}'
+printf '%s' "$$" > '{pid}'
+case " $* " in
+  *" -V "*) exit 0 ;;
+esac
+printf 'FAKE_STDOUT\n'
+printf 'FAKE_STDERR\n' >&2
+while IFS= read -r _l; do printf 'echo:%s\n' "$_l"; done
+"#,
+            argv = argv_file.display(),
+            pid = pid_file.display(),
+        );
+        let fake = dir.path().join("ssh");
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _path = PathGuard::prepend(dir.path());
+        let t = test_transport("fake.invalid");
+        let mut stream = t.spawn_login_stdio_stream("run helper").unwrap();
+
+        {
+            let mut out = BufReader::new(&mut *stream.reader);
+            let mut line = String::new();
+            out.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "FAKE_STDOUT");
+            // Our writer is the remote's stdin.
+            stream.writer.write_all(b"ping\n").unwrap();
+            stream.writer.flush().unwrap();
+            line.clear();
+            out.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "echo:ping");
+        }
+
+        // stderr was piped into this process and drained: the tail saw it. Had
+        // it been inherited it would have gone to the test runner's stderr and
+        // the tail would still be empty.
+        let mut tail = String::new();
+        for _ in 0..100 {
+            tail = stream.stderr_tail();
+            if tail.contains("FAKE_STDERR") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(tail.contains("FAKE_STDERR"), "stderr tail was {tail:?}");
+
+        let argv = std::fs::read_to_string(&argv_file).unwrap();
+        assert!(argv.lines().any(|l| l == "-T"), "{argv}");
+        assert!(!argv.contains("-tt"), "{argv}");
+        assert!(argv.lines().any(|l| l == "fake.invalid"), "{argv}");
+        assert!(
+            argv.lines().any(|l| l == "bash -lc 'run helper'"),
+            "remote line must be the login-shell wrapper: {argv}"
+        );
+
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive = |pid: i32| {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        assert!(alive(pid), "the stand-in ssh ({pid}) should be running");
+        drop(stream);
+        let mut reaped = false;
+        for _ in 0..100 {
+            if !alive(pid) {
+                reaped = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(reaped, "dropping CommandStream left child {pid} running");
+    }
+
+    /// The deadline is the only thing that changed for large uploads, so it is
+    /// tested directly against a real child: no ssh, no `PATH`, no stub.
+    #[cfg(unix)]
+    #[test]
+    fn wait_child_timeout_kills_a_hung_child_at_the_caller_deadline() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn sleep");
+        let started = Instant::now();
+        let result = wait_child_timeout(child, Duration::from_millis(200));
+        assert!(
+            matches!(result, Err(WaitError::Timeout)),
+            "a child that outlives the deadline must be killed, not awaited"
+        );
+        // The 25s default would not have returned yet; a caller-chosen deadline
+        // must be the one that applies.
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the custom deadline did not apply: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// End to end through the real spawn path: the payload reaches the remote
+    /// command's stdin, and a custom deadline shorter than the default still
+    /// applies. This is the shape the `faragent-helper` upload rides.
+    #[cfg(unix)]
+    #[test]
+    fn exec_login_stdin_timeout_pipes_the_payload_and_honours_its_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _stub = lock_ssh_stub();
+        let dir = tempfile::tempdir().unwrap();
+        let out_file = dir.path().join("payload");
+        // A stand-in `ssh`: `cat` the piped payload out (for the delivery half)
+        // and hang when the remote line says `sleep` (for the deadline half).
+        let script = format!(
+            r#"#!/bin/sh
+case " $* " in
+  *sleep*) sleep 30 ;;
+esac
+cat > '{out}'
+exit 0
+"#,
+            out = out_file.display()
+        );
+        let fake = dir.path().join("ssh");
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _path = PathGuard::prepend(dir.path());
+        let t = test_transport("fake.invalid");
+
+        // Every byte value survives the pipe: an upload is not text.
+        let payload: Vec<u8> = (0u8..=255).collect();
+        let out = t
+            .exec_login_stdin_timeout("upload", &payload, Duration::from_secs(20))
+            .expect("the upload run should finish");
+        assert!(out.success(), "{:?}", out.code);
+        assert_eq!(
+            std::fs::read(&out_file).unwrap(),
+            payload,
+            "the payload must reach the remote's stdin byte for byte"
+        );
+
+        // The same call with a short deadline gives up quickly instead of
+        // waiting out the 25s default.
+        let started = Instant::now();
+        let error = t
+            .exec_login_stdin_timeout("sleep", b"payload", Duration::from_millis(300))
+            .expect_err("a hung remote must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the caller's deadline must be the one enforced: {:?}",
+            started.elapsed()
+        );
+        let typed = error
+            .downcast_ref::<TransportError>()
+            .expect("a timeout must stay a typed TransportError");
+        assert!(typed.timed_out);
+    }
+
+    #[test]
+    fn stderr_tail_drops_the_oldest_bytes() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        drain_stderr(
+            Some(std::io::Cursor::new(vec![b'x'; 40_000])),
+            Arc::clone(&sink),
+        );
+        let buf = sink.lock().unwrap();
+        assert_eq!(buf.len(), crate::STDERR_TAIL_LIMIT);
+        assert!(buf.iter().all(|b| *b == b'x'));
     }
 
     #[test]

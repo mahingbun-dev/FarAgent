@@ -5,28 +5,104 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * FarAgent design foundation — a warm, Claude-desktop-adjacent language:
- * ivory paper in light mode, warm charcoal in dark mode, one terracotta
- * accent, restrained borders, generous whitespace. Everything else is
- * derived from these tokens; never hard-code a hex in a component.
+ * ============================================================================
+ * FarAgent design foundation
+ * ============================================================================
+ *
+ * A Claude-desktop-adjacent language: ivory paper in light mode, neutral
+ * charcoal in dark mode, one terracotta accent, faint borders, hierarchy
+ * carried by surface steps rather than by strokes. Everything else is derived
+ * from these tokens; never hard-code a hex in a component.
+ *
+ * The file has four parts:
+ *
+ *   1. raw scales      — the neutral ramp + motion/easing, per theme
+ *   2. semantic roles  — surfaces, text, borders, status; per theme, equal weight
+ *   3. @theme inline   — every token mapped to a Tailwind utility
+ *   4. base            — document-level defaults
+ *
+ * Rules of the road:
+ *   - Light and dark define the *same* set of names. A name that exists in one
+ *     theme and not the other is a bug: the app ships a light/dark/system
+ *     tri-state (src/lib/theme.ts) and both are first-class.
+ *   - Semantic names are stable API. components/ui/button.tsx, components/
+ *     dialogs.tsx and TerminalView.tsx consume them today; adding is fine,
+ *     renaming or removing is not.
+ *   - `@theme inline` is deliberate: it emits `var(--x)` at the use site, so
+ *     flipping `.dark` re-themes the running app without a rebuild.
+ *
+ * The neutral ramp below is *theme-inverted*: index increases with contrast
+ * against the current canvas, not with luminance. `--ink-100` is the canvas in
+ * both themes, `--ink-0` is the deepest well (code blocks, insets), `--ink-200`
+ * the raised panel, `--ink-900` the strongest text. That is what lets
+ * `border-ink-300` mean "a hairline against the panel" in both themes.
+ * ----------------------------------------------------------------------------
  */
+
+/* ==========================================================================
+ * 1+2. Light — warm ivory paper
+ * ========================================================================== */
 :root {
-  --background: #faf9f5;
-  --foreground: #2d2a26;
-  --card: #ffffff;
-  --card-foreground: #2d2a26;
+  /* Native widgets (scrollbars, form controls) follow the theme. */
+  color-scheme: light;
+
+  /* --- raw neutral ramp (warm; see the note above for the ordering) --- */
+  --ink-0: #efece3; /* sunken: code blocks, wells, insets */
+  --ink-50: #f6f4ee;
+  --ink-100: #faf9f5; /* the canvas */
+  --ink-150: #fdfcfa;
+  --ink-200: #ffffff; /* raised: sidebar, cards, composer */
+  --ink-250: #f4f2eb; /* subtle fill on a raised surface (hover) */
+  --ink-300: #e5e1d8; /* hairline borders */
+  --ink-350: #dcd7cb; /* selected fill */
+  --ink-400: #d0cabd; /* borders that must read */
+  --ink-500: #b3ada1;
+  --ink-600: #918b84;
+  --ink-700: #6b6560; /* muted foreground */
+  --ink-800: #4b4640;
+  --ink-900: #2d2a26; /* foreground */
+
+  /* --- surfaces ---
+     The app is three tiers: canvas (background) → panel (sidebar/card) →
+     floating (raised/composer). Light separates them by fill *and* shadow;
+     dark separates them by fill alone (see the dark block). */
+  --background: var(--ink-100);
+  --foreground: var(--ink-900);
+
+  --card: var(--ink-200);
+  --card-foreground: var(--ink-900);
+
+  --sidebar: var(--ink-200);
+  --sidebar-foreground: var(--ink-900);
+  --sidebar-border: var(--ink-300);
+
+  --surface-raised: var(--ink-200); /* popovers, dropdowns, tooltips */
+  --composer: var(--ink-200); /* the floating input card */
+
+  --code-bg: #f1efe7; /* one step below the canvas */
+  --surface-hover: var(--ink-250);
+  --surface-selected: #eae6db;
+
   --muted: #f0eee6;
-  --muted-foreground: #6b6560;
-  --border: #e5e1d8;
+  --muted-foreground: var(--ink-700);
+
+  --overlay: rgb(45 42 38 / 0.32);
+
+  /* --- lines --- */
+  --border: var(--ink-300);
+  --border-strong: var(--ink-400);
   --input: #ded9cd;
   --ring: #c96442;
 
+  /* --- accent + status --- */
   --primary: #c96442;
   --primary-foreground: #fffaf6;
   --primary-hover: #b5573a;
 
   --secondary: #f0eee6;
   --secondary-foreground: #46413a;
+
+  --link: #3a6ea5; /* slash commands, inline references */
 
   --success: #4c7a5c;
   --warning: #b08948;
@@ -37,51 +113,145 @@
   --mark-running: #b08948;
   --mark-idle: #a8a29a;
 
-  --radius: 0.625rem;
+  /* --- elevation: the four shadow roles --- */
+  --elevation-1: 0 1px 2px 0 rgb(45 42 38 / 0.06),
+    0 1px 1px -0.5px rgb(45 42 38 / 0.04); /* resting: buttons, chips */
+  --elevation-2: 0 4px 12px -2px rgb(45 42 38 / 0.1),
+    0 1px 3px rgb(45 42 38 / 0.06); /* popovers, dropdowns */
+  --elevation-3: 0 8px 28px -6px rgb(45 42 38 / 0.14),
+    0 2px 6px -2px rgb(45 42 38 / 0.07); /* floating composer */
+  --elevation-4: 0 24px 60px -12px rgb(45 42 38 / 0.24),
+    0 6px 16px -6px rgb(45 42 38 / 0.12); /* modals */
+
+  /* --- motion ---
+     Theme-independent: declared once here, inherited by `.dark` (the class
+     lands on <html>, which is also :root). Same for --radius below.
+     These are also mapped on the utility side — `--ease-*` in the @theme block
+     below, `--duration-*` as static @utility rules (Tailwind has no duration
+     namespace). Deleting them here would break `animate-pop-in` just below,
+     which reads them through var(). */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* --- geometry --- */
+  --radius: 0.625rem; /* 10px */
 }
 
+/* ==========================================================================
+ * 1+2. Dark — neutral charcoal, close to the reference screenshots
+ * ========================================================================== */
 .dark {
-  --background: #262624;
-  --foreground: #f0eee6;
-  --card: #30302e;
-  --card-foreground: #f0eee6;
-  --muted: #37372f;
-  --muted-foreground: #a8a29a;
-  --border: #3e3d38;
-  --input: #47463f;
+  color-scheme: dark;
+
+  /* Near-neutral on purpose: the reference's grays carry almost no hue. */
+  --ink-0: #131312;
+  --ink-50: #181817;
+  --ink-100: #1e1e1d;
+  --ink-150: #212120;
+  --ink-200: #262625;
+  --ink-250: #2e2e2c;
+  --ink-300: #343432;
+  --ink-350: #3c3c3a;
+  --ink-400: #474745;
+  --ink-500: #6b6a67;
+  --ink-600: #8f8e8a;
+  --ink-700: #a8a7a3;
+  --ink-800: #cbcac6;
+  --ink-900: #ededec;
+
+  --background: var(--ink-100);
+  --foreground: var(--ink-900);
+
+  --card: var(--ink-200);
+  --card-foreground: var(--ink-900);
+
+  /* The rail sits one step above the canvas — the reference's layering. */
+  --sidebar: #232322;
+  --sidebar-foreground: var(--ink-900);
+  --sidebar-border: var(--ink-300);
+
+  --surface-raised: #2c2c2a;
+  --composer: #2c2c2a;
+
+  --code-bg: #151514; /* one step below the canvas */
+  --surface-hover: var(--ink-250);
+  --surface-selected: #333331;
+
+  --muted: #2a2a29;
+  --muted-foreground: var(--ink-700);
+
+  --overlay: rgb(0 0 0 / 0.55);
+
+  --border: var(--ink-300);
+  --border-strong: var(--ink-400);
+  --input: #3a3a38;
   --ring: #d97757;
 
   --primary: #d97757;
   --primary-foreground: #2a1a12;
   --primary-hover: #e08a6c;
 
-  --secondary: #37372f;
-  --secondary-foreground: #e6e2d8;
+  --secondary: #313130;
+  --secondary-foreground: #e4e3e0;
 
-  --success: #7ba588;
-  --warning: #d0b070;
-  --danger: #d97757;
+  --link: #8fb0d9;
 
-  --mark-live: #7ba588;
-  --mark-running: #d0b070;
-  --mark-idle: #6b6a63;
+  --success: #71b08a;
+  --warning: #d3ab6b;
+  --danger: #e0705f;
+
+  --mark-live: #71b08a;
+  --mark-running: #d3ab6b;
+  --mark-idle: #6b6a66;
+
+  /* Shadows do far less work on a dark canvas; they deepen rather than tint. */
+  --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --elevation-2: 0 6px 16px -4px rgb(0 0 0 / 0.45),
+    0 1px 2px rgb(0 0 0 / 0.35);
+  --elevation-3: 0 12px 32px -8px rgb(0 0 0 / 0.55),
+    0 2px 8px -2px rgb(0 0 0 / 0.4);
+  --elevation-4: 0 28px 70px -14px rgb(0 0 0 / 0.7),
+    0 8px 20px -8px rgb(0 0 0 / 0.5);
 }
 
+/* ==========================================================================
+ * 3. Token → Tailwind. `inline` keeps the var() reference at the use site.
+ * ========================================================================== */
 @theme inline {
+  /* surfaces + text */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-selected: var(--surface-selected);
+  --color-composer: var(--composer);
+  --color-code-bg: var(--code-bg);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-overlay: var(--overlay);
+
+  /* lines */
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  /* accent + status */
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-hover: var(--primary-hover);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
+  --color-link: var(--link);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
@@ -89,9 +259,78 @@
   --color-mark-running: var(--mark-running);
   --color-mark-idle: var(--mark-idle);
 
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  /* the raw ramp, for the one-off layers panels need */
+  --color-ink-0: var(--ink-0);
+  --color-ink-50: var(--ink-50);
+  --color-ink-100: var(--ink-100);
+  --color-ink-150: var(--ink-150);
+  --color-ink-200: var(--ink-200);
+  --color-ink-250: var(--ink-250);
+  --color-ink-300: var(--ink-300);
+  --color-ink-350: var(--ink-350);
+  --color-ink-400: var(--ink-400);
+  --color-ink-500: var(--ink-500);
+  --color-ink-600: var(--ink-600);
+  --color-ink-700: var(--ink-700);
+  --color-ink-800: var(--ink-800);
+  --color-ink-900: var(--ink-900);
+
+  /* radii — one knob (--radius) with a family around it */
+  --radius-xs: calc(var(--radius) - 6px); /* 4px  */
+  --radius-sm: calc(var(--radius) - 4px); /* 6px  */
+  --radius-md: calc(var(--radius) - 2px); /* 8px  */
+  --radius-lg: var(--radius); /* 10px */
+  --radius-xl: calc(var(--radius) + 2px); /* 12px */
+  --radius-2xl: calc(var(--radius) + 6px); /* 16px */
+
+  /* elevation roles → shadow utilities */
+  --shadow-sm: var(--elevation-1);
+  --shadow-md: var(--elevation-2);
+  --shadow-lg: var(--elevation-3);
+  --shadow-xl: var(--elevation-4);
+
+  /* type: a compact product scale. 11 / 12 / 14 / 16, then headings. */
+  --text-micro: 0.6875rem; /* 11px */
+  --text-micro--line-height: 1rem;
+  --text-xs: 0.75rem; /* 12px */
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem; /* 14px — body copy */
+  --text-sm--line-height: 1.375rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.25rem; /* 20px — section titles */
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem; /* 24px — page titles */
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.25rem;
+
+  /* prose runs loose; UI labels run tight */
+  --leading-prose: 1.7;
+
+  /* layout: the spacing grid is Tailwind's 4px base, plus named rails */
+  --spacing: 0.25rem;
+  --spacing-gutter: 1.5rem; /* page padding */
+  --spacing-sidebar: 16rem; /* the session rail */
+  --spacing-titlebar: 2.5rem; /* top bar above the canvas */
+
+  /* reading measure — the reference centres its body at ~1100px.
+     `content` has no Tailwind default, so it resolves from the --container-*
+     namespace; `prose` DOES (`--max-width-prose: 65ch`), and a default in the
+     --max-width-* namespace wins over a same-named --container-* entry — so the
+     override has to be declared there or `max-w-prose` silently keeps 65ch. */
+  --container-content: 68rem;
+  --max-width-prose: 44rem;
+
+  /* motion — the utility side of `--ease-*`. The equivalent for `--duration-*`
+     cannot live here: Tailwind has no `--duration-*` namespace (only
+     `--default-transition-duration`), and a `--duration-fast` entry in @theme
+     is emitted as a self-referential `--duration-fast: var(--duration-fast)`.
+     Durations are therefore registered as static `@utility` rules below. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
   --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
@@ -103,6 +342,9 @@
     "Sarasa Mono SC", "Noto Sans Mono CJK SC", monospace;
 }
 
+/* ==========================================================================
+ * 4. Base
+ * ========================================================================== */
 html,
 body,
 #root {
@@ -115,8 +357,65 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+::selection {
+  background: color-mix(in oklab, var(--primary) 24%, transparent);
+}
+
 /* The thin, warm scrollbars the rest of the app implies. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+}
+
+/* Enter/leave for popovers, dropdowns and tooltips. Driven by the motion
+   tokens so the whole app changes tempo in one place. */
+@keyframes fg-pop-in {
+  from {
+    opacity: 0;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes fg-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-pop-in {
+  animation: fg-pop-in var(--duration-fast) var(--ease-standard) both;
+}
+
+.animate-fade-in {
+  animation: fg-fade-in var(--duration-base) var(--ease-standard) both;
+}
+
+/* Duration utilities. Tailwind exposes no `--duration-*` theme namespace, so
+   `duration-fast` would otherwise be an unknown class that silently leaves the
+   150ms default in place. Registered here against the :root tokens, so the
+   tempo still has exactly one source of truth. */
+@utility duration-fast {
+  transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+  transition-duration: var(--duration-base);
+}
+
+@utility duration-slow {
+  transition-duration: var(--duration-slow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pop-in,
+  .animate-fade-in {
+    animation: none;
+  }
 }

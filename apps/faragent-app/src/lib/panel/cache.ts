@@ -1,0 +1,318 @@
+/**
+ * The optional on-disk cache for panel data.
+ *
+ * What this is for: re-opening a file, or a tab, should not cross the network
+ * again for bytes the app already has. React Query's in-memory cache covers a
+ * running session; this covers a re-opened window.
+ *
+ * Four rules, from the brief, and where each is enforced:
+ *
+ * 1. **Off by default.** [`createPanelCache`] is only ever attached when the
+ *    setting says so (see `state.ts`'s `appCacheEnabled`), and the setting
+ *    starts `false`. With it off the app behaves exactly as it did before this
+ *    module existed: nothing is read, nothing is written.
+ * 2. **Never a credential.** [`isCacheableKey`] refuses any query key naming a
+ *    password, a token, an API key or an ssh credential — defence in depth, on
+ *    top of the panel only ever caching `panel` queries (file bytes, listings
+ *    and git metadata, all of which the remote serves read-only).
+ * 3. **The location is the user's business.** [`APP_CACHE_DIR`] is the
+ *    directory the product designates, and the settings page prints it: what
+ *    lands there is a copy of code from a remote machine, and a user is
+ *    entitled to know that.
+ * 4. **One button clears it.** [`PanelCache.clear`] removes the whole bucket.
+ *
+ * ## The store, and the honest caveat
+ *
+ * Persistence goes through [`CacheStore`], a two-method seam. The store wired
+ * up here is the webview's own `localStorage` — see `createWebStore` and, for
+ * the wording the settings page shows, `settings.cacheNote` in `lib/i18n.ts`.
+ * `~/.faragent/app-cache/` is where the product wants the files; writing there
+ * needs a backend command, and `apps/faragent-app/src-tauri/` is out of scope
+ * for this branch. Rather than claim a directory nothing writes to, the
+ * settings page names both. Swapping in a real file store later is a change to
+ * one function, not to the panel.
+ *
+ * Pure apart from the injected store: `node --test` runs the codec, the guard
+ * and the bucket rules directly.
+ */
+import { b64ToBytes, bytesToB64 } from "../bytes.ts";
+
+/**
+ * Where the cache is meant to live, and what the settings page shows.
+ *
+ * Trailing slash included: it is a directory, and the copy reads better with it.
+ */
+export const APP_CACHE_DIR = "~/.faragent/app-cache/";
+
+/** The setting's own key, and the cache bucket's. Both app-private. */
+export const APP_CACHE_SETTING = "faragent.appCache.enabled";
+export const APP_CACHE_BUCKET = "faragent.appCache.bucket.v1";
+
+// ---------------------------------------------------------------------------
+// The store seam
+// ---------------------------------------------------------------------------
+
+/** The whole of what persistence needs. `read` answers `null` for a miss. */
+export interface CacheStore {
+  read(key: string): string | null;
+  write(key: string, value: string): void;
+  remove(key: string): void;
+}
+
+/** The storage shape `localStorage` and a test double both satisfy. */
+export interface WebStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+/**
+ * A [`CacheStore`] over `localStorage`.
+ *
+ * Every call is wrapped: a webview with storage disabled (private mode, a
+ * quota error, a corrupted profile) throws on access, and a cache that took the
+ * panel down with it would be strictly worse than no cache. A failed write is
+ * dropped, which is exactly what "optional" has to mean.
+ */
+export function createWebStore(storage: WebStorageLike): CacheStore {
+  return {
+    read(key) {
+      try {
+        return storage.getItem(key);
+      } catch {
+        return null;
+      }
+    },
+    write(key, value) {
+      try {
+        storage.setItem(key, value);
+      } catch {
+        // Full, or denied. Not an error the user can act on.
+      }
+    },
+    remove(key) {
+      try {
+        storage.removeItem(key);
+      } catch {
+        // As above.
+      }
+    },
+  };
+}
+
+/** A store that forgets everything. The default when there is no `localStorage`. */
+export function createMemoryStore(): CacheStore {
+  const map = new Map<string, string>();
+  return {
+    read: (key) => map.get(key) ?? null,
+    write: (key, value) => void map.set(key, value),
+    remove: (key) => void map.delete(key),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The credential guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Substrings that make a query key uncacheable.
+ *
+ * The panel's own keys never contain these — but a later task adding a query
+ * would not have to know this rule to trip it, and "we cached an ssh password
+ * to disk" is not a mistake that can be undone after the fact. Matched
+ * case-insensitively against the whole key path.
+ */
+const FORBIDDEN = [
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "apikey",
+  "api_key",
+  "credential",
+  "privatekey",
+  "private_key",
+  "askpass",
+  "identityfile",
+  "hosts.yml",
+  "auth",
+  // The ssh directory and the names of the keys in it. A panel root is a
+  // directory a user can point anywhere, `~/.ssh` included, and the listing or
+  // the bytes of a private key must not land on disk.
+  ".ssh",
+  "id_rsa",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  // Not a credential file a panel is likely to open on purpose, but `/etc` is a
+  // directory a user can point the panel at, and the shadow file is a password
+  // file by definition.
+  "shadow",
+];
+
+/** True when a query key may be written to the cache. */
+export function isCacheableKey(key: readonly unknown[]): boolean {
+  // NUL as the separator, and written as an escape rather than a literal byte.
+  // Two reasons: a raw NUL in the source makes git classify the whole file as
+  // binary, so it stops being reviewable in a diff at all; and the separator
+  // has to be something no key part can contain, or `["id_", "rsa"]` would
+  // read as one forbidden word and let a part smuggle the next one in.
+  const text = key.map(String).join("\u0000").toLowerCase();
+  return !FORBIDDEN.some((word) => text.includes(word));
+}
+
+// ---------------------------------------------------------------------------
+// The codec
+// ---------------------------------------------------------------------------
+
+/** The wire tag for a byte string, chosen so it cannot collide with data. */
+const BYTES_TAG = "$faragentBytes";
+
+/**
+ * A cached value, as text.
+ *
+ * The panel's data is JSON-shaped with one exception: paths and file contents
+ * are `Uint8Array`, which `JSON.stringify` turns into `{"0":137,"1":80,…}` — a
+ * round trip that "works" and costs 20 bytes per byte. The replacer keeps them
+ * as base64 under a tagged key, and [`decodeCacheValue`] puts them back.
+ */
+export function encodeCacheValue(value: unknown): string {
+  return JSON.stringify(value, (_key, item) =>
+    item instanceof Uint8Array ? { [BYTES_TAG]: bytesToB64(item) } : item,
+  );
+}
+
+/** The inverse of [`encodeCacheValue`]. Throws on text that is not JSON. */
+export function decodeCacheValue(text: string): unknown {
+  return JSON.parse(text, (_key, item) => {
+    if (item && typeof item === "object" && BYTES_TAG in item) {
+      const encoded = (item as Record<string, unknown>)[BYTES_TAG];
+      if (typeof encoded === "string") return b64ToBytes(encoded);
+    }
+    return item;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The bucket
+// ---------------------------------------------------------------------------
+
+/**
+ * One connection's cached queries.
+ *
+ * `host` is stored *with* the data and checked before it is used, and that check
+ * is load-bearing rather than defensive: it is what stops one machine's file
+ * being shown under another machine's name.
+ *
+ * `id` is recorded too, but as a *record of which run wrote this*, not as a
+ * guard — and the distinction matters enough to spell out. The backend numbers
+ * helper sessions per run, starting at 1, so the same host is connection 3 in
+ * one run of the app and connection 1 in the next. Guarding hydration on the id
+ * would therefore refuse every bucket that was not written by the current run,
+ * which is precisely the case a disk cache exists for: the object would always
+ * be `null`, the feature would silently do nothing, and a test asserting
+ * "another id does not hydrate" would pass while proving only that.
+ *
+ * The real discriminator is `host`, and it is sufficient: a bucket is restored
+ * for the alias that wrote it, whatever id that alias has this run. The
+ * restored *keys* still carry the old id, so [`restoreEntries`] rewrites them
+ * onto the live connection — see there.
+ */
+export interface CacheBucket {
+  host: string;
+  /** The connection that wrote it. Informational; never a hydration guard. */
+  id: number;
+  /** Serialised React Query key → [`encodeCacheValue`]'d data. */
+  entries: Record<string, string>;
+}
+
+export interface PanelCache {
+  /** The bucket, when it belongs to this host. `null` otherwise. */
+  load(host: string): CacheBucket | null;
+  /** Replace the bucket with this connection's data. */
+  save(bucket: CacheBucket): void;
+  /** Forget everything, now. */
+  clear(): void;
+  /** Bytes on disk, so the settings page can say whether there is anything. */
+  size(): number;
+}
+
+/** A bucket's data, but only when it is this host's. */
+export function usableBucket(bucket: CacheBucket | null, host: string): CacheBucket | null {
+  if (!bucket) return null;
+  if (bucket.host !== host) return null;
+  return bucket;
+}
+
+export function createPanelCache(store: CacheStore): PanelCache {
+  const readBucket = (): CacheBucket | null => {
+    const text = store.read(APP_CACHE_BUCKET);
+    if (text === null) return null;
+    try {
+      const parsed = decodeCacheValue(text) as Partial<CacheBucket> | null;
+      if (
+        !parsed ||
+        typeof parsed.host !== "string" ||
+        typeof parsed.id !== "number" ||
+        typeof parsed.entries !== "object" ||
+        parsed.entries === null
+      ) {
+        return null;
+      }
+      return {
+        host: parsed.host,
+        id: parsed.id,
+        entries: parsed.entries as Record<string, string>,
+      };
+    } catch {
+      // Corrupt, or from an older shape. Treat it as absent; the next save
+      // overwrites it.
+      return null;
+    }
+  };
+
+  return {
+    load: (host) => usableBucket(readBucket(), host),
+    save(bucket) {
+      store.write(APP_CACHE_BUCKET, encodeCacheValue(bucket));
+    },
+    clear() {
+      store.remove(APP_CACHE_BUCKET);
+    },
+    size() {
+      return store.read(APP_CACHE_BUCKET)?.length ?? 0;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The app's own instance
+// ---------------------------------------------------------------------------
+
+/** `localStorage` where there is one, memory otherwise (a Node test, an SSR). */
+export function defaultCacheStore(): CacheStore {
+  const storage = (globalThis as { localStorage?: WebStorageLike }).localStorage;
+  return storage ? createWebStore(storage) : createMemoryStore();
+}
+
+let cache: PanelCache | null = null;
+
+/** The process-wide cache. Built lazily so a test can swap the store first. */
+export function panelCache(): PanelCache {
+  cache ??= createPanelCache(defaultCacheStore());
+  return cache;
+}
+
+/** Read the cache-enabled setting. Off — and off when unreadable. */
+export function appCacheEnabled(store: CacheStore = defaultCacheStore()): boolean {
+  return store.read(APP_CACHE_SETTING) === "on";
+}
+
+/** Write the cache-enabled setting. */
+export function setAppCacheEnabled(
+  enabled: boolean,
+  store: CacheStore = defaultCacheStore(),
+): void {
+  if (enabled) store.write(APP_CACHE_SETTING, "on");
+  else store.remove(APP_CACHE_SETTING);
+}

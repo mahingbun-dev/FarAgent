@@ -9,6 +9,11 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Built faragent-helper binaries — produced by scripts/build-helper.sh, never
+# committed. The containing directory stays tracked because tauri.conf.json's
+# bundle.resources points at it; only the per-platform build output is ignored.
+apps/faragent-app/src-tauri/resources/helper/*/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

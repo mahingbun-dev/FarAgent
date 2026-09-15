@@ -16,6 +16,9 @@ use anyhow::Result;
 pub use faragent_core::vocab::AuthMode;
 use std::fmt;
 use std::io::{Read, Write};
+use std::process::Child;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 /// Result of one finished remote run, decoupled from `std::process::Output`
 /// so a non-OpenSSH transport can fill it too.
@@ -102,6 +105,81 @@ impl Drop for AttachStream {
     /// A dropped stream must not leave an ssh child running.
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+/// How much of the remote command's stderr we keep for diagnostics.
+pub const STDERR_TAIL_LIMIT: usize = 8 * 1024;
+
+/// A live, **binary-safe**, **non-PTY** duplex stream to a long-running remote
+/// command — the twin of [`AttachStream`] for callers that want a byte pipe
+/// rather than a terminal.
+///
+/// The implementation spawns `ssh -T` (no pty) with all three stdio piped. The
+/// remote side therefore sees a clean pipe, which is what a framed protocol
+/// needs (the `faragent-helper` NDJSON channel). Unlike
+/// [`OpenSshTransport::exec_stdio`](crate::OpenSshTransport::exec_stdio) there
+/// is **no timeout**: the stream lives until the caller drops it or the remote
+/// end exits.
+///
+/// `stderr` is drained on a background thread into a bounded tail
+/// ([`stderr_tail`](Self::stderr_tail)). Draining is not optional: a chatty
+/// remote would otherwise fill the pipe buffer and wedge the whole stream, and
+/// the tail is the only evidence left when the remote end dies.
+pub struct CommandStream {
+    /// The remote command's stdout.
+    pub reader: Box<dyn Read + Send>,
+    /// The remote command's stdin.
+    pub writer: Box<dyn Write + Send>,
+    child: Child,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr_thread: Option<JoinHandle<()>>,
+}
+
+impl CommandStream {
+    /// Last bytes the remote wrote to stderr (lossy UTF-8), for error reports.
+    pub fn stderr_tail(&self) -> String {
+        match self.stderr.lock() {
+            Ok(buf) => String::from_utf8_lossy(&buf).into_owned(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// The child's pid, for logs and process cleanup.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Has the remote end exited? `Some(code)` once it has (signal → `1`).
+    pub fn try_wait(&mut self) -> Result<Option<i32>> {
+        Ok(self
+            .child
+            .try_wait()?
+            .map(|status| status.code().unwrap_or(1)))
+    }
+
+    /// Wait for the remote end to exit; returns its code.
+    pub fn wait(&mut self) -> Result<i32> {
+        Ok(self.child.wait()?.code().unwrap_or(1))
+    }
+
+    /// Kill the child (stream closed, tab closed, app exit).
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+impl Drop for CommandStream {
+    /// A dropped stream must not leave an ssh child running.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        // Reap it: killing without waiting leaves a zombie behind.
+        let _ = self.child.wait();
+        if let Some(handle) = self.stderr_thread.take() {
+            // The child is gone, so its stderr write end is closed and the
+            // drain thread has already seen EOF.
+            let _ = handle.join();
+        }
     }
 }
 

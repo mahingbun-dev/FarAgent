@@ -15,15 +15,16 @@ v0.2's Windows remote runs agents in the **foreground**: quitting the agent (or 
 | Live | `[live]` works on Windows remotes; the process-scan `[running]` heuristic stays for foreign processes |
 | Upload | Shipped to the remote on first use, with the user's confirmation; no admin rights, nothing in the registry |
 
-## 2. App frontend styling
+## 2. App frontend — shipped, apart from one piece
 
-Add a real **application frontend** with a designed visual language, instead of only the current terminal picker.
+The **application frontend** landed in v0.2: a designed window rather than only the terminal picker. What is left is the conversation itself.
 
-| Area | Intent |
+| Area | State |
 | --- | --- |
-| Shell | Host list, agent versions, and sessions in a styled app UI (layout, typography, color, empty/error states) |
-| Terminal | Embed or pop the remote agent TUI so vibe coding still uses the vendor interface |
-| Feel | Closer to a desktop product than a raw SSH wrapper, without moving model keys off the remote machine |
+| Shell | **Shipped.** Host and agent switchers, and a session rail grouped by the workspace each session runs in. |
+| Panel | **Shipped.** A read-only file tree / preview / changes / Git view, reading the remote over a helper channel (`git.diff`, `git.branches`, push-driven refresh). No Git writes, by design. |
+| Terminal | **Shipped.** The remote agent's own TUI, attached inside the app, so vibe coding still uses the vendor interface. |
+| Conversation | **Not yet.** Rendering one conversation per agent from the agent's own transcript, with the terminal kept as the escape hatch. |
 
 The manager UI can evolve; remote execution and credentials stay on the host.
 

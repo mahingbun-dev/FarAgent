@@ -7,5 +7,6 @@ pub mod diagnose;
 pub mod dirs;
 pub mod doctor;
 pub mod github;
+pub mod helper;
 pub mod probe;
 pub mod sessions;

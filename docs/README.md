@@ -15,7 +15,8 @@ docs/
 │   ├── development.md
 │   ├── contributing.md
 │   ├── security.md
-│   └── roadmap.md
+│   ├── roadmap.md
+│   └── acceptance.md
 └── zh/                中文
     ├── README.md
     ├── user-guide.md
@@ -23,7 +24,8 @@ docs/
     ├── development.md
     ├── contributing.md
     ├── security.md
-    └── roadmap.md
+    ├── roadmap.md
+    └── acceptance.md
 ```
 
 | Topic | English | 中文 |
@@ -35,5 +37,6 @@ docs/
 | Contributing | [Contributing](en/contributing.md) | [参与贡献](zh/contributing.md) |
 | Security | [Security](en/security.md) | [安全说明](zh/security.md) |
 | Roadmap | [Roadmap](en/roadmap.md) | [后续计划](zh/roadmap.md) |
+| Real-machine acceptance checklist | [Acceptance](en/acceptance.md) | [真机验收清单](zh/acceptance.md) |
 
 

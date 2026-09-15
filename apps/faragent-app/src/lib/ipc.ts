@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AgentKind } from "@/lib/agents";
+import type { HelperEvent, HelperOpen } from "@/lib/helper";
 
 export type Lang = "zh" | "en";
 export type AuthMode = "auto" | "key" | "password";
@@ -61,6 +62,29 @@ export interface Session {
   tmux?: string | null;
   /** Codex `codex exec` / launchd rollouts. */
   scheduled?: boolean;
+  /**
+   * The remote path of this session's conversation transcript, when the list
+   * carried one — the file `lib/chat/transcript.ts` tails. `null`/absent for a
+   * row the list inferred from tmux or a process scan, which is the normal case
+   * for a session started moments ago whose file may not exist yet. Additive and
+   * defaulted on the backend (`SessionSummary::transcript`), so an older backend
+   * that does not send it is read as absent rather than failing.
+   */
+  transcript?: string | null;
+}
+
+/**
+ * What `ensure_session` answers: the tmux session name it ensured, and the
+ * agent-session uuid when there is one to know (see the call site in
+ * {@link ipc.ensureSession} for when that is `null`).
+ *
+ * Both keys are always present — the backend sends `session_id: null` rather
+ * than omitting it — so a reader can branch on the value without also testing
+ * for absence.
+ */
+export interface EnsuredSession {
+  name: string;
+  session_id: string | null;
 }
 
 export interface Plan {
@@ -152,9 +176,42 @@ export function asDiagnosis(e: unknown): Diagnosis | null {
   return null;
 }
 
+/**
+ * The bilingual sentence behind a `CommandError::Localized` rejection, or `null`.
+ *
+ * The twin of [`asDiagnosis`], for a class of failure that is not a connection
+ * diagnosis: a sentence the backend already has in both languages (a
+ * `LocalizedText` — the Windows-remote refusal is the first) and would otherwise
+ * have to pick a language for, which it cannot do well. It arrives as
+ * `{ kind: "localized", message: { zh, en } }` and the reader's language is
+ * chosen here, by `pick`, exactly as the diagnosis's own `summary` is.
+ *
+ * Carrying both is the mechanism: the alternative — a code the frontend maps to
+ * a local table — would mean a second copy of every backend sentence in
+ * `lib/i18n.ts`, drifting from the one the TUI shows. The backend already owns
+ * the sentence; this only carries it.
+ */
+export function asLocalized(e: unknown): Text | null {
+  const v = unwrap(e);
+  if (!v || typeof v !== "object" || !("kind" in v)) return null;
+  const k = v as { kind: string; message?: unknown };
+  if (k.kind !== "localized") return null;
+  const m = k.message;
+  if (!m || typeof m !== "object") return null;
+  const t = m as { zh?: unknown; en?: unknown };
+  if (typeof t.zh !== "string" || typeof t.en !== "string") return null;
+  return { zh: t.zh, en: t.en };
+}
+
 export function errorMessage(e: unknown): string {
   const v = unwrap(e);
   if (typeof v === "string") return v;
+  // A bilingual carrier would stringify to "[object Object]" through the `message`
+  // branch below. English is the fallback here rather than the reader's language
+  // because this helper has no language in scope; the lang-aware path for a
+  // command failure is `helperErrorText` in `lib/helper.ts`, which picks it.
+  const localized = asLocalized(v);
+  if (localized) return localized.en;
   if (v && typeof v === "object" && "message" in v) {
     return String((v as { message: unknown }).message);
   }
@@ -181,7 +238,13 @@ export const ipc = {
     createCwd: boolean,
   ) =>
     // Tauri 2 command args are camelCase (`create_cwd` → `createCwd`).
-    invoke<string>("ensure_session", {
+    //
+    // `session_id` is the id a *new* session was pinned with (`--session-id`), or
+    // the resumed one; `null` when the backend cannot know it — a Codex or Pi
+    // launch (no adapter pins those), a fresh Windows launch, or a resume the
+    // remote could not read. It is what lets a new Claude session's transcript
+    // path be computed at all: see `lib/chat/transcript-path.ts`.
+    invoke<EnsuredSession>("ensure_session", {
       host,
       agent,
       cwd,
@@ -224,4 +287,15 @@ export const ipc = {
   attachResize: (id: number, cols: number, rows: number) =>
     invoke<void>("attach_resize", { id, cols, rows }),
   attachClose: (id: number) => invoke<void>("attach_close", { id }),
+  // The helper channel's three commands. `lib/helper.ts` wraps these into an
+  // awaitable connection; the raw calls live here for the same reason the
+  // terminal's do — one place that names a command and its argument keys.
+  helperOpen: (args: { host: string; onEvent: Channel<HelperEvent> }) =>
+    invoke<HelperOpen>("helper_open", {
+      host: args.host,
+      onEvent: args.onEvent,
+    }),
+  helperCall: (id: number, op: string, args?: Record<string, unknown>) =>
+    invoke<unknown>("helper_call", { id, op, args }),
+  helperClose: (id: number) => invoke<void>("helper_close", { id }),
 };

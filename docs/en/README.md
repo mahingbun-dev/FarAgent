@@ -11,5 +11,6 @@
 | Contributing | [contributing.md](contributing.md) |
 | Security | [security.md](security.md) |
 | Roadmap | [roadmap.md](roadmap.md) |
+| On-a-real-machine acceptance checklist (live refresh / cache / helper) | [acceptance.md](acceptance.md) |
 
 Hub: [docs/README.md](../README.md)

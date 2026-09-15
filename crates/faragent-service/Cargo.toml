@@ -16,6 +16,7 @@ faragent-transport = { path = "../faragent-transport" }
 anyhow.workspace = true
 dirs.workspace = true
 serde.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

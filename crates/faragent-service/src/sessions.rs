@@ -1,5 +1,5 @@
 use anyhow::Result;
-use faragent_core::agents::{self, AgentKind};
+use faragent_core::agents::{self, AgentKind, Launch};
 use faragent_core::config;
 use faragent_core::text::LocalizedText;
 use faragent_core::vocab::HostOs;
@@ -31,6 +31,16 @@ pub struct SessionSummary {
     /// Codex `codex exec` / launchd rollouts, listed separately in the app.
     #[serde(default)]
     pub scheduled: bool,
+    /// The remote path of this session's conversation transcript, when the row
+    /// came from a transcript file. `None` for a row the list only inferred
+    /// from tmux or a process scan — the normal case for a session started
+    /// moments ago, whose file may not exist yet. `#[serde(default)]` because
+    /// this struct serialises straight to the TUI and the app: a reader built
+    /// after this field existed must still deserialise a body written before
+    /// it. (A reader that predates the field needs nothing — serde ignores
+    /// unknown fields by default.)
+    #[serde(default)]
+    pub transcript: Option<String>,
 }
 
 impl SessionSummary {
@@ -108,6 +118,23 @@ pub fn list_sessions(host: &str, agent: AgentKind, os: HostOs) -> Result<Vec<Ses
     }
 }
 
+/// What a start produced — the value the app attaches to the session with.
+///
+/// `name` is what today's callers already used: the tmux session to attach
+/// (POSIX) or the display name (Windows). `session_id` is the id the remote
+/// CLI was *pinned* to, when it was pinned — the app turns it into
+/// `~/.claude/projects/<slug>/<id>.jsonl`, so `None` means "this launch no
+/// chat can be read for yet": the CLI chose its own id and we will only learn
+/// it from a later listing, if at all.
+///
+/// Serialises straight across the Tauri boundary (`ensure_session`), hence
+/// `Serialize`; field names stay snake_case like [`SessionSummary`]'s.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StartedSession {
+    pub name: String,
+    pub session_id: Option<String>,
+}
+
 /// Create a detached tmux session if needed. If it already exists, only attach later.
 ///
 /// `create_cwd = true` runs `mkdir -p` for the working directory on the remote.
@@ -119,25 +146,43 @@ pub fn ensure_tmux_session(
     cwd: &Path,
     session_id: Option<&str>,
     create_cwd: bool,
-) -> Result<String> {
+) -> Result<StartedSession> {
     let client = OpenSshTransport::connect(host)?;
     ensure_tmux_conf(&client)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
+    // A *new* session launches pinned to `sid` — the id we just generated.
+    // Passing the caller's `None` through to the argv here was the bug: the id
+    // named the tmux session but never reached Claude Code, so the transcript
+    // file could not be located. `Launch` makes the two cases distinct.
+    //
+    // Whether the CLI is actually told is not ours to decide: the start script
+    // asks the remote CLI's own `--help` and reports back. So the id we hand
+    // the caller is the one the *remote* says it pinned, never the one we
+    // hoped it would — an older CLI that has never heard of `--session-id`
+    // launches unpinned and reports `None`, which is the app's existing
+    // "transcript unknown, show the terminal" path, not an error.
+    let launch = match session_id {
+        Some(id) => Launch::Resume(id),
+        None => Launch::New(&sid),
+    };
     let cwd_s = cwd.to_string_lossy();
     let script = remote::start_script(
         agent,
         cwd_s.as_ref(),
-        session_id,
+        launch,
         &name,
         create_cwd,
         config::full_permissions(),
     );
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { name } => Ok(name),
+        StartOutcome::Ok { name, pinned } => Ok(StartedSession {
+            name,
+            session_id: pinned,
+        }),
         StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
             &error, &hint, &cwd_s,
         ))),
@@ -154,12 +199,25 @@ pub fn ensure_win_session(
     cwd: &Path,
     session_id: Option<&str>,
     create_cwd: bool,
-) -> Result<String> {
+) -> Result<StartedSession> {
     let client = OpenSshTransport::connect(host)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
+    // The interactive Windows launch pins no id ([`Launch::NewUnpinned`]): the
+    // foreground `ssh -tt` gets no `--session-id`, and the shared helper — the
+    // only thing that could read a transcript — is POSIX-only, so a Windows
+    // conversation view is unreachable either way. A resume still reports the
+    // caller's own id, which the agent is told. There is therefore nothing for
+    // the `--session-id` gate to decide here: it only ever narrows a *new*
+    // POSIX launch. A resume is safe on any version for the same reason it
+    // always worked — `--resume` is the flag every release knows.
+    let launch = match session_id {
+        Some(id) => Launch::Resume(id),
+        None => Launch::NewUnpinned,
+    };
+    let pinned = agent.launched_session_id(launch).map(str::to_string);
     let cwd_s = cwd.to_string_lossy();
     let cwd_b64 = win::b64(&cwd_s);
     let name_b64 = win::b64(&name);
@@ -170,7 +228,10 @@ pub fn ensure_win_session(
         &[&cwd_b64, create, &name_b64],
     )?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { .. } => Ok(name),
+        StartOutcome::Ok { .. } => Ok(StartedSession {
+            name,
+            session_id: pinned,
+        }),
         StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
             &error, &hint, &cwd_s,
         ))),
@@ -258,6 +319,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             running: false,
             tmux: Some(name.clone()),
             scheduled: false,
+            transcript: None,
         });
     }
 
@@ -292,6 +354,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             running: true,
             tmux: None,
             scheduled: false,
+            transcript: None,
         });
     }
 
@@ -351,6 +414,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
         running: false,
         tmux: Some(agents::tmux_name(agent, &sid)),
         scheduled,
+        transcript: f.path.clone(),
     }
 }
 
@@ -372,6 +436,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -394,6 +459,8 @@ mod tests {
         assert!(rows[0].live);
         assert_eq!(rows[0].cwd.as_deref(), Some("/work"));
         assert_eq!(rows[0].title.as_deref(), Some("(live)"));
+        // A row inferred from tmux alone has no transcript file to point at.
+        assert_eq!(rows[0].transcript, None);
     }
 
     #[test]
@@ -406,6 +473,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -443,6 +511,10 @@ mod tests {
                     id: "rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     mtime: 20.0,
                     cwd_hint: "".into(),
+                    path: Some(
+                        "/home/me/.codex/sessions/2026/09/14/rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl"
+                            .into(),
+                    ),
                     body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"vscode","originator":"Codex Desktop"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}
 "#
@@ -453,6 +525,7 @@ mod tests {
                     id: "rollout-01bbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                     mtime: 10.0,
                     cwd_hint: "".into(),
+                    path: None,
                     body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"exec","originator":"codex_exec"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hourly sync"}]}}
 "#
@@ -467,6 +540,13 @@ mod tests {
         let scheduled = rows.iter().find(|r| r.scheduled).unwrap();
         assert_eq!(interactive.title.as_deref(), Some("fix the build"));
         assert_eq!(scheduled.title.as_deref(), Some("hourly sync"));
+        // The transcript path rides through from the DiskFile untouched; a
+        // file-backed row that carried none stays `None`.
+        assert_eq!(
+            interactive.transcript.as_deref(),
+            Some("/home/me/.codex/sessions/2026/09/14/rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl")
+        );
+        assert_eq!(scheduled.transcript, None);
     }
 
     #[test]
@@ -479,6 +559,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "C--Users-me-app".into(),
                 body: br#"{"cwd":"C:\\Users\\me\\app","message":"hello"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![
                 ("claude".into(), "abc123abc123".into()),
@@ -528,6 +609,7 @@ mod tests {
 "##
                 .as_bytes()
                 .to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -543,5 +625,92 @@ mod tests {
         let s: SessionSummary = serde_json::from_str(r#"{"id":"x","agent":"claude"}"#).unwrap();
         assert!(!s.running);
         assert!(!s.live);
+        // A payload written before this field existed deserialises with it
+        // absent, not with an error: the app and the TUI both read this shape.
+        assert_eq!(s.transcript, None);
+    }
+
+    #[test]
+    fn transcript_survives_a_serde_round_trip() {
+        let s = SessionSummary {
+            id: "x".into(),
+            agent: "claude".into(),
+            title: None,
+            cwd: None,
+            mtime: 0.0,
+            live: false,
+            running: false,
+            tmux: None,
+            scheduled: false,
+            transcript: Some("/home/me/.claude/projects/-Users-me/x.jsonl".into()),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("/home/me/.claude/projects/-Users-me/x.jsonl"));
+        let back: SessionSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.transcript, s.transcript);
+    }
+
+    /// The shape the app receives from `ensure_session`. It crosses the Tauri
+    /// boundary, so the field names are part of the contract: snake_case, and
+    /// `session_id` is `null` (not absent) when the launch pinned no id.
+    #[test]
+    fn started_session_serialises_for_the_app() {
+        // The name is *derived* from the id, never chosen: `ensure_tmux_session`
+        // settles the id first and names the session after its last twelve
+        // alphanumerics (`agents::short_id`). Deriving it here is what makes this
+        // a claim about that contract rather than a second spelling of the same
+        // string — the fixture used to read `faragent-claude-15c76662-240`, which
+        // no code path can produce for this uuid, and the assertion could not
+        // tell, because all it checked was that the struct serialises.
+        let id = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
+        let name = agents::tmux_name(AgentKind::Claude, id);
+        assert_eq!(name, "faragent-claude-fd4f1b3053dd");
+        let started = StartedSession {
+            name,
+            session_id: Some(id.into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&started).unwrap(),
+            r#"{"name":"faragent-claude-fd4f1b3053dd","session_id":"15c76662-2409-4f37-bd81-fd4f1b3053dd"}"#
+        );
+
+        // A launch the remote declined to pin reports `null`; its name still
+        // derives from the id the backend generated for the tmux session.
+        let unpinned = StartedSession {
+            name: agents::tmux_name(AgentKind::Codex, "01a09da3f4c3"),
+            session_id: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&unpinned).unwrap(),
+            r#"{"name":"faragent-codex-01a09da3f4c3","session_id":null}"#
+        );
+    }
+
+    /// Where the `--session-id` gate lands for the caller: `session_id` is the
+    /// id the *remote* reported pinning, so a CLI that does not know the flag
+    /// yields `null` — the app's existing "no conversation view" path — rather
+    /// than an id we hoped for and a transcript path that does not exist.
+    #[test]
+    fn the_reported_session_id_is_the_one_the_remote_pinned() {
+        let id = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
+        let build = |text: String| match remote::parse_start(&text).unwrap() {
+            StartOutcome::Ok { name, pinned } => StartedSession {
+                name,
+                session_id: pinned,
+            },
+            other => panic!("expected a started session, got {other:?}"),
+        };
+
+        let pinned = build(format!(
+            "FARAGENT_START_V1\nok\tcreated\tfaragent-claude-x\npin\t{id}\n"
+        ));
+        assert_eq!(pinned.session_id.as_deref(), Some(id));
+
+        let declined = build("FARAGENT_START_V1\nok\tcreated\tfaragent-claude-x\npin\t\n".into());
+        assert_eq!(declined.session_id, None);
+        // An older remote that never prints the line at all degenerates the
+        // same way, which is why the degradation needs no version check.
+        let older = build("FARAGENT_START_V1\nok\texists\tfaragent-claude-x\n".into());
+        assert_eq!(older.session_id, None);
     }
 }

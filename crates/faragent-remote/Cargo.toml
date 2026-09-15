@@ -17,3 +17,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+# The fallback channel's tests parse the script's frames with the very parser
+# the helper's frames go through, which is the point: one wire format, two
+# implementations. Dev-only — nothing here is linked into the crate.
+faragent-helper = { path = "../faragent-helper" }

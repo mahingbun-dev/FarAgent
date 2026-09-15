@@ -1,0 +1,185 @@
+/**
+ * The panel's helper connection.
+ *
+ * The three tabs read one remote, so they share one channel rather than opening
+ * three. It is held in a module-level lease keyed by host, which is what keeps
+ * React StrictMode's mount → unmount → mount from opening (and immediately
+ * killing) an ssh child on every panel mount in `pnpm dev` — the same guard
+ * `TerminalView` uses for its attach, in its generic form
+ * (`lib/panel/lease.ts`).
+ *
+ * Two states are surfaced rather than smoothed over:
+ *
+ * - **The mode.** A remote on the bash fallback says so, because a panel that
+ *   worked quietly while unable to do everything the native helper can would be
+ *   the silent degradation `faragent_service::helper` exists to prevent.
+ * - **A closed channel.** The remote helper can exit; when it does, the panel
+ *   says so instead of spinning forever.
+ *
+ * And one is *asked for*: the remote's own op list, via one `ping` per
+ * connection. The mode says "degraded", but only the op list says which three
+ * panel features the fallback cannot serve — see `lib/panel/capabilities.ts`.
+ */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { helperFallbackNotice, openHelper, type HelperConnection } from "@/lib/helper";
+import {
+  capabilitiesFor,
+  OPTIMISTIC,
+  type PanelCapabilities,
+} from "@/lib/panel/capabilities";
+import { createHelperLease } from "@/lib/panel/lease";
+import { useStore } from "@/state";
+
+export type PanelHelperStatus = "connecting" | "open" | "closed" | "error";
+
+export interface PanelHelperValue {
+  host: string;
+  status: PanelHelperStatus;
+  /** Non-null once `status === "open"` or `"closed"`. */
+  connection: HelperConnection | null;
+  /** The rejection; only meaningful for `status === "error"`. */
+  error: unknown;
+  /** The fallback's bilingual sentence, or `null` on a native helper. */
+  notice: string | null;
+  /**
+   * Which of the panel's op-dependent features this remote can serve. Optimistic
+   * until the remote's `ping` answers; see `lib/panel/capabilities.ts`.
+   */
+  capabilities: PanelCapabilities;
+  /** Ask for a fresh channel. The error state's retry. */
+  retry: () => void;
+}
+
+const PanelHelperContext = createContext<PanelHelperValue | null>(null);
+
+/**
+ * One channel per host, held across StrictMode's immediate remount.
+ *
+ * **Everything on a host that needs a helper shares this one connection.** That
+ * is not an optimisation, it is the protocol: a second `helper_open` for the same
+ * host *ends* the first (`helper.rs::adopt`), so a chat view that opened its own
+ * would hang up the panel's ssh session — and the panel's would hang up the
+ * chat's. Keying by host and refcounting the holders is what makes the two
+ * coexist, and the retry counter lives in the lease rather than in this file for
+ * the same reason: two holders that each kept their own would drift onto two keys
+ * and reach exactly the destructive case above — see `lib/panel/lease.ts`.
+ */
+const lease = createHelperLease<HelperConnection>();
+
+interface HelperState {
+  status: PanelHelperStatus;
+  connection: HelperConnection | null;
+  error: unknown;
+}
+
+const CONNECTING: HelperState = { status: "connecting", connection: null, error: null };
+
+export function PanelHelperProvider({
+  host,
+  children,
+}: {
+  host: string;
+  children: ReactNode;
+}) {
+  const lang = useStore((s) => s.lang);
+  const [state, setState] = useState<HelperState>(CONNECTING);
+  const [capabilities, setCapabilities] = useState<PanelCapabilities>(OPTIMISTIC);
+
+  // Which key to hold. Read, not chosen: the generation belongs to the host, so
+  // every provider on it — this one and the chat view's — computes the same key
+  // and a retry moves them together. `watch` is stable per host, which is what
+  // `useSyncExternalStore` needs to not re-subscribe on every render.
+  const watchHost = useCallback(
+    (listener: () => void) => lease.watch(host, listener),
+    [host],
+  );
+  const key = useSyncExternalStore(watchHost, () => lease.keyFor(host));
+
+  useEffect(() => {
+    let alive = true;
+    let stop: (() => void) | undefined;
+    setState(CONNECTING);
+    // Back to optimistic for the new channel: the previous remote's op list says
+    // nothing about this one, and a stale "no diffs here" would be worse than a
+    // moment of optimism.
+    setCapabilities(OPTIMISTIC);
+
+    lease.acquire(key, () => openHelper(host)).then(
+      (connection) => {
+        if (!alive) return;
+        setState({ status: "open", connection, error: null });
+        stop = connection.onClosed(() => {
+          if (alive) setState({ status: "closed", connection, error: null });
+        });
+        // One `ping` per connection, however many panels share it — the answer
+        // decides which features the tabs may offer.
+        void capabilitiesFor(connection).then((decided) => {
+          if (alive) setCapabilities(decided);
+        });
+      },
+      (error: unknown) => {
+        if (alive) setState({ status: "error", connection: null, error });
+      },
+    );
+
+    return () => {
+      alive = false;
+      stop?.();
+      lease.release(key, (connection) => {
+        void connection.close();
+      });
+    };
+  }, [host, key]);
+
+  const retry = useCallback(() => lease.renew(host), [host]);
+
+  const value = useMemo<PanelHelperValue>(
+    () => ({
+      host,
+      status: state.status,
+      connection: state.connection,
+      error: state.error,
+      notice: state.connection
+        ? helperFallbackNotice(state.connection.mode, lang)
+        : null,
+      capabilities,
+      retry,
+    }),
+    [host, state, lang, capabilities, retry],
+  );
+
+  return (
+    <PanelHelperContext.Provider value={value}>{children}</PanelHelperContext.Provider>
+  );
+}
+
+/** The panel's helper channel. Only valid below `PanelHelperProvider`. */
+export function usePanelHelper(): PanelHelperValue {
+  const value = useContext(PanelHelperContext);
+  if (!value) throw new Error("usePanelHelper outside PanelHelperProvider");
+  return value;
+}
+
+/**
+ * The same channel, under the name that says what it is rather than who first
+ * needed it.
+ *
+ * The chat view reads the remote too (it tails a transcript over `fs.read` and
+ * `watch.subscribe`), and it must join *this* connection rather than open one —
+ * see the lease's note above. These aliases exist so a second consumer does not
+ * have to import something called "Panel…" to say so, and so the day the panel
+ * moves the chat does not move with it.
+ */
+export type HelperStatus = PanelHelperStatus;
+export type HelperValue = PanelHelperValue;
+export const HelperProvider = PanelHelperProvider;
+export const useHelper = usePanelHelper;

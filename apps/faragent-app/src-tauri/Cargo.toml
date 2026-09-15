@@ -18,6 +18,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 faragent-core = { path = "../../../crates/faragent-core" }
+# The helper channel's wire format lives here, and only here: the app speaks it
+# through `faragent_helper::proto` rather than restating the framing.
+faragent-helper = { path = "../../../crates/faragent-helper" }
 faragent-install = { path = "../../../crates/faragent-install" }
 faragent-remote = { path = "../../../crates/faragent-remote" }
 faragent-service = { path = "../../../crates/faragent-service" }

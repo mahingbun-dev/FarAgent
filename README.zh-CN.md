@@ -79,7 +79,7 @@ flowchart LR
 ## 功能
 
 - **四家 agent，一个选择器** — Claude Code、Codex、Grok Build、Pi；未安装显示「未安装 · 回车安装」。
-- **原生 vibe coding** — 不是自研聊天界面。slash、diff、权限提示都是该 agent 自己的。
+- **原生 vibe coding** — slash、diff、权限提示都是该 agent 自己的，没有重写一份。FarAgent 自己画的只是外面这层壳：应用窗口、按工作区分组的会话列表、只读的文件 / Git 面板（走远端 helper 通道）。把对话本身渲染出来（不走 agent 的 TUI）还在[计划中](docs/zh/roadmap.md)，尚未实现。
 - **会话列表** — 磁盘上的 idle 记录，加上 **live** 的 tmux 窗格。
 - **安全重连** — live 只 attach，避免两个 Codex 同时改同一仓库（[openai/codex#30424](https://github.com/openai/codex/issues/30424)）。
 - **远程仍是你的** — 官方安装器在你确认命令之后跑在那台机器上；API key 留在远程；不对外监听；流量走 SSH。

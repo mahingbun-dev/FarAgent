@@ -54,3 +54,82 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked
+
+  frontend:
+    # 桌面端前端：node --test 单测 + 生产构建（含 tsc）。
+    # 上面两个作业只碰 Rust，前端坏了不会有人发现。
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/faragent-app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/faragent-app/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  helper:
+    # 各平台的 faragent-helper 产物。它们是构建产物（已 gitignore），所以本机
+    # 拿不到的目标（windows-aarch64 之外的组合）都从这里下载。
+    # 脚本对拿不到的平台是「跳过并打印原因」，不是失败 —— 见 scripts/build-helper.sh。
+    name: helper (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platforms: "--platform linux-x86_64 --platform linux-aarch64"
+            targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+            zig: true
+          - os: macos-latest
+            platforms: "--platform darwin-arm64 --platform darwin-x86_64"
+            targets: x86_64-apple-darwin
+            zig: false
+          - os: windows-latest
+            platforms: "--platform windows-x86_64"
+            targets: ""
+            zig: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Add cross targets
+        if: matrix.targets != ''
+        shell: bash
+        run: rustup target add ${{ matrix.targets }}
+
+      # Linux 目标用 musl 静态链接，需要 zig 当链接器。
+      - uses: goto-bus-stop/setup-zig@v2
+        if: matrix.zig
+
+      - name: Install cargo-zigbuild
+        if: matrix.zig
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build helper artifacts
+        shell: bash
+        run: bash scripts/build-helper.sh ${{ matrix.platforms }}
+
+      - name: Upload helper artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: faragent-helper-${{ matrix.os }}
+          path: apps/faragent-app/src-tauri/resources/helper/*/
+          if-no-files-found: warn
