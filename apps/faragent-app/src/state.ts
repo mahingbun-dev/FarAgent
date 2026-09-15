@@ -108,7 +108,9 @@ export type TabInput = Omit<Tab, "id" | "panel" | "view"> & {
    * Which view to open on. Omit to take {@link defaultTabView}, which is what
    * every caller does — an explicit value is for a caller that has a reason.
    * Re-opening an existing tab never changes its view: the reader's choice
-   * stands.
+   * stands. (The one exception is not a choice at all — see the `view` field in
+   * `openTab`, where a re-open that could no longer offer the view showing falls
+   * back to the terminal rather than stranding the tab.)
    */
   view?: TabView;
 };
@@ -239,10 +241,25 @@ export const useStore = create<Store>((set) => ({
                   // The transcript path is learned from the session list, which
                   // is the surface that has it; a re-open from one that does not
                   // know it keeps the path the tab already had, exactly as it
-                  // keeps the cwd. `view` is deliberately absent: which way the
-                  // reader is looking is theirs, not the opener's.
+                  // keeps the cwd.
                   agent: input.agent,
                   transcript: input.transcript ?? tab.transcript,
+                  // Which way the reader is looking is theirs, not the opener's —
+                  // but only while it is still a view this tab has. A re-open can
+                  // change the agent (`sameTarget`'s tmux branch compares specs
+                  // that carry no agent), and a tab left on `chat` with an agent
+                  // that has no adapter is a dead end: the conversation pane says
+                  // there is none, and the toggle back is *disabled*. So the view
+                  // is kept unless the tab could no longer offer it, in which case
+                  // it falls back to the terminal on the terms `defaultTabView`
+                  // already defines.
+                  view:
+                    defaultTabView({
+                      agent: input.agent,
+                      transcript: input.transcript ?? tab.transcript,
+                    }) === "terminal"
+                      ? "terminal"
+                      : tab.view,
                 }
               : tab,
           ),

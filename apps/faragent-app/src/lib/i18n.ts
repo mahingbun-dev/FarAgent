@@ -198,6 +198,9 @@ export const ZH: Record<string, string> = {
   "chat.loading": "正在读取对话…",
   "chat.empty": "这个会话还没有对话内容",
   "chat.emptyHint": "可以直接在终端里开始；有了对话内容后会显示在这里。",
+  "chat.noTranscript": "不知道这个会话的对话文件在哪",
+  "chat.noTranscriptHint":
+    "这个应用没有拿到它的对话文件路径，所以这里没有东西可读。终端照常可用。",
   "chat.unavailable": "这个助手还没有对话视图，只能看终端。",
   "chat.error": "读取对话失败：{message}",
   "chat.retry": "重试",
@@ -454,6 +457,9 @@ export const EN: Record<string, string> = {
   "chat.empty": "This session has no conversation yet",
   "chat.emptyHint":
     "Start in the terminal — what the agent says appears here once there is any.",
+  "chat.noTranscript": "This app does not know where this session's transcript is",
+  "chat.noTranscriptHint":
+    "It never learned the path to the conversation file, so there is nothing to read here. The terminal is unaffected.",
   "chat.unavailable": "This agent has no conversation view yet; the terminal is all there is.",
   "chat.error": "Could not read the conversation: {message}",
   "chat.retry": "Retry",

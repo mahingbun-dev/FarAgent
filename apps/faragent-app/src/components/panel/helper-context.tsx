@@ -27,6 +27,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { helperFallbackNotice, openHelper, type HelperConnection } from "@/lib/helper";
@@ -35,7 +36,7 @@ import {
   OPTIMISTIC,
   type PanelCapabilities,
 } from "@/lib/panel/capabilities";
-import { createLease } from "@/lib/panel/lease";
+import { createHelperLease } from "@/lib/panel/lease";
 import { useStore } from "@/state";
 
 export type PanelHelperStatus = "connecting" | "open" | "closed" | "error";
@@ -63,14 +64,16 @@ const PanelHelperContext = createContext<PanelHelperValue | null>(null);
 /**
  * One channel per host, held across StrictMode's immediate remount.
  *
- * **The key is the host alone, so everything on a host that needs a helper
- * shares this one connection.** That is not an optimisation, it is the protocol:
- * a second `helper_open` for the same host replaces the first
- * (`helper.rs::adopt`), so a chat view that opened its own would hang up the
- * panel's ssh session — and the panel's would hang up the chat's. Keying by host
- * and refcounting the holders is what makes the two coexist.
+ * **Everything on a host that needs a helper shares this one connection.** That
+ * is not an optimisation, it is the protocol: a second `helper_open` for the same
+ * host *ends* the first (`helper.rs::adopt`), so a chat view that opened its own
+ * would hang up the panel's ssh session — and the panel's would hang up the
+ * chat's. Keying by host and refcounting the holders is what makes the two
+ * coexist, and the retry counter lives in the lease rather than in this file for
+ * the same reason: two holders that each kept their own would drift onto two keys
+ * and reach exactly the destructive case above — see `lib/panel/lease.ts`.
  */
-const lease = createLease<HelperConnection>();
+const lease = createHelperLease<HelperConnection>();
 
 interface HelperState {
   status: PanelHelperStatus;
@@ -88,17 +91,22 @@ export function PanelHelperProvider({
   children: ReactNode;
 }) {
   const lang = useStore((s) => s.lang);
-  const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<HelperState>(CONNECTING);
   const [capabilities, setCapabilities] = useState<PanelCapabilities>(OPTIMISTIC);
+
+  // Which key to hold. Read, not chosen: the generation belongs to the host, so
+  // every provider on it — this one and the chat view's — computes the same key
+  // and a retry moves them together. `watch` is stable per host, which is what
+  // `useSyncExternalStore` needs to not re-subscribe on every render.
+  const watchHost = useCallback(
+    (listener: () => void) => lease.watch(host, listener),
+    [host],
+  );
+  const key = useSyncExternalStore(watchHost, () => lease.keyFor(host));
 
   useEffect(() => {
     let alive = true;
     let stop: (() => void) | undefined;
-    // The attempt is part of the key on purpose: the lease caches the *promise*,
-    // including a rejected one, so retrying under the same key would replay the
-    // same failure instead of dialling again.
-    const key = `${host}#${attempt}`;
     setState(CONNECTING);
     // Back to optimistic for the new channel: the previous remote's op list says
     // nothing about this one, and a stale "no diffs here" would be worse than a
@@ -130,9 +138,9 @@ export function PanelHelperProvider({
         void connection.close();
       });
     };
-  }, [host, attempt]);
+  }, [host, key]);
 
-  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const retry = useCallback(() => lease.renew(host), [host]);
 
   const value = useMemo<PanelHelperValue>(
     () => ({

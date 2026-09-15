@@ -45,6 +45,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DiffFileView } from "@/components/panel/diff-view";
+import { CONTENT_WIDTH } from "@/design";
 import { diffTextOf, inputJson } from "@/lib/chat/tool-input";
 import { toolKind, toolRunLine, type ToolKind } from "@/lib/chat/tool-call";
 import type { ToolEvent } from "@/lib/chat/events";
@@ -240,13 +241,13 @@ export function ToolRow({ events }: { events: readonly ToolEvent[] }) {
   const line = toolRunLine(events, t);
 
   return (
-    <div className="max-w-prose">
+    <div style={{ maxWidth: CONTENT_WIDTH.content }}>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((was) => !was)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
+          "flex w-full max-w-prose items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
           failed
             ? "border-danger/40 bg-danger/5 hover:bg-danger/10"
             : "border-border bg-surface-raised/40 hover:bg-surface-hover",
@@ -269,7 +270,17 @@ export function ToolRow({ events }: { events: readonly ToolEvent[] }) {
       </button>
 
       {open ? (
-        <div className="mt-1 space-y-1.5">
+        /*
+          What opens is allowed the **content** width, not the prose width the
+          collapsed line keeps (`CONTENT_WIDTH`, the same pair `message-list.tsx`
+          sizes the list with). A patch is not prose: it is monospace, it is laid
+          out in columns, and a line of it does not wrap — so at the reading
+          width a real diff clipped a dozen characters off the right edge, and
+          the overflow is scrolled by a scrollbar macOS never draws. The caveat
+          below is the one that survives this: a line wider than the content
+          column can still only be reached by scrolling.
+        */
+        <div className="mt-1 space-y-1.5" style={{ maxWidth: CONTENT_WIDTH.content }}>
           {events.map((event) => (
             <CallDetail key={event.id} event={event} />
           ))}

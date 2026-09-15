@@ -16,8 +16,13 @@
  *
  * ## The states this draws, and why each one is deliberate
  *
- * - **No transcript path** (`tab.transcript === null`). Not an error: a login or
- *   install tab has no session, hence no conversation. Says so.
+ * - **No transcript path** (`tab.transcript === null`). Says *that*, and not
+ *   "this session has no conversation": the path is unknown, which is a
+ *   different fact and the true one for a row the rail inferred from tmux or a
+ *   process scan, and for a login or install tab (no session, so no
+ *   conversation). Telling a reader with a 500-turn session that it "has no
+ *   conversation yet" would be a lie about the one thing this pane exists to
+ *   show.
  * - **No adapter** (`adapterFor(tab.agent) === null`). Codex, Grok and Pi have no
  *   event model yet, and S6's fallback is the terminal. If a tab somehow reaches
  *   this view anyway, it says which agent cannot be shown rather than rendering
@@ -130,8 +135,8 @@ function ChatBody({ tab }: { tab: Tab }) {
     return (
       <Centred>
         <Empty>
-          <p>{t("chat.empty")}</p>
-          <p className="mt-1 text-xs">{t("chat.emptyHint")}</p>
+          <p>{t("chat.noTranscript")}</p>
+          <p className="mt-1 text-xs">{t("chat.noTranscriptHint")}</p>
         </Empty>
       </Centred>
     );

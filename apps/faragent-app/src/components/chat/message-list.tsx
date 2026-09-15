@@ -133,6 +133,24 @@ export function MessageList({ items }: { items: readonly ChatItem[] }) {
    * One observer for every mounted row, created once. The callback reads the
    * row's index off the element rather than closing over it, so rows entering
    * the window do not each need a new observer.
+   *
+   * ## The sweep, and why the ref callback cannot do this alone
+   *
+   * The rows mounted in this component's **first** commit are in the DOM before
+   * this effect exists: React attaches refs during the mutation phase and runs
+   * layout effects after it, so `observerRef.current?.observe(element)` in the
+   * row ref below found a null ref and did nothing — and each row's callback is
+   * memoised per index (`refsRef`), so it is never called again for that row.
+   * Those rows were therefore observed by nothing at all, and the failure is
+   * silent and shaped like a layout bug rather than a missing subscription:
+   * opening one grows it while every row below keeps the offset it was
+   * measured at, so the next row paints **over** it. For a conversation shorter
+   * than one screen that is every row in the list.
+   *
+   * The sweep is the fix, and it has to live here rather than in the callback:
+   * the callback runs before this effect and cannot observe anything it has not
+   * created yet. Rows mounted *later* — the ones that scroll into the window —
+   * are still the callback's job, and it does hear about those.
    */
   const observerRef = useRef<ResizeObserver | null>(null);
   useLayoutEffect(() => {
@@ -144,6 +162,12 @@ export function MessageList({ items }: { items: readonly ChatItem[] }) {
       }
     });
     observerRef.current = observer;
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      for (const element of scroller.querySelectorAll<HTMLElement>("[data-row]")) {
+        observer.observe(element);
+      }
+    }
     return () => {
       observer.disconnect();
       observerRef.current = null;

@@ -22,6 +22,7 @@ import { Brain, ChevronRight, CornerDownRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/chat/markdown";
 import { ToolRow } from "@/components/chat/tool-row";
+import { CONTENT_WIDTH } from "@/design";
 import { firstLine } from "@/lib/chat/tool-input";
 import type { ChatItem } from "@/lib/chat/sidechain";
 import type { MessageEvent, ThinkingEvent } from "@/lib/chat/events";
@@ -34,6 +35,13 @@ import { useT } from "@/state";
  * A user turn is drawn in a raised card so it is findable when scrolling back
  * through a page of assistant text and tool rows; the assistant's own prose sits
  * on the canvas, which is where the reference UI puts it.
+ *
+ * The assistant's box is the **content** width rather than the reading width,
+ * with the reading cap applied to the prose inside it (`markdown.tsx`): prose
+ * stays 65ch, and a fenced block — which does not wrap and does not want to be
+ * scrolled inside a 65ch column — is allowed the room it needs. The user's card
+ * keeps the narrow width, because a card is a shape rather than a column and a
+ * wide one around narrow text reads as an empty box.
  */
 function Message({ event }: { event: MessageEvent }) {
   if (event.role === "user") {
@@ -44,7 +52,7 @@ function Message({ event }: { event: MessageEvent }) {
     );
   }
   return (
-    <div className="max-w-prose">
+    <div style={{ maxWidth: CONTENT_WIDTH.content }}>
       <Markdown text={event.markdown} />
     </div>
   );
