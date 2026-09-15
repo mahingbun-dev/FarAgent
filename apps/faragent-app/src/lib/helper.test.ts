@@ -262,6 +262,27 @@ test("no tagged failure reaches the user as [object Object]", () => {
   assert.equal(HelperError.from({ kind: "timeout" }).message, "no reply to the request");
 });
 
+test("a failure with no message is a sentence, never 'null' or '[object Object]'", () => {
+  // The general end of the class Task 8 closed for *tagged* failures. A closed
+  // helper reports `error: null` (`helper-context.tsx`), and `String(e)` of a
+  // bare `null` is the literal "null" — which reached the panel's copy as
+  // `读取对话失败： null`. Every shape below carries nothing a reader can use, and
+  // every one of them must read as a sentence instead.
+  for (const e of [null, undefined, {}, { message: null }, "  "]) {
+    assert.equal(helperErrorText(e, "zh"), "helper 没有给出原因", JSON.stringify(e));
+    assert.equal(helperErrorText(e, "en"), "the helper gave no reason", JSON.stringify(e));
+    const message = HelperError.from(e).message;
+    assert.notEqual(message, "null", JSON.stringify(e));
+    assert.notEqual(message, "undefined", JSON.stringify(e));
+    assert.doesNotMatch(message, /\[object Object\]/, JSON.stringify(e));
+  }
+
+  // A message that *is* there still passes through untouched, in both arrival
+  // shapes: a thrown `Error`, and a bare string rejection.
+  assert.equal(helperErrorText(new Error("boom"), "zh"), "boom");
+  assert.equal(helperErrorText("plain text", "en"), "plain text");
+});
+
 test("a timeout reads in Chinese, and in English exactly as it did before", () => {
   // Task 8 introduced this sentence in English only. It was never in
   // `lib/i18n.ts`, because the backend sends `op` and `seconds` and no prose —

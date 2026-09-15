@@ -56,10 +56,13 @@
  *   the one most likely to be mistaken for a bug: it gets a sentence, not
  *   whitespace — and the composer, because this is precisely the state a reader
  *   wants to type in.
- * - **A read that failed.** The rejection's message, and a retry, because the
- *   remote helper can die and be replaced. The composer is deliberately absent:
- *   a transcript that cannot be read is a conversation this pane cannot show the
- *   result of, and a send button whose effect you cannot see is worse than none.
+ * - **The initial read that failed.** The rejection's message, and a retry,
+ *   because the remote helper can die and be replaced. The composer is
+ *   deliberately absent: a transcript that cannot be read is a conversation this
+ *   pane cannot show the result of, and a send button whose effect you cannot
+ *   see is worse than none. This is for the read that would have put the
+ *   conversation on screen — a failure to load *older* turns is a notice on the
+ *   "load earlier" strip instead, so the turns already rendered stay rendered.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -293,11 +296,21 @@ function ChatBody({ tab, attach }: { tab: Tab; attach: TabAttach }) {
             window's arithmetic takes `scrollTop` as a number, and a strip inside the
             scrolling content would make that number mean something different at the
             top than everywhere else.
+
+            A failed scroll-up keeps this strip and the list below it on screen: the
+            failure is a notice *on the strip* with the retry there, not the
+            whole-pane error. `status === "error"` is reserved for the initial read,
+            which genuinely has nothing to show — a failure to load *older* bytes
+            must never take away the conversation already rendered.
           */}
           {transcript.hasEarlier ? (
             <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
               <span className="text-micro text-muted-foreground">
-                {t("chat.earlier", { size: formatBytes(transcript.unloadedBefore) })}
+                {transcript.earlierError !== null
+                  ? t("chat.earlierError", {
+                      message: errorMessage(transcript.earlierError, lang),
+                    })
+                  : t("chat.earlier", { size: formatBytes(transcript.unloadedBefore) })}
               </span>
               <Button
                 variant="ghost"
@@ -306,7 +319,11 @@ function ChatBody({ tab, attach }: { tab: Tab; attach: TabAttach }) {
                 disabled={transcript.loadingEarlier}
                 onClick={transcript.loadEarlier}
               >
-                {transcript.loadingEarlier ? t("chat.reading") : t("chat.loadEarlier")}
+                {transcript.loadingEarlier
+                  ? t("chat.reading")
+                  : transcript.earlierError !== null
+                    ? t("chat.retry")
+                    : t("chat.loadEarlier")}
               </Button>
             </div>
           ) : null}

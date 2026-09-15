@@ -70,8 +70,18 @@ export interface TranscriptState {
   /** The records the tail holds, in file order. Raw: an adapter gives them meaning. */
   records: readonly unknown[];
   status: TranscriptStatus;
-  /** The rejection, meaningful only for `status === "error"`. */
+  /** The rejection that stopped the *initial* read; meaningful only for `status === "error"`. */
   error: unknown;
+  /**
+   * The rejection from the most recent {@link loadEarlier}, or `null`.
+   *
+   * Kept apart from {@link error} on purpose: a failure to load *older* content
+   * is not a failure of the read that put this conversation on screen, and it
+   * must not take that conversation away. It belongs where the action is — a
+   * notice on the "load earlier" strip — which is why it is its own field rather
+   * than a `status`.
+   */
+  earlierError: unknown;
   /** True while there are bytes before `records[0]` that `loadEarlier` can fetch. */
   hasEarlier: boolean;
   /** How many bytes are not loaded yet — the figure the "load earlier" strip names. */
@@ -102,6 +112,7 @@ export function useTranscript(
   const [records, setRecords] = useState<readonly unknown[]>(NOTHING);
   const [status, setStatus] = useState<TranscriptStatus>("connecting");
   const [error, setError] = useState<unknown>(null);
+  const [earlierError, setEarlierError] = useState<unknown>(null);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [unloadedBefore, setUnloadedBefore] = useState(0);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -117,6 +128,7 @@ export function useTranscript(
       setRecords(NOTHING);
       setStatus("connecting");
       setError(null);
+      setEarlierError(null);
       setHasEarlier(false);
       setUnloadedBefore(0);
       return;
@@ -129,6 +141,7 @@ export function useTranscript(
     const key = `${host}#${path}#${attempt}`;
     setStatus("connecting");
     setError(null);
+    setEarlierError(null);
     setRecords(NOTHING);
     setHasEarlier(false);
     setUnloadedBefore(0);
@@ -176,6 +189,9 @@ export function useTranscript(
     if (!shared || loadingRef.current) return;
     loadingRef.current = true;
     setLoadingEarlier(true);
+    // A second press is a retry: clear the last failure so the strip shows the
+    // normal "load earlier" affordance while the read is in flight.
+    setEarlierError(null);
     shared.tail
       .loadEarlier()
       .then(() => {
@@ -184,13 +200,13 @@ export function useTranscript(
         setUnloadedBefore(shared.tail.unloadedBefore);
       })
       .catch((rejection: unknown) => {
-        // A failed scroll-up is a read that failed, and the pane says so — the
-        // same words and the same retry as any other read failure. Setting only
-        // `error` left `status` at "ready", and the view draws an error only for
-        // `status === "error"`, so the failure was silent: the reader pressed
-        // "load earlier", nothing happened, and nothing said why.
-        setStatus("error");
-        setError(rejection);
+        // A failed scroll-up is reported **where the action was taken** — on the
+        // "load earlier" strip — not as a whole-pane error. The earlier fix set
+        // `status` to "error" here, and the view draws its error only for
+        // `status === "error"`, so a failure to load *older* bytes replaced the
+        // entire conversation with a blank card. A failure to load more must
+        // never take away what is already on screen.
+        setEarlierError(rejection);
       })
       .finally(() => {
         loadingRef.current = false;
@@ -204,6 +220,7 @@ export function useTranscript(
     records,
     status,
     error,
+    earlierError,
     hasEarlier,
     unloadedBefore,
     loadingEarlier,

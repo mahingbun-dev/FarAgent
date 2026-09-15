@@ -190,6 +190,10 @@ export const ZH: Record<string, string> = {
   "helper.request": "该请求",
   "helper.timeout": "{op}在 {seconds} 秒内没有回复",
   "helper.timeoutNoSeconds": "{op}没有回复",
+  // 一个失败却没有任何消息（helper 通道关闭时携带的就是 `null`，或一个没有
+  // `message` 的裸对象）。`helperErrorText` 用它取代 `String(null)` 得到的
+  // "null"——把「没有消息」当成消息打印出来是错的，说清楚才对。
+  "helper.noMessage": "helper 没有给出原因",
   // 对话视图。工具调用的一行摘要由 `lib/chat/tool-call.ts` 拼装：它把若干
   // 短句用 `chat.run.sep` 连起来，所以这里的每条从句都从小写写起，只由拼接
   // 处把首字母大写（中文没有大小写，这一步对中文是空操作）。
@@ -213,6 +217,7 @@ export const ZH: Record<string, string> = {
   "chat.slashCommands": "斜杠命令",
   "chat.slashMenuStatus": "斜杠命令菜单，{count} 项，当前选中 {command}",
   "chat.earlier": "更早的内容没有载入（还有 {size}）",
+  "chat.earlierError": "更早的内容没有载入：{message}",
   "chat.loadEarlier": "载入更早的内容",
   "chat.thinking": "思考",
   "chat.subagent": "子代理",
@@ -453,6 +458,11 @@ export const EN: Record<string, string> = {
   "helper.request": "the request",
   "helper.timeout": "no reply to {op} within {seconds}s",
   "helper.timeoutNoSeconds": "no reply to {op}",
+  // A failure that carries no message at all — a closed helper's `null`, or a
+  // bare object with no `message`. `helperErrorText` uses this in place of the
+  // `String(null)` that used to reach the copy: printing the *absence* of a
+  // message as if it were one is wrong; saying so is not.
+  "helper.noMessage": "the helper gave no reason",
   // The conversation view. The one-line summary of a run of tool calls is
   // assembled by `lib/chat/tool-call.ts`: it joins clauses with `chat.run.sep`
   // and capitalises the first one, so every clause below starts lower-case and
@@ -478,6 +488,7 @@ export const EN: Record<string, string> = {
   "chat.slashCommands": "Slash commands",
   "chat.slashMenuStatus": "Slash command menu, {count} items, {command} selected",
   "chat.earlier": "Earlier turns are not loaded ({size} more)",
+  "chat.earlierError": "Earlier turns could not be loaded: {message}",
   "chat.loadEarlier": "Load earlier turns",
   "chat.thinking": "Thinking",
   "chat.subagent": "Subagent",

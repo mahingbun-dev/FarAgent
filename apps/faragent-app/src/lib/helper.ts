@@ -450,7 +450,15 @@ export class HelperError extends Error {
 function fallbackText(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
-  return String(e);
+  // Nothing a reader can use. `String(e)` here is what rendered a bare `null`
+  // as the literal word "null" in the panel's copy (`helper-context.tsx` reports
+  // a closed channel with `error: null`, and that null reaches this function),
+  // and it is the same `String(e)` that would print any untagged object as
+  // "[object Object]". Both are the *absence* of a message printed as though it
+  // were one. Empty is returned instead, and `helperErrorText` — the one caller
+  // that knows the reader's language — turns it into a sentence about the
+  // failure rather than its stringified absence.
+  return "";
 }
 
 /**
@@ -467,7 +475,8 @@ function fallbackText(e: unknown): string {
  * it is named by its tag. Nothing is invented along the way, and the two cases
  * that still carry a string — a bare string rejection, an `Error` — fall through
  * to [`fallbackText`] untouched, so a caller sees what it saw before rather than
- * a worse string.
+ * a worse string. (`fallbackText` answers the empty string for a rejection with
+ * nothing at all; `helperErrorText` is what turns that into a sentence.)
  */
 function missingMessage(
   v: { kind: string; op?: unknown; seconds?: unknown },
@@ -531,7 +540,18 @@ export function helperErrorText(e: unknown, lang: Lang): string {
   // localised here too. `error.message` keeps the English it was built with, so
   // a caller that logs or asserts on it sees what it always saw.
   if (error.kind === "timeout") return helperTimeoutText(error, lang);
-  return error.message;
+  // A message that is empty (or only whitespace) is not a message. Every shape
+  // `from` recognises builds a sentence, but a rejection with nothing usable in
+  // it does not — a bare `null` (a closed helper reports `error: null`), an
+  // empty or blank string, an object with no tag. `error.message` carries
+  // nothing for those, and the last resort below says so in the reader's
+  // language instead of printing the absence. This is the general end of the
+  // same class Task 8 closed at `missingMessage` for *tagged* failures: an error
+  // with no usable message is rendered as a sentence, never as its stringified
+  // absence.
+  return error.message.trim().length > 0
+    ? error.message
+    : translate(lang, "helper.noMessage");
 }
 
 /** The timeout sentence, from the two fields `helper.rs` actually sends. */
