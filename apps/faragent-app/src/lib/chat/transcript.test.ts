@@ -888,3 +888,75 @@ test("an empty file opens as complete with no records", async () => {
   assert.deepEqual(tail.records, [{ a: 1 }], "the first record arrives on the push");
   await tail.close();
 });
+
+// ---------------------------------------------------------------------------
+// A record larger than the window
+// ---------------------------------------------------------------------------
+
+/**
+ * One record, far longer than the windows the tests below read.
+ *
+ * Not a contrived shape: a Codex rollout writes a whole turn — base64 images,
+ * a 570 KB tool output — as a single jsonl line, and one 35 MB rollout on the
+ * development machine holds nine such records. The default window is 256 KiB.
+ */
+const OVERSIZED = JSON.stringify({ pad: "x".repeat(400) });
+
+test("a tail window spent on one oversized record is widened, not swallowed", async () => {
+  // A window whose only newline is its **last** byte is discarded whole. The
+  // model cannot see the byte before the window, so its first line cannot be
+  // trusted and is dropped — and when that newline is the last byte there is
+  // nothing behind it to keep. The tail then holds no records while `start`
+  // sits at the end of the file.
+  //
+  // That is the worst state the view has: it draws as "this session has not
+  // spoken yet", and the "load earlier" strip renders only for a *non-empty*
+  // conversation, so the reader is on a screen whose only offer is a composer
+  // for a session that has plenty to say. Two of 511 real Codex rollouts open
+  // exactly here.
+  const remote = fakeRemote(`${JSON.stringify({ a: 1 })}\n${OVERSIZED}\n`);
+
+  const tail = await TranscriptTail.open(remote.channel, PATH, {
+    windowBytes: 64,
+    chunkBytes: 64,
+  });
+
+  // Widening doubles until the window holds something, so on a file this small
+  // it ends at the whole file and both records come back. What matters is that
+  // the oversized one is among them rather than the tail being blank.
+  const held = tail.records as Array<Record<string, unknown>>;
+  assert.equal(held.length, 2, "both records are held, the oversized one included");
+  assert.equal(typeof held[1].pad, "string", "the long record is the one behind");
+  assert.ok(remote.reads.length > 1, "the window was widened and read again");
+  await tail.close();
+});
+
+test("scroll-up past an oversized record keeps moving instead of stalling", async () => {
+  // The same shape one window back, where it is worse than blank: `prepend`
+  // drops the leading fragment, finds nothing after it, and leaves `start` where
+  // it was. `loadEarlier` asks for a window of the same size every time, so it
+  // would ask forever — no rejection, no error, `hasEarlier` stays true, and the
+  // strip the reader keeps pressing keeps offering itself. Twelve of 511 real
+  // Codex rollouts stall here, one of them holding 146 records of 2,742.
+  const remote = fakeRemote(
+    `${JSON.stringify({ a: 1 })}\n${OVERSIZED}\n${JSON.stringify({ b: 2 })}\n`,
+  );
+  const tail = await TranscriptTail.open(remote.channel, PATH, {
+    windowBytes: 32,
+    chunkBytes: 32,
+  });
+  assert.deepEqual(tail.records, [{ b: 2 }], "the window starts at the newest record");
+
+  const before = tail.unloadedBefore;
+  await tail.loadEarlier();
+  assert.ok(
+    tail.unloadedBefore < before,
+    "the scroll-up moved rather than stalling on the same bytes forever",
+  );
+  // The widened window reaches byte 0 on a file this small, so everything before
+  // the newest record arrives at once.
+  const held = tail.records as Array<Record<string, unknown>>;
+  assert.equal(held.length, 3);
+  assert.equal(typeof held[1].pad, "string", "the long record came back with it");
+  await tail.close();
+});

@@ -632,13 +632,25 @@ export class TranscriptTail {
    */
   async loadEarlier(bytes: number = this.chunkBytes): Promise<void> {
     if (this.closed || this.model.complete) return;
-    const want = Math.min(bytes, this.model.start);
-    if (want <= 0) return;
-    const read = await this.channel.readFile(this.path, {
-      offset: this.model.start - want,
-      limit: want,
-    });
-    if (read.data.length > 0) this.model.prepend(read.data);
+    let want = Math.min(bytes, this.model.start);
+    while (want > 0) {
+      const before = this.model.start;
+      const read = await this.channel.readFile(this.path, {
+        offset: before - want,
+        limit: want,
+      });
+      if (read.data.length > 0) this.model.prepend(read.data);
+      // `start` moving is the only proof the read was worth making. An oversized
+      // record swallows a whole window the same way it does on open (see
+      // `readTail`), so `prepend` would discard the fragment, find nothing
+      // behind it, and leave `start` exactly where it was — and asking for a
+      // window of the same size again would ask for the same bytes forever. No
+      // rejection, no error, and `hasEarlier` true throughout, which is the
+      // strip the reader is pressing. Widen instead.
+      if (this.model.start < before) break;
+      if (want >= before) break;
+      want = Math.min(want * 2, before);
+    }
     this.notify();
   }
 
@@ -656,12 +668,23 @@ export class TranscriptTail {
       }
       throw e;
     }
-    const window = Math.min(this.windowBytes, stat.size);
-    const read = await this.channel.readFile(this.path, {
-      offset: stat.size - window,
-      limit: window,
-    });
-    this.model.openTail(read.data, read.size);
+    let window = Math.min(this.windowBytes, stat.size);
+    for (;;) {
+      const read = await this.channel.readFile(this.path, {
+        offset: stat.size - window,
+        limit: window,
+      });
+      this.model.openTail(read.data, read.size);
+      // A window can be spent entirely on the one line it discards. The model
+      // cannot see the byte before the window, so its first line has to go — and
+      // if the window's only newline is its last byte there is nothing behind it
+      // to keep. That is not a small window's problem alone: one Codex record
+      // can be 570 KB against a 256 KiB window, and it leaves the tail holding
+      // nothing while the file holds plenty. Widen and read again rather than
+      // hand the caller a blank tail for a conversation that has one.
+      if (this.model.records.length > 0 || window >= stat.size) break;
+      window = Math.min(window * 2, stat.size);
+    }
     this.settled();
     this.notify();
   }
