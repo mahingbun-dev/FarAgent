@@ -1,0 +1,502 @@
+/**
+ * `chat/transcript.ts` — framing byte streams into records, and following a
+ * file that is still being written.
+ *
+ * The tail is the whole point of this module, so the tests are split the same
+ * way the module is:
+ *
+ * * the **pure** half drives {@link TranscriptModel} and the framing helpers
+ *   directly, over byte arrays it builds itself — no channel, no timers. This is
+ *   where "hold a partial final line", "advance the offset by bytes read" and
+ *   "load the window before what is held" are pinned, because those are exactly
+ *   the bugs a tail has.
+ * * the **client** half drives {@link TranscriptTail} against an in-memory
+ *   remote: opening reads a bounded tail window, a push on the watched directory
+ *   advances the tail, a push naming a different file does not, and closing
+ *   drops the subscription.
+ *
+ * A transcript can be 9.9–17.5 MB, which is the reason a tail exists; the
+ * window test below is the one that keeps opening a session from becoming a
+ * download.
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { FsRead, WatchSubscription } from "../helper.ts";
+import { TranscriptModel, TranscriptTail, frameLines, parentDir, parseRecord } from "./transcript.ts";
+import { TAIL_WINDOW_BYTES, READ_CHUNK_BYTES } from "./transcript.ts";
+import type { TranscriptChannel } from "./transcript.ts";
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Framing — pure functions over byte streams
+// ---------------------------------------------------------------------------
+
+test("frameLines splits on newline and keeps ordered, terminator-free lines", () => {
+  const { lines, rest } = frameLines(enc("a\nbb\nccc\n"));
+  assert.deepEqual(lines.map(dec), ["a", "bb", "ccc"]);
+  assert.equal(rest.length, 0, "a trailing newline leaves no remainder");
+});
+
+test("frameLines holds a final line with no newline yet as the remainder", () => {
+  const { lines, rest } = frameLines(enc("a\nb"));
+  assert.deepEqual(lines.map(dec), ["a"]);
+  assert.equal(dec(rest), "b", "the unterminated tail is carried, not parsed");
+});
+
+test("frameLines treats an empty stream as no lines and no remainder", () => {
+  const { lines, rest } = frameLines(new Uint8Array(0));
+  assert.equal(lines.length, 0);
+  assert.equal(rest.length, 0);
+});
+
+test("frameLines drops a CR before the LF, so a CRLF writer parses the same", () => {
+  const { lines, rest } = frameLines(enc('{"a":1}\r\n{"b":2}\r\n'));
+  assert.deepEqual(lines.map(dec), ['{"a":1}', '{"b":2}']);
+  assert.equal(rest.length, 0);
+});
+
+test("a byte split across two reads is not mistaken for a line boundary", () => {
+  // A multi-byte character cut mid-sequence: the lead bytes contain no 0x0a, so
+  // they stay in the remainder and the next read completes them. This is why the
+  // tail can split on the byte rather than decoding first.
+  const full = enc('{"t":"héllo"}\n');
+  const cut = full.indexOf(0xc3) + 1; // between the two bytes of `é`
+  const first = frameLines(full.subarray(0, cut));
+  assert.equal(first.lines.length, 0, "a fragment inside the string is not a line");
+  const second = frameLines(concatBytes(first.rest, full.subarray(cut)));
+  assert.deepEqual(second.lines.map(dec), ['{"t":"héllo"}']);
+});
+
+test("parseRecord returns the parsed value, and undefined for blank or broken", () => {
+  assert.deepEqual(parseRecord(enc('{"a":1}')), { a: 1 });
+  assert.equal(parseRecord(enc("")), undefined, "a blank line is not a record");
+  assert.equal(parseRecord(enc("   ")), undefined, "whitespace is not a record");
+  assert.equal(parseRecord(enc("{not json")), undefined, "a broken line is skipped, not thrown on");
+  assert.equal(parseRecord(enc("null")), null, "a literal null is a valid record");
+});
+
+test("parentDir drops the last segment, on either separator", () => {
+  assert.equal(parentDir("/home/me/.claude/projects/x/s.jsonl"), "/home/me/.claude/projects/x");
+  assert.equal(parentDir("/a/b/c"), "/a/b");
+  assert.equal(parentDir("/c"), "/", "a top-level name's parent is the root");
+  assert.equal(parentDir("C:\\Users\\me\\t.jsonl"), "C:\\Users\\me");
+  assert.equal(parentDir("bare.txt"), "bare.txt", "no separator, no parent to name");
+});
+
+// ---------------------------------------------------------------------------
+// The model: opening a tail window
+// ---------------------------------------------------------------------------
+
+test("a window covering the whole file is complete, from byte 0", () => {
+  const bytes = enc('{"a":1}\n{"b":2}\n');
+  const model = new TranscriptModel();
+  model.openTail(bytes, bytes.length);
+
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }]);
+  assert.equal(model.start, 0, "a whole-file window holds byte 0");
+  assert.equal(model.complete, true);
+  assert.equal(model.offset, bytes.length, "the next read is the end of the file");
+  assert.equal(model.unloadedBefore, 0);
+});
+
+test("a tail window starts at a line boundary and drops the leading fragment", () => {
+  // 16 bytes; a 10-byte window starts at byte 6, inside the first record. The
+  // fragment `}\n` is discarded and the held records begin at the second record's
+  // first byte (byte 8) — so `start` is a boundary `loadEarlier` can read up to.
+  const bytes = enc('{"a":1}\n{"b":2}\n');
+  const window = bytes.subarray(6);
+  const model = new TranscriptModel();
+  model.openTail(window, bytes.length);
+
+  assert.deepEqual(model.records, [{ b: 2 }], "the first whole record in the window");
+  assert.equal(model.start, 8, "start is the byte offset of records[0]");
+  assert.equal(model.complete, false, "bytes 0..8 are not held");
+  assert.equal(model.unloadedBefore, 8);
+  assert.equal(model.offset, bytes.length, "offset is past the bytes read, not the fragment");
+});
+
+test("a window that sits wholly inside one record holds its bytes and nothing else", () => {
+  // The file's last record has no newline yet (still being written), and the
+  // window begins inside it: there is no complete line to keep, so the bytes are
+  // held as the partial and `offset` is the file's end.
+  const bytes = enc('{"a":1}\n{"b":2}');
+  const window = bytes.subarray(8);
+  const model = new TranscriptModel();
+  model.openTail(window, bytes.length);
+
+  assert.deepEqual(model.records, []);
+  assert.equal(dec(model.partial), '{"b":2}', "the unterminated bytes are carried");
+  assert.equal(model.start, bytes.length, "nothing held, so start is the end");
+  assert.equal(model.offset, bytes.length);
+  assert.equal(model.complete, false);
+});
+
+// ---------------------------------------------------------------------------
+// The model: appending (following the file)
+// ---------------------------------------------------------------------------
+
+test("append advances the offset by the bytes read", () => {
+  const model = new TranscriptModel();
+  const head = enc('{"a":1}\n');
+  model.openTail(head, head.length);
+  assert.equal(model.offset, 8);
+
+  const more = enc('{"b":2}\n');
+  model.append(more, head.length + more.length);
+  assert.equal(model.offset, 16, "offset moved by the appended length, not the new size");
+  assert.equal(model.size, 16);
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }]);
+});
+
+test("append completes a partial line held from an earlier read", () => {
+  // A record delivered in two pieces: neither half alone is a line, and the JSON
+  // is only assembled — and only then parsed — once the newline arrives.
+  const model = new TranscriptModel();
+  const head = enc('{"a":1}\n{"b":');
+  model.openTail(head, head.length);
+  assert.deepEqual(model.records, [{ a: 1 }], "the completed record parsed, the partial did not");
+  assert.equal(dec(model.partial), '{"b":');
+
+  model.append(enc("2}\n"), head.length + 4);
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }], "the joined line parsed as one record");
+  assert.equal(model.partial.length, 0, "the partial was consumed");
+});
+
+test("append holds a second partial when the read also ends mid-record", () => {
+  const model = new TranscriptModel();
+  model.append(enc('{"a":1}\n{"b":'), 14);
+  assert.deepEqual(model.records, [{ a: 1 }]);
+  assert.equal(dec(model.partial), '{"b":');
+  // Nothing further arrives: the partial stays buffered, not parsed.
+  model.append(new Uint8Array(0), 14);
+  assert.equal(dec(model.partial), '{"b":');
+  assert.deepEqual(model.records, [{ a: 1 }]);
+});
+
+test("a malformed line is skipped without losing the records around it", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\ngarbage\n{"b":2}\n');
+  model.openTail(bytes, bytes.length);
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }]);
+});
+
+// ---------------------------------------------------------------------------
+// The model: prepending (loading an earlier window)
+// ---------------------------------------------------------------------------
+
+test("prepend puts an earlier window before the held records and lowers start", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n{"c":3}\n');
+  model.openTail(bytes.subarray(14), bytes.length); // start 16, records [{c:3}]
+  assert.equal(model.start, 16);
+
+  model.prepend(bytes.subarray(6, 16)); // '}\n{"b":2}\n'
+  assert.deepEqual(model.records, [{ b: 2 }, { c: 3 }], "earlier records come first");
+  assert.equal(model.start, 8, "start moved back to the earlier boundary");
+  assert.equal(model.complete, false);
+});
+
+test("prepend reaching byte 0 makes the model complete", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n');
+  // A window starting inside the first record: start lands on byte 8, the second
+  // record's first byte.
+  model.openTail(bytes.subarray(6), bytes.length);
+  assert.equal(model.start, 8);
+  assert.deepEqual(model.records, [{ b: 2 }]);
+
+  model.prepend(bytes.subarray(0, 8)); // the whole head, ending on the boundary
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }]);
+  assert.equal(model.start, 0);
+  assert.equal(model.complete, true, "byte 0 is now held");
+  assert.equal(model.unloadedBefore, 0);
+});
+
+test("prepend of a window with no newline changes nothing", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n');
+  model.openTail(bytes.subarray(6), bytes.length); // start 8, records [{b:2}]
+  const before = model.start;
+  model.prepend(enc("noline")); // cannot be split into a usable record
+  assert.deepEqual(model.records, [{ b: 2 }]);
+  assert.equal(model.start, before, "start did not move on unusable bytes");
+});
+
+// ---------------------------------------------------------------------------
+// The client: an in-memory remote
+// ---------------------------------------------------------------------------
+
+const b64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
+
+/**
+ * A stand-in for a `HelperConnection`, holding the transcript in a mutable
+ * byte array and recording every call, so the tail's windowing and following can
+ * be asserted without a remote.
+ */
+function fakeRemote(initial: string) {
+  let data = enc(initial);
+  let nextSub = 1;
+  const reads: Array<{ offset: number; limit: number }> = [];
+  const subscribes: Array<{ path: string; recursive: boolean }> = [];
+  const unsubscribes: number[] = [];
+  const handlers = new Set<(e: { event: string; data: unknown }) => void>();
+
+  const channel: TranscriptChannel = {
+    stat: () => Promise.resolve({ size: data.length }),
+    readFile: (_path, opts = {}) => {
+      const offset = opts.offset ?? 0;
+      const limit = opts.limit ?? data.length;
+      reads.push({ offset, limit });
+      const end = Math.min(offset + limit, data.length);
+      const read: FsRead = {
+        data: data.subarray(offset, end),
+        eof: end >= data.length,
+        size: data.length,
+      };
+      return Promise.resolve(read);
+    },
+    subscribe: (path, recursive = false) => {
+      subscribes.push({ path, recursive });
+      const sub: WatchSubscription = {
+        subscription: nextSub++,
+        path: enc(path),
+        recursive,
+        already: false,
+        gitDir: null,
+      };
+      return Promise.resolve(sub);
+    },
+    unsubscribe: (opts) => {
+      unsubscribes.push(opts.subscription ?? -1);
+      return Promise.resolve({ removed: 1 });
+    },
+    onPush: (handler) => {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+
+  return {
+    channel,
+    reads,
+    subscribes,
+    unsubscribes,
+    handlerCount: () => handlers.size,
+    append: (more: string) => {
+      data = concatBytes(data, enc(more));
+    },
+    /** Deliver an `fs.changed` push naming `path`, as the helper would. */
+    change: (path: string) => {
+      for (const handler of [...handlers]) {
+        handler({
+          event: "fs.changed",
+          data: {
+            subscription: 1,
+            root_b64: b64(parentDir(path)),
+            path_b64: b64(path),
+            kind: "modified",
+          },
+        });
+      }
+    },
+  };
+}
+
+/** One macrotask, by which point a push-triggered refresh has settled. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+const PATH = "/home/me/.claude/projects/x/s.jsonl";
+
+test("opening reads a bounded tail window and watches the parent directory", async () => {
+  const remote = fakeRemote('{"a":1}\n{"b":2}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 10 });
+
+  // One read, of the window — not of the file. `size` is 16; the window is the
+  // last 10 bytes, starting at 6.
+  assert.deepEqual(remote.reads, [{ offset: 6, limit: 10 }]);
+  assert.deepEqual(tail.records, [{ b: 2 }]);
+
+  assert.deepEqual(remote.subscribes, [{ path: parentDir(PATH), recursive: false }]);
+  assert.equal(tail.unloadedBefore, 8, "the head is not held yet");
+
+  await tail.close();
+});
+
+test("the default tail window is the documented 256 KiB", () => {
+  // The number is load-bearing: it is what stops a 9.9 MB session from becoming
+  // a download. Pin it so a change is deliberate.
+  assert.equal(TAIL_WINDOW_BYTES, 262_144);
+  assert.equal(READ_CHUNK_BYTES, 262_144);
+});
+
+test("a push for this file advances the tail and fires onChange", async () => {
+  const remote = fakeRemote('{"a":1}\n');
+  const seen: number[] = [];
+  const tail = await TranscriptTail.open(remote.channel, PATH, {
+    windowBytes: 8,
+    chunkBytes: 8,
+    onChange: (records) => seen.push(records.length),
+  });
+  assert.deepEqual(tail.records, [{ a: 1 }], "the whole 8-byte file fits the window");
+  assert.deepEqual(seen, [1], "open reported once");
+
+  remote.append('{"b":2}\n');
+  remote.change(PATH);
+  await settle();
+
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }], "the appended record was read");
+  assert.deepEqual(seen, [1, 2], "onChange fired for the append");
+
+  await tail.close();
+});
+
+test("a push naming a different file in the watched directory is ignored", async () => {
+  const remote = fakeRemote('{"a":1}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8 });
+  const readsAfterOpen = remote.reads.length;
+
+  remote.append('{"b":2}\n');
+  // The watch is on the directory, so a sibling transcript's change arrives too.
+  remote.change("/home/me/.claude/projects/x/other.jsonl");
+  await settle();
+
+  assert.deepEqual(tail.records, [{ a: 1 }], "the sibling's change did not touch this tail");
+  assert.equal(remote.reads.length, readsAfterOpen, "no read was issued for the sibling");
+
+  await tail.close();
+});
+
+test("refresh reads to end-of-file across several chunks, carrying partials", async () => {
+  const remote = fakeRemote('{"a":1}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8, chunkBytes: 10 });
+  assert.equal(tail.complete, true, "the 8-byte file is wholly held");
+
+  // 16 bytes arrive, read 10 at a time: the first read ends mid-record and the
+  // second completes it — no line is parsed before its newline.
+  remote.append('{"b":2}\n{"c":3}\n');
+  await tail.refresh();
+
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }, { c: 3 }]);
+  // offsets 8 and 18: the first chunk of the new bytes, then the rest.
+  assert.deepEqual(remote.reads.slice(-2), [
+    { offset: 8, limit: 10 },
+    { offset: 18, limit: 10 },
+  ]);
+
+  await tail.close();
+});
+
+test("loadEarlier fetches the window before what is held, down to byte 0", async () => {
+  const remote = fakeRemote('{"a":1}\n{"b":2}\n{"c":3}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 10, chunkBytes: 10 });
+  assert.deepEqual(tail.records, [{ c: 3 }], "only the tail record is held");
+  assert.equal(tail.unloadedBefore, 16);
+
+  await tail.loadEarlier();
+  assert.deepEqual(tail.records, [{ b: 2 }, { c: 3 }]);
+
+  await tail.loadEarlier();
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }, { c: 3 }], "the head was reached");
+  assert.equal(tail.complete, true);
+  assert.equal(tail.unloadedBefore, 0);
+
+  // Once complete, another load is a no-op rather than a read at a negative
+  // offset.
+  const reads = remote.reads.length;
+  await tail.loadEarlier();
+  assert.equal(remote.reads.length, reads);
+
+  await tail.close();
+});
+
+test("close drops the push handler and unsubscribes once", async () => {
+  const remote = fakeRemote('{"a":1}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8 });
+  assert.equal(remote.handlerCount(), 1);
+
+  await tail.close();
+  assert.equal(remote.handlerCount(), 0, "the push handler was left registered");
+  assert.deepEqual(remote.unsubscribes, [1]);
+
+  // Idempotent: a second close (a second React cleanup) does nothing.
+  await tail.close();
+  assert.deepEqual(remote.unsubscribes, [1], "the channel was unsubscribed twice");
+
+  // A push after close is inert.
+  remote.append('{"b":2}\n');
+  remote.change(PATH);
+  await settle();
+  assert.deepEqual(tail.records, [{ a: 1 }]);
+});
+
+test("a failed watch is reported but leaves the tail readable", async () => {
+  const remote = fakeRemote('{"a":1}\n');
+  const errors: unknown[] = [];
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    subscribe: () => Promise.reject(new Error("no such directory")),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, { windowBytes: 8, onError: (e) => errors.push(e) });
+  assert.deepEqual(tail.records, [{ a: 1 }], "the tail still loaded without a watch");
+  assert.equal(errors.length, 1, "the watch failure was reported");
+  assert.equal(tail.complete, true);
+
+  // `refresh` still works as a snapshot poll when the watch is gone.
+  remote.append('{"b":2}\n');
+  await tail.refresh();
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }]);
+
+  await tail.close();
+});
+
+test("a failed first read drops the watch and rejects", async () => {
+  // Opening a path that is gone must fail loudly *and* leave nothing behind: a
+  // subscription the caller can never close is a leak on the remote.
+  const remote = fakeRemote('{"a":1}\n');
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    stat: () => Promise.reject(new Error("no such file")),
+  };
+
+  await assert.rejects(
+    TranscriptTail.open(channel, PATH, { windowBytes: 8 }),
+    /no such file/,
+  );
+  assert.deepEqual(remote.unsubscribes, [1], "the watch leaked behind the rejection");
+  assert.equal(remote.handlerCount(), 0, "the push handler leaked behind the rejection");
+});
+
+test("a transcript that changes mid-read is caught by the next refresh", async () => {
+  // The window read and the file growing cannot be atomic; the tail's `offset`
+  // is past the bytes it actually read, so the append is fetched next time.
+  const remote = fakeRemote('{"a":1}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8 });
+  remote.append('{"b":2}\n');
+  await tail.refresh();
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }]);
+  await tail.close();
+});
+
+test("an empty file opens as complete with no records", async () => {
+  const remote = fakeRemote("");
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8 });
+  assert.deepEqual(tail.records, []);
+  assert.equal(tail.complete, true, "nothing precedes byte 0 of an empty file");
+  assert.deepEqual(remote.reads, [{ offset: 0, limit: 0 }], "an empty file reads nothing");
+
+  remote.append('{"a":1}\n');
+  remote.change(PATH);
+  await settle();
+  assert.deepEqual(tail.records, [{ a: 1 }], "the first record arrives on the push");
+  await tail.close();
+});

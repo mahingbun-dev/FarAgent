@@ -21,6 +21,7 @@ import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
 import * as fx from "./fixtures.ts";
+import { HELPER_FIXTURES } from "./helper.ts";
 import { dispatch, mockedCommands } from "./handlers.ts";
 import { installMocks, mocksInstalled, pokeGitChanged, pokeWatch, uninstallMocks } from "./index.ts";
 
@@ -228,6 +229,52 @@ test("the session fixture groups into workspaces the rail can render", () => {
   assert.ok(
     rows.some((s) => s.scheduled),
     "a scheduled row, so the scheduled group is not just its empty state",
+  );
+});
+
+test("only the Claude session rows carry a transcript path", () => {
+  // The transcript path is Claude's (`~/.claude/projects/…`); stamping it onto a
+  // Codex or Grok row would be a lie the app would then try to tail. And at
+  // least one Claude row must carry it, or the tail has no fixture to reach.
+  const withPath = fx.listSessions("claude").filter((s) => s.transcript);
+  assert.equal(withPath.length, 1, "exactly the one seeded row points at a transcript");
+  assert.equal(withPath[0].transcript, HELPER_FIXTURES.transcript);
+
+  for (const agent of ["codex", "grok", "pi"] as const) {
+    assert.ok(
+      fx.listSessions(agent).every((s) => !s.transcript),
+      `${agent} rows must not point at a Claude transcript`,
+    );
+  }
+});
+
+test("the transcript fixture is jsonl with the four kinds and a matched tool pair", () => {
+  // The record kinds the S0 spike found, plus the two non-dialogue kinds a
+  // reader skips. `node --test` strips types rather than compiling them, so this
+  // parses the raw jsonl the mock serves, not an imported shape.
+  const lines = fx.transcriptJsonl().trimEnd().split("\n");
+  const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(
+    records.map((r) => r.type),
+    ["user", "assistant", "assistant", "user", "assistant", "system", "queue-operation"],
+  );
+
+  const blockOf = (record: Record<string, unknown>, blockType: string) => {
+    const message = record.message as { content?: unknown } | undefined;
+    const content = message?.content;
+    if (!Array.isArray(content)) return undefined;
+    return content.find((b) => (b as { type?: string }).type === blockType) as
+      | Record<string, unknown>
+      | undefined;
+  };
+
+  const toolUse = blockOf(records[2], "tool_use");
+  const toolResult = blockOf(records[3], "tool_result");
+  assert.ok(toolUse && toolResult, "the fixture has a tool_use and a tool_result");
+  assert.equal(
+    toolResult.tool_use_id,
+    toolUse.id,
+    "the pair is keyed by tool_use.id ↔ tool_result.tool_use_id, not by uuid",
   );
 });
 

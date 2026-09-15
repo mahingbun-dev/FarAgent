@@ -17,6 +17,7 @@
  * | a directory that is not a repository | `/srv/scratch` — `git.discover` answers `not_a_repo` |
  * | a repository with uncommitted changes | `/srv/data` — every status letter, staged and not |
  * | a diff over 500 files | `/srv/monorepo` — 620 changed files, so the list itself is capped |
+ * | a session transcript to tail | `/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk1live.jsonl` — the record kinds a reader must tell apart |
  *
  * Three hosts, so all three `helper_open` outcomes are reachable from the host
  * switcher: `build-01.farm.internal` is native, `gpu-box` is the script
@@ -32,6 +33,7 @@ import { b64ToBytes, bytesToB64 } from "../bytes.ts";
 import type { Diagnosis } from "../ipc.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
 import type { MockHandler } from "./handlers.ts";
+import { TRANSCRIPT_PATH, transcriptJsonl } from "./fixtures.ts";
 
 // ---------------------------------------------------------------------------
 // The protocol's own numbers, restated
@@ -451,6 +453,14 @@ function seedFilesystem(): void {
       'import { defineConfig } from "vite";\n\nexport default defineConfig({\n  server: { port: 1420, strictPort: true },\n});\n',
     ),
   );
+
+  // --- one Claude session's conversation, so a tail of a real transcript has a
+  // subject: the four record kinds a reader must tell apart (user text,
+  // assistant text, `tool_use`, matching `tool_result`) plus the two it must
+  // skip. Seeded through the same virtual FS every other fixture uses, so
+  // `fs.stat` and `fs.read` — the two ops `lib/chat/transcript.ts` tails with —
+  // answer it exactly as they answer any other file.
+  addFile(TRANSCRIPT_PATH, () => textBytes(transcriptJsonl()));
 
   // --- a loose scratch cwd: no repository above it all the way to `/`, which
   // is what makes the Git tab's "not a repository" state reachable from a real
@@ -1378,4 +1388,6 @@ export const HELPER_FIXTURES = {
   bigRepo: MONO,
   /** The changed-file count of `bigRepo`, over the cap on purpose. */
   bigRepoChanges: 620,
+  /** One Claude session's conversation jsonl, for `lib/chat/transcript.ts`. */
+  transcript: TRANSCRIPT_PATH,
 } as const;

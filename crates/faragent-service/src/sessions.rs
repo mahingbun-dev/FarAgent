@@ -31,6 +31,14 @@ pub struct SessionSummary {
     /// Codex `codex exec` / launchd rollouts, listed separately in the app.
     #[serde(default)]
     pub scheduled: bool,
+    /// The remote path of this session's conversation transcript, when the row
+    /// came from a transcript file. `None` for a row the list only inferred
+    /// from tmux or a process scan — the normal case for a session started
+    /// moments ago, whose file may not exist yet. `#[serde(default)]` because
+    /// this struct serialises straight to the TUI and the app: an older reader
+    /// that has never heard of this field must keep deserialising.
+    #[serde(default)]
+    pub transcript: Option<String>,
 }
 
 impl SessionSummary {
@@ -258,6 +266,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             running: false,
             tmux: Some(name.clone()),
             scheduled: false,
+            transcript: None,
         });
     }
 
@@ -292,6 +301,7 @@ fn merge_sessions(agent: AgentKind, os: HostOs, dump: ListDump) -> Vec<SessionSu
             running: true,
             tmux: None,
             scheduled: false,
+            transcript: None,
         });
     }
 
@@ -351,6 +361,7 @@ fn row_from_file(agent: AgentKind, f: &DiskFile, os: HostOs) -> SessionSummary {
         running: false,
         tmux: Some(agents::tmux_name(agent, &sid)),
         scheduled,
+        transcript: f.path.clone(),
     }
 }
 
@@ -372,6 +383,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -394,6 +406,8 @@ mod tests {
         assert!(rows[0].live);
         assert_eq!(rows[0].cwd.as_deref(), Some("/work"));
         assert_eq!(rows[0].title.as_deref(), Some("(live)"));
+        // A row inferred from tmux alone has no transcript file to point at.
+        assert_eq!(rows[0].transcript, None);
     }
 
     #[test]
@@ -406,6 +420,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "%2Ftmp%2Fp".into(),
                 body: br#"{"generated_title":"hello","git_root_dir":"/tmp/p"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -443,6 +458,10 @@ mod tests {
                     id: "rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     mtime: 20.0,
                     cwd_hint: "".into(),
+                    path: Some(
+                        "/home/me/.codex/sessions/2026/09/14/rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl"
+                            .into(),
+                    ),
                     body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"vscode","originator":"Codex Desktop"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the build"}]}}
 "#
@@ -453,6 +472,7 @@ mod tests {
                     id: "rollout-01bbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                     mtime: 10.0,
                     cwd_hint: "".into(),
+                    path: None,
                     body: br#"{"type":"session_meta","payload":{"cwd":"/work","source":"exec","originator":"codex_exec"}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hourly sync"}]}}
 "#
@@ -467,6 +487,13 @@ mod tests {
         let scheduled = rows.iter().find(|r| r.scheduled).unwrap();
         assert_eq!(interactive.title.as_deref(), Some("fix the build"));
         assert_eq!(scheduled.title.as_deref(), Some("hourly sync"));
+        // The transcript path rides through from the DiskFile untouched; a
+        // file-backed row that carried none stays `None`.
+        assert_eq!(
+            interactive.transcript.as_deref(),
+            Some("/home/me/.codex/sessions/2026/09/14/rollout-01aaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl")
+        );
+        assert_eq!(scheduled.transcript, None);
     }
 
     #[test]
@@ -479,6 +506,7 @@ mod tests {
                 mtime: 10.0,
                 cwd_hint: "C--Users-me-app".into(),
                 body: br#"{"cwd":"C:\\Users\\me\\app","message":"hello"}"#.to_vec(),
+                path: None,
             }],
             procs: vec![
                 ("claude".into(), "abc123abc123".into()),
@@ -528,6 +556,7 @@ mod tests {
 "##
                 .as_bytes()
                 .to_vec(),
+                path: None,
             }],
             procs: vec![],
         };
@@ -543,5 +572,28 @@ mod tests {
         let s: SessionSummary = serde_json::from_str(r#"{"id":"x","agent":"claude"}"#).unwrap();
         assert!(!s.running);
         assert!(!s.live);
+        // A payload written before this field existed deserialises with it
+        // absent, not with an error: the app and the TUI both read this shape.
+        assert_eq!(s.transcript, None);
+    }
+
+    #[test]
+    fn transcript_survives_a_serde_round_trip() {
+        let s = SessionSummary {
+            id: "x".into(),
+            agent: "claude".into(),
+            title: None,
+            cwd: None,
+            mtime: 0.0,
+            live: false,
+            running: false,
+            tmux: None,
+            scheduled: false,
+            transcript: Some("/home/me/.claude/projects/-Users-me/x.jsonl".into()),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("/home/me/.claude/projects/-Users-me/x.jsonl"));
+        let back: SessionSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.transcript, s.transcript);
     }
 }

@@ -62,6 +62,15 @@ export interface Session {
   tmux?: string | null;
   /** Codex `codex exec` / launchd rollouts. */
   scheduled?: boolean;
+  /**
+   * The remote path of this session's conversation transcript, when the list
+   * carried one — the file `lib/chat/transcript.ts` tails. `null`/absent for a
+   * row the list inferred from tmux or a process scan, which is the normal case
+   * for a session started moments ago whose file may not exist yet. Additive and
+   * defaulted on the backend (`SessionSummary::transcript`), so an older backend
+   * that does not send it is read as absent rather than failing.
+   */
+  transcript?: string | null;
 }
 
 export interface Plan {

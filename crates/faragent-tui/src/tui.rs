@@ -1795,6 +1795,7 @@ mod tests {
             running,
             tmux: None,
             scheduled: false,
+            transcript: None,
         };
         assert!(session_line(&mk(true, false)).starts_with("[live]"));
         assert!(session_line(&mk(false, true)).starts_with("[running]"));
@@ -1836,6 +1837,7 @@ mod tests {
             running: false,
             tmux: None,
             scheduled: false,
+            transcript: None,
         }
     }
 

@@ -35,6 +35,7 @@ import {
 } from "./helper.ts";
 import type { HelperEvent, HelperMode } from "./helper.ts";
 import { b64ToBytes } from "./bytes.ts";
+import { TranscriptTail } from "./chat/transcript.ts";
 import { ipc } from "./ipc.ts";
 import { HELPER_FIXTURES, mockedOps } from "./mock/helper.ts";
 import { installMocks, uninstallMocks } from "./mock/index.ts";
@@ -436,6 +437,26 @@ test("a binary file is refused with the code, not rendered as mojibake", async (
   // `stat` still works on it: the refusal is about *content*.
   const stat = await helper.stat(HELPER_FIXTURES.binaryFile);
   assert.equal(stat.kind, "file");
+  await helper.close();
+});
+
+test("a session transcript tails through the helper into records", async () => {
+  // The whole plumbing in one place: the mock serves the fixture as a file, and
+  // the tail reads it with the same two ops (`fs.stat`, `fs.read`) it uses
+  // against a real remote, then frames it into JSON. A regression in either the
+  // fixture's shape or the tail's framing fails here rather than in a component.
+  const helper = await openHelper(NATIVE_HOST);
+  const tail = await TranscriptTail.open(helper, HELPER_FIXTURES.transcript, {
+    windowBytes: 4096,
+  });
+
+  assert.equal(tail.complete, true, "the small fixture fits one window");
+  assert.deepEqual(
+    (tail.records as Array<{ type?: string }>).map((r) => r.type),
+    ["user", "assistant", "assistant", "user", "assistant", "system", "queue-operation"],
+  );
+
+  await tail.close();
   await helper.close();
 });
 

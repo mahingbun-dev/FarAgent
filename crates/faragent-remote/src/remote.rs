@@ -105,6 +105,11 @@ pub struct DiskFile {
     pub mtime: f64,
     pub cwd_hint: String,
     pub body: Vec<u8>,
+    /// The conversation transcript the app tails, when this row came from a
+    /// file. For most agents that is the very file `body` was read from; Grok
+    /// is the exception — its list line is built from `summary.json` while the
+    /// conversation lives beside it in `chat_history.jsonl`.
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,14 +211,16 @@ emit_file() {{
   _id="$2"
   _src="$3"
   _cwd="$4"
+  _path="${{5:-$_src}}"
   _mt=$(mtime_of "$_src")
   _id=$(printf '%s' "$_id" | tr '\t\n\r' '   ')
   _cwd=$(printf '%s' "$_cwd" | tr '\t\n\r' '   ')
+  _path=$(printf '%s' "$_path" | tr '\t\n\r' '   ')
   _b64=
   if [ -f "$_src" ] && command -v base64 >/dev/null 2>&1; then
     _b64=$(dd if="$_src" bs=1024 count={prefix_kb} 2>/dev/null | base64 | tr -d '\n\r ')
   fi
-  printf 'file\t%s\t%s\t%s\t%s\t%s\n' "$_agent" "$_id" "$_mt" "$_cwd" "$_b64"
+  printf 'file\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_agent" "$_id" "$_mt" "$_cwd" "$_b64" "$_path"
 }}
 if command -v tmux >/dev/null 2>&1; then
   tmux -L {sock} -f "$HOME/.faragent/tmux.conf" list-sessions -F 'tmux	#{{session_name}}	#{{pane_current_path}}' 2>/dev/null || true
@@ -233,9 +240,9 @@ if [ -d "$HOME/.grok/sessions" ]; then
     sid=$(basename "$siddir")
     cwdenc=$(basename "$(dirname "$siddir")")
     if [ -f "$siddir/summary.json" ]; then
-      emit_file grok "$sid" "$siddir/summary.json" "$cwdenc"
+      emit_file grok "$sid" "$siddir/summary.json" "$cwdenc" "$siddir/chat_history.jsonl"
     else
-      printf 'file\tgrok\t%s\t%s\t%s\t\n' "$sid" "$(mtime_of "$siddir")" "$cwdenc"
+      printf 'file\tgrok\t%s\t%s\t%s\t\t%s\n' "$sid" "$(mtime_of "$siddir")" "$cwdenc" "$siddir/chat_history.jsonl"
     fi
   done
 fi
@@ -483,7 +490,11 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
                 }
             }
             "file" => {
-                let cols: Vec<&str> = line.splitn(6, '\t').collect();
+                // Seven columns since the transcript path was appended. A line
+                // from an older remote has six and simply carries no path:
+                // `splitn` stops early, `cols.get(6)` is `None`, and every
+                // earlier column keeps its position.
+                let cols: Vec<&str> = line.splitn(7, '\t').collect();
                 if cols.len() >= 4 {
                     files.push(DiskFile {
                         agent: cols[1].to_string(),
@@ -491,6 +502,7 @@ pub fn parse_list(text: &str) -> Result<ListDump> {
                         mtime: cols[3].parse().unwrap_or(0.0),
                         cwd_hint: cols.get(4).unwrap_or(&"").to_string(),
                         body: decode_b64(cols.get(5).unwrap_or(&"")),
+                        path: cols.get(6).filter(|p| !p.is_empty()).map(|p| p.to_string()),
                     });
                 }
             }
@@ -673,8 +685,7 @@ fn scheduled_from_record(obj: &Value) -> bool {
     let rec = payload_of(obj).unwrap_or(obj);
     let source = json_str(rec, "source");
     let originator = json_str(rec, "originator");
-    matches!(source.as_deref(), Some("exec"))
-        || matches!(originator.as_deref(), Some("codex_exec"))
+    matches!(source.as_deref(), Some("exec")) || matches!(originator.as_deref(), Some("codex_exec"))
 }
 
 fn cwd_from_record(obj: &Value) -> Option<String> {
@@ -1172,6 +1183,59 @@ proc\tclaude\t
         // POSIX output without proc lines still parses.
         let old = parse_list("FARAGENT_LIST_V1\nfile\tgrok\tx\t1.0\thint\t\n").unwrap();
         assert!(old.procs.is_empty());
+    }
+
+    #[test]
+    fn parse_list_reads_the_appended_transcript_path() {
+        // Seven columns: the path is appended after the b64 body.
+        let text = "\
+FARAGENT_LIST_V1
+file\tclaude\tabc123\t10.0\t-Users-me\taGVsbG8=\t/home/me/.claude/projects/-Users-me/abc123.jsonl
+";
+        let dump = parse_list(text).unwrap();
+        assert_eq!(dump.files.len(), 1);
+        let f = &dump.files[0];
+        assert_eq!(f.agent, "claude");
+        assert_eq!(f.id, "abc123");
+        assert_eq!(f.mtime, 10.0);
+        assert_eq!(f.cwd_hint, "-Users-me");
+        assert_eq!(f.body, b"hello");
+        assert_eq!(
+            f.path.as_deref(),
+            Some("/home/me/.claude/projects/-Users-me/abc123.jsonl")
+        );
+    }
+
+    #[test]
+    fn parse_list_accepts_a_line_from_before_the_path_column() {
+        // The old six-column shape (no path) must keep parsing: `path` is
+        // `None`, and every earlier column stays where it was.
+        let text = "FARAGENT_LIST_V1\nfile\tgrok\tx\t1.0\thint\taGVsbG8=\n";
+        let dump = parse_list(text).unwrap();
+        assert_eq!(dump.files.len(), 1);
+        assert_eq!(dump.files[0].id, "x");
+        assert_eq!(dump.files[0].body, b"hello");
+        assert_eq!(dump.files[0].path, None);
+
+        // An empty trailing column is the same as no column at all.
+        let empty =
+            parse_list("FARAGENT_LIST_V1\nfile\tclaude\ty\t2.0\thint\taGVsbG8=\t\n").unwrap();
+        assert_eq!(empty.files[0].path, None);
+        assert_eq!(empty.files[0].cwd_hint, "hint");
+        assert_eq!(empty.files[0].body, b"hello");
+    }
+
+    #[test]
+    fn grok_list_carries_the_conversation_file_not_the_summary() {
+        // Grok's list line is built from `summary.json`, but the conversation
+        // the app tails lives beside it in `chat_history.jsonl`.
+        let grok = list_script(AgentKind::Grok);
+        assert!(
+            grok.contains("$siddir/chat_history.jsonl"),
+            "grok must emit the conversation file as the transcript path: {grok}"
+        );
+        // And the path column exists in the shared emit helper at all.
+        assert!(list_script(AgentKind::Claude).contains(r"\t%s\t%s\t%s\t%s\t%s\t%s\n"));
     }
 
     #[test]

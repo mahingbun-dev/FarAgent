@@ -169,6 +169,145 @@ interface SessionSeed {
   live?: boolean;
   running?: boolean;
   scheduled?: boolean;
+  /**
+   * The conversation file the row points at, when the list carried one. Only the
+   * first Claude row sets it, so a session with no transcript (the common case:
+   * a tmux- or process-only row) is also reachable in the fixture.
+   */
+  transcript?: string;
+}
+
+/**
+ * One Claude session's transcript, in the real shape `~/.claude/projects/<slug>/
+ * <session-id>.jsonl` — the slug is the cwd with every non-alphanumeric replaced
+ * by `-`, the file is the session id.
+ *
+ * The content is the four record kinds a transcript renders — a `user` string
+ * message, an `assistant` text message, an `assistant` `tool_use`, and the
+ * matching `user` `tool_result` whose `tool_use_id` is the `tool_use`'s `id` —
+ * plus a `system` and a `queue-operation` record, which a reader must skip. The
+ * pairing key (`tool_use.id` ↔ `tool_result.tool_use_id`) is the one the S0
+ * spike confirms is 1:1 and is *not* the record `uuid`.
+ *
+ * Built with `JSON.stringify` rather than hand-written strings so the fixture is
+ * valid jsonl by construction — an escaping slip here would look like a parser
+ * bug in `lib/chat/transcript.ts`.
+ */
+export const TRANSCRIPT_PATH =
+  "/home/deploy/.claude/projects/-srv-app-faragent/01H8ZQk1live.jsonl";
+
+export function transcriptJsonl(): string {
+  const session = "01H8ZQk1live";
+  const t = (n: number): string =>
+    new Date(Date.UTC(2026, 8, 14, 9, 0, n)).toISOString();
+  const records: unknown[] = [
+    {
+      type: "user",
+      uuid: "u-0001",
+      timestamp: t(0),
+      sessionId: session,
+      cwd: "/srv/app/faragent",
+      gitBranch: "main",
+      message: {
+        role: "user",
+        content: "Why does the attach lease key on the tab id and not the slot?",
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "u-0002",
+      timestamp: t(2),
+      sessionId: session,
+      message: {
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content: [{ type: "text", text: "Let me read the lease module first." }],
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "u-0003",
+      timestamp: t(3),
+      sessionId: session,
+      message: {
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content: [
+          {
+            type: "tool_use",
+            id: "call_00_Xk7Qm2",
+            name: "Read",
+            input: {
+              file_path:
+                "/srv/app/faragent/apps/faragent-app/src/lib/attach-lease.ts",
+            },
+          },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "u-0004",
+      timestamp: t(3),
+      sessionId: session,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "call_00_Xk7Qm2",
+            content:
+              "export function attachLease(tabId: string): Lease {\n  // one attach per tab, not per slot\n  return acquire(`attach:${tabId}`);\n}\n",
+          },
+        ],
+      },
+      toolUseResult: {
+        type: "text",
+        file: {
+          filePath:
+            "/srv/app/faragent/apps/faragent-app/src/lib/attach-lease.ts",
+        },
+      },
+      sourceToolAssistantUUID: "u-0003",
+    },
+    {
+      type: "assistant",
+      uuid: "u-0005",
+      timestamp: t(5),
+      sessionId: session,
+      message: {
+        id: "msg_02",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content: [
+          {
+            type: "text",
+            text: "A slot can be handed to a different tab, so the slot id is not stable enough to own the lease; the tab id is.",
+          },
+        ],
+      },
+    },
+    {
+      type: "system",
+      uuid: "u-0006",
+      timestamp: t(5),
+      sessionId: session,
+      subtype: "stop_hook_summary",
+    },
+    {
+      type: "queue-operation",
+      uuid: "u-0007",
+      timestamp: t(5),
+      sessionId: session,
+      operation: "dequeue",
+    },
+  ];
+  return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
 }
 
 /**
@@ -181,7 +320,7 @@ interface SessionSeed {
  */
 const SESSION_SEEDS: SessionSeed[] = [
   // /srv/app/faragent
-  { id: "01H8ZQk1live", title: "fix attach lease", cwd: "/srv/app/faragent", age: 0, live: true, running: true },
+  { id: "01H8ZQk1live", title: "fix attach lease", cwd: "/srv/app/faragent", age: 0, live: true, running: true, transcript: TRANSCRIPT_PATH },
   { id: "01H8ZQk2run", title: "rework the rail", cwd: "/srv/app/faragent", age: 2, running: true },
   { id: "01H8ZQk3idle", title: "update the README", cwd: "/srv/app/faragent", age: 6 },
   { id: "01H8ZQk4idle", title: "bump xterm", cwd: "/srv/app/faragent", age: 11 },
@@ -218,6 +357,11 @@ export function listSessions(agent: AgentKind): Session[] {
     running: !!seed.running,
     tmux: seed.live ? tmuxName(agent, seed.id) : null,
     scheduled: !!seed.scheduled,
+    // A transcript path is agent-specific (Claude's lives under
+    // `~/.claude/projects`), and the row that has one is a Claude row — so it is
+    // stripped for every other agent rather than leaked onto a Codex or Grok
+    // row, which is what an un-gated stamp would do.
+    transcript: agent === "claude" ? (seed.transcript ?? null) : null,
   }));
 }
 
