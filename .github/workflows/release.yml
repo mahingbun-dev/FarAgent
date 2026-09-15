@@ -108,10 +108,15 @@ jobs:
 
       # 每个平台一个子目录，artifact 保留这层结构；app 那边 merge-multiple 下载
       # 之后就正好是 resources/helper/<platform>/faragent-helper。
+      #
+      # 名字里**故意没有** `faragent-` 前缀：下面 release 那个作业用
+      # `pattern: faragent-*` 挑要发布的东西，而 helper 是构建安装包的中间产物，
+      # 不是给人下载的。它一旦叫 `faragent-helper-*`，就会和 CLI 二进制、安装包
+      # 一起被传上 Release。
       - name: Upload helper artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: faragent-helper-${{ matrix.os }}
+          name: helper-${{ matrix.os }}
           path: apps/faragent-app/src-tauri/resources/helper/*/
           if-no-files-found: error
 
@@ -154,7 +159,7 @@ jobs:
       - name: Fetch the helper binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: faragent-helper-*
+          pattern: helper-*
           merge-multiple: true
           path: apps/faragent-app/src-tauri/resources/helper
 
@@ -188,8 +193,12 @@ jobs:
     needs: [build, app]
     runs-on: ubuntu-latest
     steps:
+      # `faragent-*` 只够得着 CLI 二进制和安装包。helper 的 artifact 叫
+      # `helper-<os>`，正好被排除在外 —— 它是构建安装包的中间产物，传上去只会
+      # 让下载页多出五个没人要的文件。没有 pattern 会把它们全带上。
       - uses: actions/download-artifact@v4
         with:
+          pattern: faragent-*
           path: dist
           merge-multiple: true
 
