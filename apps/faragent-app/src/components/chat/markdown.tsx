@@ -90,9 +90,24 @@ const FENCE_LANGUAGE: Record<string, string> = {
  * it is monospace, it does not wrap, and at the reading width a real one clipped
  * characters off its right edge — into a horizontal overflow that macOS scrolls
  * with a scrollbar it never draws, so the rest of the line was simply gone. The
- * cap is therefore on the block elements that are prose (and on tables, which
- * were already this width) rather than on the wrapping `div`, which leaves the
- * block-level `CodeBlock` free to use the content width.
+ * cap is therefore on the elements that are read as text rather than on the
+ * wrapping `div`, which leaves the block-level `CodeBlock` free to use the
+ * content width.
+ *
+ * **The rule, so the next element added here is not missed:** prose width for
+ * anything read line by line (`p`, `h1`–`h4`, `li`'s list, `blockquote`) and for
+ * the two elements that are placed *against* prose (`hr`, `img`); content width
+ * for anything monospace or anything that is a container for other rows. A table
+ * is the deliberate exception — it is a grid, so it is prose width but allowed to
+ * scroll inside it.
+ *
+ * This list has been got wrong once already, and the shape of the mistake is
+ * worth keeping: the first version capped paragraphs and headings and left `hr`
+ * off it, so a horizontal rule drawn from a `---` in a turn ran the full content
+ * width inside 65ch prose, and `img` was never named at all. A rule that has to
+ * be remembered per element is a rule that gets forgotten per element — when
+ * something new is rendered here, decide which of the two widths it is and say so
+ * in this list.
  *
  * The caveat that survives: a line wider than the content column can still only
  * be reached by scrolling, and on macOS nothing draws the scrollbar that would
@@ -108,7 +123,8 @@ const CLASS = [
   "[&_h2]:mt-5 [&_h2]:mb-2 [&_h2]:max-w-prose [&_h2]:font-display [&_h2]:text-base",
   "[&_h3]:mt-4 [&_h3]:mb-1 [&_h3]:max-w-prose [&_h3]:text-sm [&_h3]:font-semibold",
   "[&_h4]:mt-3 [&_h4]:mb-1 [&_h4]:max-w-prose [&_h4]:text-sm [&_h4]:font-medium",
-  "[&_hr]:my-4 [&_hr]:border-border",
+  "[&_hr]:my-4 [&_hr]:max-w-prose [&_hr]:border-border",
+  "[&_img]:my-2 [&_img]:max-w-prose [&_img]:rounded-md",
   "[&_li]:my-0.5",
   "[&_ol]:my-2 [&_ol]:max-w-prose [&_ol]:list-decimal [&_ol]:pl-5",
   "[&_p]:my-2 [&_p]:max-w-prose",

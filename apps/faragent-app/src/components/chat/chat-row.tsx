@@ -65,6 +65,13 @@ function Message({ event }: { event: MessageEvent }) {
  * different things and a reader who cannot tell them apart cannot trust either.
  * So this is a dashed box, an italic muted label, and a body on a tinted
  * background with a rule down its left edge, none of which any prose row has.
+ *
+ * The widths are `ToolRow`'s, and for the same reason: the collapsed label is a
+ * control and keeps the reading width, while the body it opens can contain a
+ * fenced block, and a fence is not prose — it does not wrap, and at 65ch a real
+ * one loses its right edge to an overflow macOS scrolls with a scrollbar it never
+ * draws. Reasoning is where a model writes a command or a patch out in full, so
+ * this is not a hypothetical: it is the shape most likely to hit the cap.
  */
 function ThinkingRow({ event }: { event: ThinkingEvent }) {
   const t = useT();
@@ -72,12 +79,12 @@ function ThinkingRow({ event }: { event: ThinkingEvent }) {
   const preview = firstLine(event.markdown);
 
   return (
-    <div className="max-w-prose">
+    <div style={{ maxWidth: CONTENT_WIDTH.content }}>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((was) => !was)}
-        className="flex w-full items-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-surface-hover"
+        className="flex w-full max-w-prose items-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-surface-hover"
       >
         <Brain className="h-3.5 w-3.5 shrink-0" />
         <span className="shrink-0 text-micro italic">{t("chat.thinking")}</span>
@@ -95,7 +102,10 @@ function ThinkingRow({ event }: { event: ThinkingEvent }) {
       </button>
 
       {open ? (
-        <div className="mt-1 border-l-2 border-border bg-surface-raised/40 px-3 py-2 text-muted-foreground italic">
+        <div
+          className="mt-1 border-l-2 border-border bg-surface-raised/40 px-3 py-2 text-muted-foreground italic"
+          style={{ maxWidth: CONTENT_WIDTH.content }}
+        >
           <Markdown text={event.markdown} />
         </div>
       ) : null}
@@ -110,6 +120,21 @@ function ThinkingRow({ event }: { event: ThinkingEvent }) {
  * see that a subagent ran and how much it did without being walked through it.
  * The nested rows obey the same fold as the main thread — a run of the
  * subagent's tool calls is one line here too.
+ *
+ * ## Why this box is the content width even while it is collapsed
+ *
+ * A subagent's turn is the same rows the main thread draws, and those rows can
+ * carry a patch — which does not wrap, and which a 65ch parent clips into an
+ * overflow macOS scrolls with a scrollbar it never draws. A `max-width` on a
+ * child cannot widen a narrow parent, so the room has to be granted here, at the
+ * box. The alternative — widening the box only when it opens — would make it jump
+ * under the reader's cursor on the click that opened it.
+ *
+ * What that costs is a sparse collapsed header (the label, then the gap, then the
+ * badge at the right edge). The assistant's own turn takes the same trade: a
+ * container that can hold a fence is the content width, and the prose inside it is
+ * capped at the reading width instead. The collapsed *tool* row is the case that
+ * differs, and deliberately: it is a line, not a container.
  */
 export function SidechainBlock({
   item,
@@ -120,7 +145,10 @@ export function SidechainBlock({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="max-w-prose rounded-lg border border-border bg-surface-raised/30">
+    <div
+      className="rounded-lg border border-border bg-surface-raised/30"
+      style={{ maxWidth: CONTENT_WIDTH.content }}
+    >
       <button
         type="button"
         aria-expanded={open}

@@ -354,6 +354,17 @@ export function transcriptJsonl(): string {
  *     subagent's turn — so the nesting path has a subject.
  *   - **A pending call.** The last record is a `tool_use` with no result, which
  *     is the normal live case: the agent is running the tool right now.
+ * - **Lines wider than the reading width, in each of the three containers that
+ *   can hold one** — a long line in the synthesised patch (the tool row), a long
+ *   command in a fence inside a thinking block, and a long line in the
+ *   subagent's grep output. A conversation whose longest line is 40 characters
+ *   cannot tell a renderer that handles wide content apart from one that clips
+ *   it, and that is how the same defect shipped twice: the corpus had no wide
+ *   line to look at. Each is ~130 characters — wider than the 65ch reading cap,
+ *   narrower than the content column — so it is shown whole exactly when the
+ *   container around it is sized right. (The subagent's result block is the one
+ *   that wraps rather than clips, so there the same width is the difference
+ *   between one line and two.)
  *
  * Built with `JSON.stringify`, like the parser's fixture, so an escaping slip
  * cannot masquerade as a bug in the reader.
@@ -571,7 +582,14 @@ export function longTranscriptJsonl(cycles = 2500): string {
   // produce diffs, a call that failed, and a subagent's turn.
   say([
     think(
-      "The lease is right; the bug is that nothing told the reader which view they are in. Worth showing the shapes in one place.",
+      [
+        "The lease is right; the bug is that nothing told the reader which view they are in.",
+        "Worth showing the shapes in one place, and reproducing it is one command:",
+        "",
+        "```sh",
+        `pnpm --filter faragent-app exec node --test "src/lib/chat/*.test.ts" --experimental-strip-types 2>&1 | tee /tmp/faragent-tail.log`,
+        "```",
+      ].join("\n"),
     ),
     text(
       [
@@ -654,7 +672,7 @@ export function longTranscriptJsonl(cycles = 2500): string {
         "  tops[0] = 0;",
         "  for (let i = 0; i < heights.length; i++) {",
         "    const height = heights[i];",
-        "    tops[i + 1] = tops[i] + (typeof height === 'number' && height > 0 ? height : estimate) + gap;",
+        "    tops[i + 1] = tops[i] + (typeof height === 'number' && height > 0 ? height : estimate) + gap; // measured, or the estimate",
         "  }",
         "  return tops;",
         "}",
@@ -696,6 +714,7 @@ export function longTranscriptJsonl(cycles = 2500): string {
         "src/components/TerminalView.tsx:94:  const lease = attachLease(tabId);",
         "src/lib/attach-lease.ts:12:export function attachLease(tabId: string): Lease {",
         "src/lib/attach-lease.test.ts:31:  const lease = attachLease('tab-1');",
+        "src/components/shell/workspace-tabs.tsx:412:  const lease = attachLease(tab.id); // keyed by the tab, never the slot id, never the host",
       ].join("\n"),
     },
     true,
