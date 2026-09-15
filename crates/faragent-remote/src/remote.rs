@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use faragent_core::agents::AgentKind;
+use faragent_core::agents::{AgentKind, Launch};
 use faragent_core::shell::shell_single_quote;
 use serde::Deserialize;
 use serde_json::Value;
@@ -311,12 +311,12 @@ fi
 pub fn start_script(
     agent: AgentKind,
     cwd: &str,
-    session_id: Option<&str>,
+    launch: Launch<'_>,
     tmux_name: &str,
     create_cwd: bool,
     full_permissions: bool,
 ) -> String {
-    let argv = agent.launch_argv(session_id, full_permissions);
+    let argv = agent.launch_argv(launch, full_permissions);
     let inner = format!(
         "exec {}",
         argv.iter()
@@ -813,6 +813,9 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    /// A real session uuid, the shape `--session-id` demands.
+    const UUID: &str = "15c76662-2409-4f37-bd81-fd4f1b3053dd";
+
     #[test]
     fn scripts_have_no_python() {
         assert!(!probe_script().contains("python"));
@@ -820,7 +823,7 @@ mod tests {
         assert!(!start_script(
             AgentKind::Grok,
             "/tmp",
-            None,
+            Launch::New("abc"),
             "faragent-grok-abc",
             false,
             false,
@@ -834,7 +837,7 @@ mod tests {
         let start = start_script(
             AgentKind::Grok,
             "/tmp",
-            None,
+            Launch::New("abc"),
             "faragent-grok-abc",
             false,
             false,
@@ -848,7 +851,7 @@ mod tests {
         let ask = start_script(
             AgentKind::Codex,
             "/home/me/app",
-            None,
+            Launch::New("abc"),
             "faragent-codex-abc",
             false,
             false,
@@ -863,7 +866,7 @@ mod tests {
         let create = start_script(
             AgentKind::Codex,
             "/home/me/app",
-            None,
+            Launch::New("abc"),
             "faragent-codex-abc",
             true,
             false,
@@ -877,7 +880,7 @@ mod tests {
         let quoted = start_script(
             AgentKind::Codex,
             "/tmp/a b; rm -rf /",
-            None,
+            Launch::New("abc"),
             "faragent-codex-abc",
             true,
             false,
@@ -893,7 +896,7 @@ mod tests {
         let claude = start_script(
             AgentKind::Claude,
             "/tmp",
-            None,
+            Launch::New(UUID),
             "faragent-claude-abc",
             false,
             true,
@@ -906,7 +909,7 @@ mod tests {
         let claude_resume = start_script(
             AgentKind::Claude,
             "/tmp",
-            Some("abc"),
+            Launch::Resume("abc"),
             "faragent-claude-abc",
             false,
             true,
@@ -921,7 +924,7 @@ mod tests {
         let codex = start_script(
             AgentKind::Codex,
             "/tmp",
-            None,
+            Launch::New("abc"),
             "faragent-codex-abc",
             false,
             true,
@@ -934,7 +937,7 @@ mod tests {
         let codex_resume = start_script(
             AgentKind::Codex,
             "/tmp",
-            Some("abc"),
+            Launch::Resume("abc"),
             "faragent-codex-abc",
             false,
             true,
@@ -948,7 +951,7 @@ mod tests {
         let grok = start_script(
             AgentKind::Grok,
             "/tmp",
-            None,
+            Launch::New("abc"),
             "faragent-grok-abc",
             false,
             true,
@@ -958,16 +961,83 @@ mod tests {
         let grok_off = start_script(
             AgentKind::Grok,
             "/tmp",
-            None,
+            Launch::New("abc"),
             "faragent-grok-abc",
             false,
             false,
         );
         assert!(!grok_off.contains("--always-approve"), "{grok_off}");
 
-        let pi = start_script(AgentKind::Pi, "/tmp", None, "faragent-pi-abc", false, true);
+        let pi = start_script(
+            AgentKind::Pi,
+            "/tmp",
+            Launch::New("abc"),
+            "faragent-pi-abc",
+            false,
+            true,
+        );
         assert!(!pi.contains("--yolo"), "{pi}");
         assert!(!pi.contains("bypass"), "{pi}");
+    }
+
+    /// The whole point of the wave: a new Claude session's start script must
+    /// name the id, so the transcript file is findable afterwards.
+    #[test]
+    fn a_new_claude_start_script_pins_the_session_id() {
+        let pin = start_script(
+            AgentKind::Claude,
+            "/tmp",
+            Launch::New(UUID),
+            "faragent-claude-abc",
+            false,
+            false,
+        );
+        assert!(
+            pin.contains(&format!("exec claude --session-id {UUID}")),
+            "{pin}"
+        );
+
+        // A resume keeps today's argv: `--session-id` beside `--resume` is an
+        // error unless `--fork-session` is also given.
+        let resume = start_script(
+            AgentKind::Claude,
+            "/tmp",
+            Launch::Resume(UUID),
+            "faragent-claude-abc",
+            false,
+            false,
+        );
+        assert!(
+            resume.contains(&format!("exec claude --resume {UUID}")),
+            "{resume}"
+        );
+        assert!(!resume.contains("--session-id"), "{resume}");
+
+        // Grok takes the same flag, so it is pinned too.
+        let grok = start_script(
+            AgentKind::Grok,
+            "/tmp",
+            Launch::New(UUID),
+            "faragent-grok-abc",
+            false,
+            false,
+        );
+        assert!(
+            grok.contains(&format!("exec grok --session-id {UUID}")),
+            "{grok}"
+        );
+
+        // An agent that does not take the flag keeps its bare argv.
+        let codex = start_script(
+            AgentKind::Codex,
+            "/tmp",
+            Launch::New(UUID),
+            "faragent-codex-abc",
+            false,
+            false,
+        );
+        assert!(!codex.contains("--session-id"), "{codex}");
+        assert!(codex.contains("exec codex"), "{codex}");
     }
 
     #[test]

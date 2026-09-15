@@ -1,5 +1,5 @@
 use anyhow::Result;
-use faragent_core::agents::{self, AgentKind};
+use faragent_core::agents::{self, AgentKind, Launch};
 use faragent_core::config;
 use faragent_core::text::LocalizedText;
 use faragent_core::vocab::HostOs;
@@ -118,6 +118,23 @@ pub fn list_sessions(host: &str, agent: AgentKind, os: HostOs) -> Result<Vec<Ses
     }
 }
 
+/// What a start produced — the value the app attaches to the session with.
+///
+/// `name` is what today's callers already used: the tmux session to attach
+/// (POSIX) or the display name (Windows). `session_id` is the id the remote
+/// CLI was *pinned* to, when it was pinned — the app turns it into
+/// `~/.claude/projects/<slug>/<id>.jsonl`, so `None` means "this launch no
+/// chat can be read for yet": the CLI chose its own id and we will only learn
+/// it from a later listing, if at all.
+///
+/// Serialises straight across the Tauri boundary (`ensure_session`), hence
+/// `Serialize`; field names stay snake_case like [`SessionSummary`]'s.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StartedSession {
+    pub name: String,
+    pub session_id: Option<String>,
+}
+
 /// Create a detached tmux session if needed. If it already exists, only attach later.
 ///
 /// `create_cwd = true` runs `mkdir -p` for the working directory on the remote.
@@ -129,25 +146,37 @@ pub fn ensure_tmux_session(
     cwd: &Path,
     session_id: Option<&str>,
     create_cwd: bool,
-) -> Result<String> {
+) -> Result<StartedSession> {
     let client = OpenSshTransport::connect(host)?;
     ensure_tmux_conf(&client)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
+    // A *new* session launches pinned to `sid` — the id we just generated.
+    // Passing the caller's `None` through to the argv here was the bug: the id
+    // named the tmux session but never reached Claude Code, so the transcript
+    // file could not be located. `Launch` makes the two cases distinct.
+    let launch = match session_id {
+        Some(id) => Launch::Resume(id),
+        None => Launch::New(&sid),
+    };
+    let pinned = agent.launched_session_id(launch).map(str::to_string);
     let cwd_s = cwd.to_string_lossy();
     let script = remote::start_script(
         agent,
         cwd_s.as_ref(),
-        session_id,
+        launch,
         &name,
         create_cwd,
         config::full_permissions(),
     );
     let text = run_login(&client, &script)?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { name } => Ok(name),
+        StartOutcome::Ok { name } => Ok(StartedSession {
+            name,
+            session_id: pinned,
+        }),
         StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
             &error, &hint, &cwd_s,
         ))),
@@ -164,12 +193,22 @@ pub fn ensure_win_session(
     cwd: &Path,
     session_id: Option<&str>,
     create_cwd: bool,
-) -> Result<String> {
+) -> Result<StartedSession> {
     let client = OpenSshTransport::connect(host)?;
     let sid = session_id
         .map(|s| s.to_string())
         .unwrap_or_else(agents::new_session_id);
     let name = agents::tmux_name(agent, &sid);
+    // The interactive Windows launch pins no id ([`Launch::NewUnpinned`]): the
+    // foreground `ssh -tt` gets no `--session-id`, and the shared helper — the
+    // only thing that could read a transcript — is POSIX-only, so a Windows
+    // conversation view is unreachable either way. A resume still reports the
+    // caller's own id, which the agent is told.
+    let launch = match session_id {
+        Some(id) => Launch::Resume(id),
+        None => Launch::NewUnpinned,
+    };
+    let pinned = agent.launched_session_id(launch).map(str::to_string);
     let cwd_s = cwd.to_string_lossy();
     let cwd_b64 = win::b64(&cwd_s);
     let name_b64 = win::b64(&name);
@@ -180,7 +219,10 @@ pub fn ensure_win_session(
         &[&cwd_b64, create, &name_b64],
     )?;
     match remote::parse_start(&text)? {
-        StartOutcome::Ok { .. } => Ok(name),
+        StartOutcome::Ok { .. } => Ok(StartedSession {
+            name,
+            session_id: pinned,
+        }),
         StartOutcome::Err { error, hint } => Err(anyhow::Error::new(SessionError::from_remote(
             &error, &hint, &cwd_s,
         ))),
@@ -597,5 +639,29 @@ mod tests {
         assert!(json.contains("/home/me/.claude/projects/-Users-me/x.jsonl"));
         let back: SessionSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(back.transcript, s.transcript);
+    }
+
+    /// The shape the app receives from `ensure_session`. It crosses the Tauri
+    /// boundary, so the field names are part of the contract: snake_case, and
+    /// `session_id` is `null` (not absent) when the launch pinned no id.
+    #[test]
+    fn started_session_serialises_for_the_app() {
+        let started = StartedSession {
+            name: "faragent-claude-15c76662-240".into(),
+            session_id: Some("15c76662-2409-4f37-bd81-fd4f1b3053dd".into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&started).unwrap(),
+            r#"{"name":"faragent-claude-15c76662-240","session_id":"15c76662-2409-4f37-bd81-fd4f1b3053dd"}"#
+        );
+
+        let unpinned = StartedSession {
+            name: "faragent-codex-01a09da3f4c3".into(),
+            session_id: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&unpinned).unwrap(),
+            r#"{"name":"faragent-codex-01a09da3f4c3","session_id":null}"#
+        );
     }
 }

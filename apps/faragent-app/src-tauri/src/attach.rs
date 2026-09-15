@@ -5,7 +5,7 @@
 use crate::dto::{shape_error, CommandError};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use faragent_core::agents::AgentKind;
+use faragent_core::agents::{AgentKind, Launch};
 use faragent_core::vocab::HostOs;
 use faragent_remote::{remote as remote_proto, win};
 use faragent_transport::{
@@ -81,10 +81,13 @@ impl SessionManager {
                 cwd,
                 session_id,
             } => {
-                let argv = agent.launch_argv(
-                    session_id.as_deref(),
-                    faragent_core::config::full_permissions(),
-                );
+                // A Windows foreground launch pins no id (`Launch::NewUnpinned`);
+                // a resume is told the caller's own id, unchanged.
+                let launch = match session_id.as_deref() {
+                    Some(id) => Launch::Resume(id),
+                    None => Launch::NewUnpinned,
+                };
+                let argv = agent.launch_argv(launch, faragent_core::config::full_permissions());
                 (win::attach_launcher(cwd, &argv), true)
             }
             AttachSpec::Install { script, os } => match os {

@@ -2,7 +2,7 @@ use crate::chrome::Chrome;
 use crate::pty;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use faragent_core::agents::AgentKind;
+use faragent_core::agents::{AgentKind, Launch};
 use faragent_core::config;
 use faragent_core::paths::expand_home;
 use faragent_core::text::Lang;
@@ -1179,11 +1179,11 @@ fn start_session(
         ),
     };
     match result {
-        Ok(name) => {
+        Ok(started) => {
             app.pending = None;
             app.screen = Screen::Sessions;
             match os {
-                HostOs::Posix => drop_into_tmux(app, terminal, host, &name)?,
+                HostOs::Posix => drop_into_tmux(app, terminal, host, &started.name)?,
                 HostOs::Windows => {
                     drop_into_win_session(app, terminal, host, agent, cwd, session_id)?
                 }
@@ -1220,7 +1220,13 @@ fn drop_into_win_session(
     cwd: &str,
     session_id: Option<&str>,
 ) -> Result<()> {
-    let argv = agent.launch_argv(session_id, config::full_permissions());
+    // Windows pins no id (see `Launch::NewUnpinned`): the foreground launch is
+    // a bare agent start, exactly as before this wave.
+    let launch = match session_id {
+        Some(id) => Launch::Resume(id),
+        None => Launch::NewUnpinned,
+    };
+    let argv = agent.launch_argv(launch, config::full_permissions());
     app.status = app.lang.attaching_resume(agent.title());
     ratatui::restore();
     let code = pty::attach_win(host, cwd, &argv);
