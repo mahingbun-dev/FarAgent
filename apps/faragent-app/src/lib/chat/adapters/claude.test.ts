@@ -223,6 +223,32 @@ test("a tool_result whose tool_use_id matches no call is ignored", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Identity — the model promises ids are unique, so the adapter must keep it
+// ---------------------------------------------------------------------------
+
+test("a uuid written twice emits one event, not two with the same id", () => {
+  const events = adapt([
+    userText("u-dup", "the turn, written twice"),
+    userText("u-dup", "the turn, written twice"),
+  ]);
+  assert.equal(events.length, 1, "a repeated record is one event");
+  assert.equal(events[0].id, "u-dup:0");
+});
+
+test("a call id written twice is one call, and its later result still attaches", () => {
+  const events = adapt([
+    assistant("a-dup", [bashCall("call_00_dup", "ls")]),
+    assistant("a-dup", [bashCall("call_00_dup", "ls")]),
+    toolResult("call_00_dup", "output"),
+  ]);
+  // The first call wins, and — the point — the result pairs with the call that
+  // was actually emitted, not the one that was dropped.
+  assert.deepEqual(kindsOf(events), ["tool"]);
+  assert.equal(tools(events)[0].id, "call_00_dup");
+  assert.equal(tools(events)[0].result?.content, "output");
+});
+
+// ---------------------------------------------------------------------------
 // What is dropped
 // ---------------------------------------------------------------------------
 
@@ -284,6 +310,14 @@ test("a record that is not an object is skipped without throwing", () => {
   assert.deepEqual(adapt([null, undefined, 42, "type:user", [], true]), []);
 });
 
+test("a container that is not an array is returned empty rather than throwing", () => {
+  // The caller is typed to pass an array; a value that is not one must still
+  // not be the thing that throws, because that is the module's whole promise.
+  for (const bad of [undefined, null, 42, "records", {}]) {
+    assert.deepEqual(adapt(bad as unknown as unknown[]), []);
+  }
+});
+
 test("a conversation record with no message object is skipped", () => {
   assert.deepEqual(
     adapt([
@@ -333,6 +367,16 @@ test("an empty text block produces no event", () => {
       assistant("a-w", [{ type: "text", text: "" }]),
       assistant("a-w2", [{ type: "thinking", thinking: "" }]),
     ]),
+    [],
+  );
+});
+
+test("a thinking block without the measured `thinking` field is skipped", () => {
+  // `thinking` is the field the spike re-read and confirmed. A block that
+  // spells its reasoning `text` is a shape this model has never seen, and
+  // unknown shapes are skipped rather than guessed at.
+  assert.deepEqual(
+    adapt([assistant("a-t", [{ type: "thinking", text: "not the measured spelling" }])]),
     [],
   );
 });
@@ -404,4 +448,7 @@ test("the S2 mock transcript adapts into its conversation, not its plumbing", ()
   assert.equal(messages(events)[0].markdown, "Why does the attach lease key on the tab id and not the slot?");
   assert.equal(tools(events)[0].name, "Read");
   assert.match(tools(events)[0].result?.content ?? "", /one attach per tab, not per slot/);
+  // The model promises a renderer may key a flat list on `id`; the real
+  // fixture must hold that too, not just the hand-built ones.
+  assert.equal(new Set(events.map((e) => e.id)).size, events.length);
 });

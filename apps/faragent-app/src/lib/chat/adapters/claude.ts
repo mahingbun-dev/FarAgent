@@ -47,9 +47,10 @@
  * ## Totality
  *
  * The transcript is a file another program is writing while the app reads it.
- * A half-written record, an unknown block type or a field of the wrong type is
- * **expected input**, not a bug, so every one of them is skipped. `adapt` never
- * throws, for any input.
+ * A half-written record, an unknown block type, a field of the wrong type or a
+ * record written twice is **expected input**, not a bug, so every one of them
+ * is skipped. `adapt` never throws, for any input — including a container that
+ * is not an array at all, or a record that is not an object.
  */
 import type { ChatEvent, ToolEvent } from "../events.ts";
 
@@ -90,9 +91,25 @@ function flattenResultContent(content: unknown): string {
  * or is malformed in any way — contributes nothing. Never throws.
  */
 export function adapt(records: unknown[]): ChatEvent[] {
+  // The caller is typed to hand over an array, but this value crosses a file
+  // another program is writing: guarding the container is the same promise as
+  // guarding the records, and it is one line.
+  if (!Array.isArray(records)) return [];
+
   const events: ChatEvent[] = [];
   /** Calls emitted but not yet resolved, so a later result can find its call. */
   const callsById = new Map<string, ToolEvent>();
+  /**
+   * Every id emitted, which is what makes the model's uniqueness promise true.
+   *
+   * The transcript is written while we read it, so the same record can appear
+   * twice — a `uuid` with a block at the index it already had, or the same
+   * `tool_use.id` written again. Without this the second would emit an event
+   * whose id collides with the first as a flat-list key. **The first wins**:
+   * that is the event `callsById` already points at, so a later result still
+   * pairs with a call that was emitted rather than one that was dropped.
+   */
+  const emittedIds = new Set<string>();
 
   records.forEach((record, recordIndex) => {
     if (!isObject(record)) return;
@@ -120,10 +137,12 @@ export function adapt(records: unknown[]): ChatEvent[] {
 
     // A bare string is a whole turn's prose: one message.
     if (typeof content === "string") {
-      if (content.trim() !== "") {
+      const id = `${recordId}:0`;
+      if (content.trim() !== "" && !emittedIds.has(id)) {
+        emittedIds.add(id);
         events.push({
           kind: "message",
-          id: `${recordId}:0`,
+          id,
           role,
           markdown: content,
           sidechain,
@@ -141,6 +160,8 @@ export function adapt(records: unknown[]): ChatEvent[] {
       switch (block.type) {
         case "text": {
           if (typeof block.text !== "string" || block.text.trim() === "") return;
+          if (emittedIds.has(id)) return;
+          emittedIds.add(id);
           events.push({
             kind: "message",
             id,
@@ -152,17 +173,16 @@ export function adapt(records: unknown[]): ChatEvent[] {
           return;
         }
         case "thinking": {
-          // The spike names the `thinking` block but not the field holding its
-          // text (Claude writes `thinking`; older traces spell it `text`), so
-          // either string is accepted and an empty one is dropped.
-          const text =
-            typeof block.thinking === "string"
-              ? block.thinking
-              : typeof block.text === "string"
-                ? block.text
-                : "";
-          if (text.trim() === "") return;
-          events.push({ kind: "thinking", id, markdown: text, sidechain, timestamp });
+          // The field is `thinking`. The spike re-read the real session and
+          // confirmed it (`{"type":"thinking","thinking":"…","signature":"…"}`),
+          // so no other spelling is guessed at: a block whose text is not a
+          // string is skipped like any other shape this model does not draw.
+          if (typeof block.thinking !== "string" || block.thinking.trim() === "") {
+            return;
+          }
+          if (emittedIds.has(id)) return;
+          emittedIds.add(id);
+          events.push({ kind: "thinking", id, markdown: block.thinking, sidechain, timestamp });
           return;
         }
         case "tool_use": {
@@ -171,6 +191,10 @@ export function adapt(records: unknown[]): ChatEvent[] {
           // The call's own id is its event id as well as its pairing key.
           const callId =
             typeof block.id === "string" && block.id !== "" ? block.id : id;
+          // The same call written twice is one call: `callsById` still points
+          // at the event already emitted, so a later result still pairs.
+          if (emittedIds.has(callId)) return;
+          emittedIds.add(callId);
           const event: ToolEvent = {
             kind: "tool",
             id: callId,
