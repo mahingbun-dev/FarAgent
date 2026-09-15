@@ -242,7 +242,10 @@ if [ -d "$HOME/.grok/sessions" ]; then
     if [ -f "$siddir/summary.json" ]; then
       emit_file grok "$sid" "$siddir/summary.json" "$cwdenc" "$siddir/chat_history.jsonl"
     else
-      printf 'file\tgrok\t%s\t%s\t%s\t\t%s\n' "$sid" "$(mtime_of "$siddir")" "$cwdenc" "$siddir/chat_history.jsonl"
+      _sid=$(printf '%s' "$sid" | tr '\t\n\r' '   ')
+      _cwdenc=$(printf '%s' "$cwdenc" | tr '\t\n\r' '   ')
+      _chat=$(printf '%s' "$siddir/chat_history.jsonl" | tr '\t\n\r' '   ')
+      printf 'file\tgrok\t%s\t%s\t%s\t\t%s\n' "$_sid" "$(mtime_of "$siddir")" "$_cwdenc" "$_chat"
     fi
   done
 fi
@@ -1233,6 +1236,15 @@ file\tclaude\tabc123\t10.0\t-Users-me\taGVsbG8=\t/home/me/.claude/projects/-User
         assert!(
             grok.contains("$siddir/chat_history.jsonl"),
             "grok must emit the conversation file as the transcript path: {grok}"
+        );
+        // The fallback line (no `summary.json`) escapes every column the way
+        // `emit_file` does, so a directory name holding a tab cannot shift the
+        // path column out from under the parser.
+        assert!(
+            grok.contains(
+                r#"_chat=$(printf '%s' "$siddir/chat_history.jsonl" | tr '\t\n\r' '   ')"#
+            ),
+            "the grok fallback must escape its columns: {grok}"
         );
         // And the path column exists in the shared emit helper at all.
         assert!(list_script(AgentKind::Claude).contains(r"\t%s\t%s\t%s\t%s\t%s\t%s\n"));

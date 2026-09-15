@@ -230,6 +230,32 @@ function children(dir: string): Array<[string, VNode]> {
   return out;
 }
 
+/**
+ * The first regular file inside `dir`, by path — the change a fresh
+ * subscription reports, or `null` if the tree holds no file at all.
+ *
+ * A filesystem watch fires for a change *inside* the watched tree, never for
+ * the tree itself: the real helper's `emit_fs` names the event's own path, and
+ * `home_of` translates it back to the client's spelling. The mock has no
+ * filesystem to change by itself, so it names a real file as the closest honest
+ * stand-in — in particular a consumer that filters pushes against its own path
+ * (the transcript tail) sees a path its watch actually covers, which the
+ * watched root is not. `recursive` decides whether a file in a subdirectory
+ * counts, matching the subscription.
+ */
+function firstFileUnder(dir: string, recursive: boolean): string | null {
+  const prefix = dir === "/" ? "/" : dir + "/";
+  const found: string[] = [];
+  for (const [key, node] of nodes) {
+    if (node.kind !== "file" || !key.startsWith(prefix)) continue;
+    if (!recursive && key.slice(prefix.length).includes("/")) continue;
+    found.push(key);
+  }
+  if (found.length === 0) return null;
+  found.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return found[0];
+}
+
 // ---------------------------------------------------------------------------
 // A virtual git
 // ---------------------------------------------------------------------------
@@ -1218,16 +1244,25 @@ function opSubscribe(session: Session, params: Record<string, unknown>): unknown
   session.subs.set(id, { path, recursive, gitDir });
 
   // There is no real filesystem to change, so the mock reports the one change a
-  // caller can be sure a fresh subscription would see: the watched tree is
-  // live. Which mechanism fires depends on whether there is a repository to
-  // poll — the same split the real helper has.
+  // caller can be sure a fresh subscription would see: the tree is live. Which
+  // mechanism fires depends on whether there is a repository to poll — the same
+  // split the real helper has.
   if (gitDir === null) {
-    push(session.id, "fs.changed", {
-      subscription: id,
-      root_b64: b64Of(path),
-      path_b64: b64Of(path),
-      kind: "modified",
-    });
+    // The change is reported against a real file *inside* the tree, the way the
+    // real helper reports the event's own path — never against the watched
+    // directory, which a watch does not fire for. A consumer that matches
+    // pushes against its own path (the transcript tail) can then act on it. A
+    // tree holding no file has nothing to name, and the real helper would not
+    // push either.
+    const changed = firstFileUnder(path, recursive);
+    if (changed !== null) {
+      push(session.id, "fs.changed", {
+        subscription: id,
+        root_b64: b64Of(path),
+        path_b64: b64Of(changed),
+        kind: "modified",
+      });
+    }
   } else {
     push(session.id, "git.changed", { subscription: id, root_b64: b64Of(path) });
   }

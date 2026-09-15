@@ -535,10 +535,10 @@ test("pokeWatch delivers an fs.changed the panel can act on", async () => {
 
 test("a directory that is not a repository reports a live tree, not git state", async () => {
   // The split the real helper has: with no repository to poll, a fresh
-  // subscription announces that the tree is live as an `fs.changed` naming its
-  // own root. `/srv` is the fixture's parent — a real directory, a repository
-  // *under* it (`/srv/data`), but not one itself — which is exactly the case
-  // where the mock must take the other branch.
+  // subscription announces that the tree is live as an `fs.changed`. `/srv` is
+  // the fixture's parent — a real directory, a repository *under* it
+  // (`/srv/data`), but not one itself — which is exactly the case where the
+  // mock must take the other branch.
   const channel = new Channel<HelperEvent>();
   const seen: HelperEvent[] = [];
   channel.onmessage = (event) => seen.push(event);
@@ -555,7 +555,19 @@ test("a directory that is not a repository reports a live tree, not git state", 
     assert.equal(seen[0].event, "fs.changed", "a non-repository watch has no git state to report");
     const data = seen[0].data as { subscription: number; path_b64: string; kind: string };
     assert.equal(data.subscription, watched.subscription);
-    assert.equal(decodeText(b64ToBytes(data.path_b64)), "/srv", "it names its own root");
+    // The change is named against a real file inside the tree, never the
+    // watched root: a watch fires for a change *inside* what it covers, and a
+    // consumer that filters pushes by its own path (the transcript tail) has to
+    // see a path it covers. Which file is the fixture's business; that it is a
+    // real one under the root is the contract.
+    const changed = decodeText(b64ToBytes(data.path_b64));
+    assert.notEqual(changed, "/srv", "not the watched root, which a watch never reports");
+    assert.ok(changed.startsWith("/srv/"), `a path inside the tree: ${changed}`);
+    // And it is a path the mock really serves, so the filter it feeds is honest.
+    const read = (await ipc.helperCall(id, "fs.read", { path_b64: encodePath(changed) })) as {
+      data_b64: string;
+    };
+    assert.ok(read.data_b64.length > 0, "the named path is a real file");
     seen.length = 0;
 
     // And it is not a git subscriber, so `pokeGitChanged` skips it while the
@@ -565,6 +577,44 @@ test("a directory that is not a repository reports a live tree, not git state", 
     await drain();
     assert.equal(seen.length, 1);
     assert.equal(seen[0].event, "fs.changed");
+  } finally {
+    await ipc.helperClose(id);
+  }
+});
+
+test("a non-recursive watch does not reach into a subdirectory", async () => {
+  // The mock's stand-in has to respect the same boundary the real `home_of`
+  // ownership test does. `/srv` holds only directories directly — the fixture's
+  // projects (`/srv/app`), its repository (`/srv/data`) and `/srv/scratch` — so
+  // a watch that covers no file reports nothing, exactly as a real one would.
+  const channel = new Channel<HelperEvent>();
+  const seen: HelperEvent[] = [];
+  channel.onmessage = (event) => seen.push(event);
+  const { id } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  try {
+    const shallow = (await ipc.helperCall(id, "watch.subscribe", {
+      path_b64: encodePath("/srv"),
+      recursive: false,
+    })) as { git_dir_b64: string | null };
+    assert.equal(shallow.git_dir_b64, null, "/srv is not itself a repository");
+
+    await drain();
+    assert.equal(seen.length, 0, "no file is covered, so there is no change to name");
+
+    // The recursive watch over the same directory does name one — proving the
+    // emptiness above is the boundary, not a missing push.
+    await ipc.helperCall(id, "watch.subscribe", {
+      path_b64: encodePath("/srv"),
+      recursive: true,
+    });
+    await drain();
+    assert.equal(seen.length, 1);
+    const data = seen[0].data as { path_b64: string };
+    assert.equal(seen[0].event, "fs.changed");
+    assert.ok(
+      decodeText(b64ToBytes(data.path_b64)).startsWith("/srv/"),
+      "a recursive watch names a file below the root",
+    );
   } finally {
     await ipc.helperClose(id);
   }

@@ -38,6 +38,13 @@
  *    `loadEarlier` can ask for exactly the bytes before it.
  * 4. **`complete` means byte 0 is held.** Only then is there nothing earlier to
  *    load.
+ * 5. **Reads are serialized behind one drain.** Pushes arrive per record — a
+ *    tool call and its result are two — so two refreshes can be asked for
+ *    inside one round trip; the second marks the drain dirty rather than
+ *    racing it, and no byte is ever appended twice.
+ * 6. **A file shorter than `offset` rewinds.** A truncate or a resume into a
+ *    new file at the same path resets the model and re-reads the tail, rather
+ *    than splicing two conversations together.
  *
  * The model is pure — a reducer over byte chunks with no network, no DOM and no
  * helper connection — so `node --test` drives it directly. {@link TranscriptTail}
@@ -333,6 +340,10 @@ export class TranscriptTail {
   private subscription: number | null = null;
   private offPush: () => void = () => undefined;
   private closed = false;
+  /** The refresh currently reading, if any — refreshes serialize behind it. */
+  private draining: Promise<void> | null = null;
+  /** Set when a push arrives mid-drain; makes the drain read once more. */
+  private dirty = false;
 
   private constructor(
     channel: TranscriptChannel,
@@ -410,21 +421,64 @@ export class TranscriptTail {
    *
    * Reads from `offset` until the remote says the range reached end-of-file, so
    * a single push that added more than one chunk is fully covered.
+   *
+   * **Serialized.** An agent CLI appends one record per line, so a tool call and
+   * its result arrive as two changes — and two `fs.changed` for this file inside
+   * one ssh round trip is the normal case, not a corner. Two refreshes running
+   * at once would both read `offset` before either awaited and both append the
+   * same bytes, duplicating records and leaving `offset` past the real
+   * end of file, after which the file silently stops updating. A refresh that
+   * arrives while one is in flight therefore marks the tail dirty instead:
+   * the in-flight drain reads once more on its way out, and every caller waits
+   * for the whole drain, so `await refresh()` never returns with bytes pending.
    */
   async refresh(): Promise<void> {
     if (this.closed) return;
+    if (this.draining !== null) {
+      this.dirty = true;
+      return this.draining;
+    }
+    const drain = (async () => {
+      do {
+        this.dirty = false;
+        await this.readToEnd();
+      } while (this.dirty && !this.closed);
+    })();
+    this.draining = drain;
+    try {
+      await drain;
+    } finally {
+      this.draining = null;
+    }
+    this.notify();
+  }
+
+  /** Read from `offset` to end-of-file, taking every chunk on the way. */
+  private async readToEnd(): Promise<void> {
     let guard = 0;
     for (;;) {
+      const from = this.model.offset;
       const read = await this.channel.readFile(this.path, {
-        offset: this.model.offset,
+        offset: from,
         limit: this.chunkBytes,
       });
+      if (read.size < from) {
+        // The file is shorter than where this tail is, so the bytes it was
+        // following are gone: the session was truncated, or resumed into a new
+        // file at the same path. Reading on would splice the new conversation
+        // onto the old one and lose everything in between without a trace, so
+        // start over from a tail of what is there now. (The remote answers an
+        // `offset > size` read with an empty body and the true `size`, which is
+        // the only signal the protocol gives — a replacement that has already
+        // grown past `offset` is indistinguishable from an append.)
+        await this.readTail();
+        return;
+      }
       if (read.data.length > 0) this.model.append(read.data, read.size);
       else this.model.size = read.size;
       if (read.eof || read.data.length === 0) break;
       if (++guard > 10_000) break;
     }
-    this.notify();
   }
 
   /**

@@ -294,6 +294,10 @@ function fakeRemote(initial: string) {
     append: (more: string) => {
       data = concatBytes(data, enc(more));
     },
+    /** Replace the whole file, as a truncate or a resume into a new file does. */
+    replace: (text: string) => {
+      data = enc(text);
+    },
     /** Deliver an `fs.changed` push naming `path`, as the helper would. */
     change: (path: string) => {
       for (const handler of [...handlers]) {
@@ -355,6 +359,59 @@ test("a push for this file advances the tail and fires onChange", async () => {
 
   assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }], "the appended record was read");
   assert.deepEqual(seen, [1, 2], "onChange fired for the append");
+
+  await tail.close();
+});
+
+test("two pushes in one round trip neither duplicate a record nor wedge the file", async () => {
+  // An agent CLI appends one record per line, so a tool call and its result are
+  // two changes: two `fs.changed` for the same file inside one ssh round trip
+  // is the normal case. Two refreshes running at once used to read the same
+  // offset before either returned, append the same bytes twice, and leave the
+  // offset past the real end of file — after which the file stopped updating,
+  // silently and for good.
+  const remote = fakeRemote('{"a":1}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 8, chunkBytes: 8 });
+  assert.deepEqual(tail.records, [{ a: 1 }]);
+
+  remote.append('{"b":2}\n');
+  remote.change(PATH);
+  remote.change(PATH); // the same tick, before the first read settles
+  await settle();
+  assert.deepEqual(tail.records, [{ a: 1 }, { b: 2 }], "the record appears exactly once");
+
+  // And the tail is not wedged past the end: the next record still arrives.
+  remote.append('{"c":3}\n');
+  remote.change(PATH);
+  await settle();
+  assert.deepEqual(
+    tail.records,
+    [{ a: 1 }, { b: 2 }, { c: 3 }],
+    "the file still updates after the double push",
+  );
+
+  await tail.close();
+});
+
+test("a file replaced by a shorter one rewinds instead of splicing", async () => {
+  // A session resumed into a new file at the same path — the case the task
+  // names — or a plain truncate leaves the tail holding an offset past the new
+  // end. Reading on would splice the new conversation onto the old and lose
+  // everything in between, so a file shorter than `offset` must reset the model.
+  const remote = fakeRemote('{"old":1}\n{"old":2}\n{"old":3}\n');
+  const tail = await TranscriptTail.open(remote.channel, PATH, { windowBytes: 64, chunkBytes: 64 });
+  assert.deepEqual(tail.records, [{ old: 1 }, { old: 2 }, { old: 3 }]);
+
+  remote.replace('{"new":1}\n{"new":2}\n'); // 20 bytes where 30 were held
+  remote.change(PATH);
+  await settle();
+  assert.deepEqual(tail.records, [{ new: 1 }, { new: 2 }], "the old conversation is gone");
+
+  // The rewind leaves the offset at the new end, so growth is still followed.
+  remote.append('{"new":3}\n');
+  remote.change(PATH);
+  await settle();
+  assert.deepEqual(tail.records, [{ new: 1 }, { new: 2 }, { new: 3 }], "the new file still updates");
 
   await tail.close();
 });

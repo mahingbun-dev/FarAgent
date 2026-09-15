@@ -35,8 +35,10 @@ pub struct SessionSummary {
     /// came from a transcript file. `None` for a row the list only inferred
     /// from tmux or a process scan — the normal case for a session started
     /// moments ago, whose file may not exist yet. `#[serde(default)]` because
-    /// this struct serialises straight to the TUI and the app: an older reader
-    /// that has never heard of this field must keep deserialising.
+    /// this struct serialises straight to the TUI and the app: a reader built
+    /// after this field existed must still deserialise a body written before
+    /// it. (A reader that predates the field needs nothing — serde ignores
+    /// unknown fields by default.)
     #[serde(default)]
     pub transcript: Option<String>,
 }
