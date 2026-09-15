@@ -19,6 +19,7 @@ import type { AttachEvent, Session } from "../ipc.ts";
 import { HelperError, decodeText, encodePath, helperErrorText } from "../helper.ts";
 import type { HelperEvent } from "../helper.ts";
 import { ipc } from "../ipc.ts";
+import { tmuxIdFromName, tmuxName } from "../agents.ts";
 import { SESSION_PAGE, budgetGroups, groupByWorkspace } from "../session-groups.ts";
 import { adapt } from "../chat/adapters/claude.ts";
 import type { ToolEvent } from "../chat/events.ts";
@@ -574,6 +575,73 @@ test("a launched session has no transcript file until its first turn writes one"
   } finally {
     await ipc.helperClose(id);
   }
+});
+
+/**
+ * The sessions-rows join, in the harness — the half of the app-launched-session
+ * fix a browser could not reach before, because the mock named a launched
+ * session after the cwd while the backend names it after the pinned uuid.
+ *
+ * `merge_sessions` joins a file row to a live tmux row only when
+ * `tmux_name(agent, row.id)` is the name the tmux dump carries, and the file is
+ * named by the id — so the name has to be derived from the id or the two are
+ * two rows for one session. This walks the session through both states the
+ * backend reports: the tmux-only `(live)` row a second after launch (no file
+ * yet), and the joined file row once the CLI's first turn has written one.
+ */
+test("a launched session's row joins the tmux session it started, rather than doubling it", async () => {
+  const cwd = "/srv/app/faragent";
+  const ensured = dispatch("ensure_session", { agent: "claude", cwd, sessionId: null }) as {
+    name: string;
+    session_id: string | null;
+  };
+  assert.ok(ensured.session_id, "a new Claude session is answered with its pinned id");
+
+  // The name carries the last twelve alphanumerics of the id (`agents::short_id`)
+  // and cannot carry more, so this is the derivation a listing can recompute —
+  // and the one that makes the join possible at all.
+  const short = ensured.session_id.replace(/[^A-Za-z0-9]/g, "").slice(-12);
+  assert.equal(ensured.name, `faragent-claude-${short}`);
+  assert.equal(tmuxName("claude", ensured.session_id), ensured.name);
+  assert.equal(tmuxIdFromName("claude", ensured.name), short);
+
+  // Before the first turn there is no file, so the backend has only the tmux
+  // session to report: one `(live)` row, its id the *short* suffix the name
+  // carries. One row — and a different id from the one the file will have.
+  const waiting = fx.listSessions("claude").filter((row) => row.tmux === ensured.name);
+  assert.equal(waiting.length, 1, "one row for one launched session");
+  assert.equal(waiting[0].id, short);
+  assert.equal(waiting[0].live, true);
+  assert.equal(waiting[0].transcript, null, "nothing to tail until the file exists");
+
+  // The session's first turn, typed into its attach as the composer does.
+  const attach = await ipc.attachOpen({
+    host: HOST,
+    spec: { kind: "tmux", tmux_name: ensured.name },
+    cols: 80,
+    rows: 24,
+    onEvent: new Channel<AttachEvent>(),
+  });
+  await ipc.attachWrite(attach, bytesToB64(new TextEncoder().encode("check the rail\r")));
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  await ipc.attachClose(attach);
+
+  const rows = fx.listSessions("claude");
+  // THE JOIN: the file row's id is the pinned uuid, the name recomputed from it
+  // is the name the tmux session has, and the two are therefore one row.
+  const joined = rows.filter((row) => row.id === ensured.session_id);
+  assert.equal(joined.length, 1, "the file row");
+  assert.equal(joined[0].tmux, ensured.name, "joined to the tmux session it started");
+  assert.equal(joined[0].live, true, "live, because the tmux session is");
+  assert.equal(joined[0].cwd, cwd);
+  assert.equal(joined[0].title, "check the rail", "the row is titled by its first turn");
+  assert.match(joined[0].transcript ?? "", /\.jsonl$/, "and carries its conversation");
+
+  assert.equal(
+    rows.filter((row) => row.tmux === ensured.name).length,
+    1,
+    "one row for this session, never two",
+  );
 });
 
 /** The session behind `HELPER_FIXTURES.emptyTranscript`, as a tmux row names it. */

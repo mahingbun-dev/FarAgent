@@ -31,7 +31,7 @@ import type {
   Probe,
   Session,
 } from "../ipc.ts";
-import { AGENT_TITLES, tmuxName } from "../agents.ts";
+import { AGENT_TITLES, tmuxIdFromName, tmuxName } from "../agents.ts";
 import { claudeTranscriptPath } from "../chat/transcript-path.ts";
 
 /**
@@ -777,38 +777,139 @@ const SESSION_SEEDS: SessionSeed[] = [
  * The scheduled rows are returned for every agent — the rail renders a
  * scheduled group whenever the data has one, and keeping it makes the fourth
  * mark reachable without switching agents first.
+ *
+ * The launched sessions of this process are appended, from `launched` below —
+ * see `launchedRows`, which is the one place the rows-join fix is observable
+ * outside Rust.
  */
 export function listSessions(agent: AgentKind): Session[] {
-  return SESSION_SEEDS.map((seed) => ({
-    id: seed.id,
-    agent,
-    title: seed.title,
-    cwd: seed.cwd,
-    mtime: NOW - seed.age * MIN,
-    live: !!seed.live,
-    running: !!seed.running,
-    tmux: seed.live ? tmuxName(agent, seed.id) : null,
-    scheduled: !!seed.scheduled,
-    // A transcript path is agent-specific (Claude's lives under
-    // `~/.claude/projects`), and the row that has one is a Claude row — so it is
-    // stripped for every other agent rather than leaked onto a Codex or Grok
-    // row, which is what an un-gated stamp would do.
-    transcript: agent === "claude" ? (seed.transcript ?? null) : null,
-  }));
+  return [
+    ...SESSION_SEEDS.map((seed) => ({
+      id: seed.id,
+      agent,
+      title: seed.title,
+      cwd: seed.cwd,
+      mtime: NOW - seed.age * MIN,
+      live: !!seed.live,
+      running: !!seed.running,
+      tmux: seed.live ? tmuxName(agent, seed.id) : null,
+      scheduled: !!seed.scheduled,
+      // A transcript path is agent-specific (Claude's lives under
+      // `~/.claude/projects`), and the row that has one is a Claude row — so it is
+      // stripped for every other agent rather than leaked onto a Codex or Grok
+      // row, which is what an un-gated stamp would do.
+      transcript: agent === "claude" ? (seed.transcript ?? null) : null,
+    })),
+    ...launchedRows(agent),
+  ];
 }
 
 /** The home the mock's POSIX remote reports (`probe`, and `expand_home`). */
 const MOCK_HOME = "/home/deploy";
 
 /**
+ * A session this mock started from the app: the tmux name it was ensured under,
+ * the id it was pinned to, the file the app will find that id's conversation in,
+ * and whether the CLI has taken a first turn yet.
+ */
+interface LaunchedSession {
+  sessionId: string;
+  path: string;
+  /** The cwd the launch carried — the `(live)` row's group, and nothing else. */
+  cwd: string;
+  /**
+   * The first turn's text, once there has been one — the title a real file row
+   * reads out of the jsonl (`remote::jsonl_meta`). `null` until then, which is
+   * also what makes a row a *file* row: `written` is whether the file exists.
+   */
+  title: string | null;
+}
+
+/**
  * The sessions this mock has *launched*, keyed by the tmux name they were
  * ensured under: what a `--session-id`-pinned Claude session answers.
- *
- * Deliberately not in the rail's `listSessions`: the real backend lists what is
- * on disk, and a session started a second ago has written nothing yet — which
- * is exactly the state this map exists to make reachable in a browser.
  */
-const launched = new Map<string, { sessionId: string; path: string }>();
+const launched = new Map<string, LaunchedSession>();
+
+/**
+ * The rows a launched session contributes to the list, modelled on
+ * `merge_sessions` rather than assumed to join.
+ *
+ * The backend has two ways to report a live tmux session, and which applies
+ * turns on whether a file exists yet:
+ *
+ * - A **file row** goes live only when `tmux_name(agent, row.id)` is a name the
+ *   tmux dump carries. That is the join. An unjoined file row is not live, and
+ *   its `tmux` is the name its own id derives — which is what makes it a second
+ *   row for a session the dump row already describes.
+ * - A **tmux session** no file row claimed becomes its own `(live)` row, whose
+ *   id is the *short* suffix `tmux_id_from_name` reads out of the name — never
+ *   the uuid, which the name does not carry.
+ *
+ * So the join is computed here rather than asserted: with a name derived from
+ * the pinned id (what `ensureSession` does, as `sessions.rs:155` does) the two
+ * are one row; with a name derived from anything else they are two. It is
+ * derived from `launched` and not from the fixture filesystem, because the mock
+ * has no directory of `~/.claude/projects` to scan: `noteLaunchedTurn` is the
+ * stand-in for the CLI writing the file.
+ */
+function launchedRows(agent: AgentKind): Session[] {
+  const rows: Session[] = [];
+  for (const [name, fresh] of launched) {
+    // `launched` only ever holds Claude sessions: the `--session-id` pin is what
+    // makes a file nameable before it exists, and only Claude takes it.
+    if (agent !== "claude") continue;
+
+    const joined = tmuxName(agent, fresh.sessionId) === name;
+    if (fresh.title !== null) {
+      rows.push({
+        id: fresh.sessionId,
+        agent,
+        title: fresh.title,
+        cwd: fresh.cwd,
+        // Newer than every seed: a session started a moment ago sorts to the top,
+        // and `mtime` is what the rail sorts by.
+        mtime: NOW + MIN,
+        live: joined,
+        running: false,
+        tmux: joined ? name : tmuxName(agent, fresh.sessionId),
+        scheduled: false,
+        transcript: fresh.path,
+      });
+    }
+    if (!joined || fresh.title === null) {
+      rows.push({
+        id: tmuxIdFromName(agent, name) ?? name,
+        agent,
+        title: "(live)",
+        cwd: fresh.cwd,
+        mtime: NOW + MIN,
+        live: true,
+        running: false,
+        tmux: name,
+        scheduled: false,
+        transcript: null,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Record that a launched session's CLI has taken a turn: `line` is the first
+ * one, which is the title the row will carry, and the file now exists.
+ *
+ * Called by `handlers.ts`'s `submit` — the one place the mock writes a
+ * transcript — so that `launchedRows` can report the session the way
+ * `merge_sessions` would *after* the file lands rather than before. A path no
+ * launch claims is ignored: the seeded sessions' files are there from the start.
+ */
+export function noteLaunchedTurn(path: string, line: string): void {
+  for (const fresh of launched.values()) {
+    if (fresh.path !== path) continue;
+    fresh.title ??= line;
+  }
+}
 
 /**
  * A uuid-shaped id, deterministic in its order of issue.
@@ -830,7 +931,15 @@ export function ensureSession(
   cwd: string,
   sessionId: string | null,
 ): EnsuredSession {
-  const name = tmuxName(agent, sessionId ?? cwd);
+  // The id is settled FIRST and the name is derived from it — `sessions.rs:152`
+  // takes the caller's id or generates one, and `:155` names the tmux session
+  // after *that*. Never after the cwd: the name is what a later listing joins a
+  // file row by (`merge_sessions` recomputes `tmux_name(agent, row.id)`), and
+  // the file is named by the id, so a name derived from anything else is a name
+  // no file row can match. That mismatch is the two-rows-for-one-session bug
+  // this fixture's `launchedRows` now reproduces rather than hides.
+  const id = sessionId ?? newSessionUuid();
+  const name = tmuxName(agent, id);
   // A resume already has its id; there is nothing new to name. A *new* Claude
   // session is the one the `--session-id` pin exists for — the id is what makes
   // its transcript path computable before the file is written — so the mock
@@ -838,9 +947,8 @@ export function ensureSession(
   // is the one the app computed a path for.
   if (sessionId !== null) return { name, session_id: sessionId };
   if (agent !== "claude") return { name, session_id: null };
-  const id = newSessionUuid();
   const path = claudeTranscriptPath(id, cwd, MOCK_HOME, "posix");
-  if (path !== null) launched.set(name, { sessionId: id, path });
+  if (path !== null) launched.set(name, { sessionId: id, path, cwd, title: null });
   return { name, session_id: id };
 }
 

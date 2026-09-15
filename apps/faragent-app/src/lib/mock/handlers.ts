@@ -186,6 +186,11 @@ function submit(session: MockAttach, line: string): void {
     if (!appendFile(target.path, fx.userTurnJsonl(target.sessionId, record, atSeconds()))) {
       return;
     }
+    // The file is on disk now, which is the fact a listing reads: a launched
+    // session stops being a tmux session with nothing behind it and becomes the
+    // file row the join is about. `record` is this turn's text, and the first
+    // one is the title the row will carry (`remote::jsonl_meta`).
+    fx.noteLaunchedTurn(target.path, record);
     // The write is only half of it: a tailable transcript is one whose directory
     // watch fires, and the mock's filesystem has no watcher of its own. A tail
     // that took its watch while the directory was already there hears this; one
