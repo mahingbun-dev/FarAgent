@@ -22,6 +22,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FsRead, WatchSubscription } from "../helper.ts";
+import { HelperError } from "../helper.ts";
 import { TranscriptModel, TranscriptTail, frameLines, parentDir, parseRecord } from "./transcript.ts";
 import { TAIL_WINDOW_BYTES, READ_CHUNK_BYTES } from "./transcript.ts";
 import type { TranscriptChannel } from "./transcript.ts";
@@ -531,6 +532,180 @@ test("a failed first read drops the watch and rejects", async () => {
   );
   assert.deepEqual(remote.unsubscribes, [1], "the watch leaked behind the rejection");
   assert.equal(remote.handlerCount(), 0, "the push handler leaked behind the rejection");
+});
+
+// ---------------------------------------------------------------------------
+// The client: a file that is not there yet
+// ---------------------------------------------------------------------------
+
+/**
+ * The helper's `not_found`, in the shape `invoke` rejects with: a distinct code
+ * on a remote failure. The tail reads the code, so the shape has to be the real
+ * one — a plain `Error` would take the "real failure" path and prove nothing.
+ */
+function notFound(path: string): unknown {
+  return { kind: "remote", code: "not_found", message: `no such file: ${path}` };
+}
+
+/** The helper code a rejection carries — `null` for anything that is not one. */
+function codeOf(error: unknown): string | null {
+  return HelperError.from(error).errorCode;
+}
+
+/** Long enough for a knock or two of a 1 ms retry timer to run. */
+const sleep = (ms = 20): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a transcript that is not there yet opens empty and waiting, not as an error", async () => {
+  // The ordinary first seconds of a session started from the app: the path is
+  // known from the launch, the CLI has not written the file. `fs.stat` says
+  // `not_found` and the tail opens on nothing rather than rejecting — an empty
+  // conversation is what the reader should see, not a failure they cannot act on.
+  const remote = fakeRemote("");
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    stat: () => Promise.reject(notFound(PATH)),
+    readFile: () => Promise.reject(notFound(PATH)),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, { windowBytes: 8 });
+  assert.equal(tail.waiting, true, "the file is not there yet — a wait, not an error");
+  assert.deepEqual(tail.records, []);
+  assert.equal(tail.complete, true, "an absent file has nothing before byte 0 either");
+  assert.deepEqual(
+    remote.subscribes,
+    [{ path: parentDir(PATH), recursive: false }],
+    "the watch was taken anyway, so the file's own arrival is a push",
+  );
+
+  await tail.close();
+});
+
+test("the file appearing under a held watch turns the wait into records", async () => {
+  const remote = fakeRemote("");
+  let present = false;
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    stat: () => (present ? remote.channel.stat(PATH) : Promise.reject(notFound(PATH))),
+    readFile: (path, opts) =>
+      present ? remote.channel.readFile(path, opts) : Promise.reject(notFound(PATH)),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, { windowBytes: 64 });
+  assert.equal(tail.waiting, true);
+
+  // The CLI takes its first turn: the file is created in the watched directory.
+  present = true;
+  remote.append('{"a":1}\n');
+  remote.change(PATH);
+  await settle();
+
+  assert.equal(tail.waiting, false, "the file is there, so the wait is over");
+  assert.deepEqual(tail.records, [{ a: 1 }], "the push read the new file");
+
+  await tail.close();
+});
+
+test("a directory that is missing too is knocked until the file can be watched", async () => {
+  // The cwd may be one the CLI has never run in, so its
+  // `~/.claude/projects/<slug>` directory is missing as well — and a watch
+  // cannot be taken on a directory that is not there, so nothing will ever push.
+  // The tail has to knock, and the knock is what finds the file.
+  const remote = fakeRemote('{"a":1}\n');
+  let ready = false;
+  const subscribes: string[] = [];
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    subscribe: (path, recursive = false) => {
+      subscribes.push(path);
+      if (!ready) return Promise.reject(notFound(path));
+      return remote.channel.subscribe(path, recursive);
+    },
+    stat: () => (ready ? remote.channel.stat(PATH) : Promise.reject(notFound(PATH))),
+    readFile: (path, opts) =>
+      ready ? remote.channel.readFile(path, opts) : Promise.reject(notFound(PATH)),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, {
+    windowBytes: 64,
+    awaitRetryMs: 1,
+    maxAwaitRetries: 5,
+  });
+  assert.equal(tail.waiting, true, "no file and no directory: nothing can push");
+  assert.equal(subscribes.length, 1, "the open's own watch attempt failed");
+
+  ready = true; // the CLI created the directory and the file in it
+  await sleep();
+
+  assert.equal(tail.waiting, false, "a knock found the directory and the file");
+  assert.deepEqual(tail.records, [{ a: 1 }], "the knock read the file the open could not");
+  assert.ok(subscribes.length >= 2, "the watch was retried once the directory existed");
+
+  await tail.close();
+});
+
+test("the knock stops once its budget is spent, quietly", async () => {
+  // Bounded on purpose: a directory that never appears must not cost a remote
+  // round trip every interval for the life of the tab. Giving up leaves the
+  // reader on the empty conversation, which is what a session that never speaks
+  // shows — not an error.
+  const remote = fakeRemote("");
+  let attempts = 0;
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    subscribe: () => {
+      attempts += 1;
+      return Promise.reject(notFound("the directory is not there"));
+    },
+    stat: () => Promise.reject(notFound(PATH)),
+    readFile: () => Promise.reject(notFound(PATH)),
+  };
+
+  const errors: unknown[] = [];
+  const tail = await TranscriptTail.open(channel, PATH, {
+    awaitRetryMs: 1,
+    maxAwaitRetries: 2,
+    onError: (e) => errors.push(e),
+  });
+  assert.equal(attempts, 1, "the open's own watch attempt");
+
+  await sleep();
+  assert.equal(attempts, 3, "two knocks, then the budget is spent");
+  assert.equal(tail.waiting, true, "still waiting, and quiet about it");
+  assert.equal(errors.length, 3, "the open's watch failure and each knock's were reported");
+
+  // Nothing more: the timer is not re-armed past the budget.
+  await sleep();
+  assert.equal(attempts, 3, "no knock after the budget");
+
+  await tail.close();
+});
+
+test("a not_found for a file this tail has read is a failure, not a wait", async () => {
+  // A wait is only honest while the tail holds nothing. A file that was read and
+  // has since gone is a real loss of the thing being read, and relabelling it a
+  // wait would leave the reader watching a conversation that will never resume.
+  const remote = fakeRemote('{"a":1}\n');
+  let present = true;
+  const channel: TranscriptChannel = {
+    ...remote.channel,
+    stat: () => (present ? remote.channel.stat(PATH) : Promise.reject(notFound(PATH))),
+    readFile: (path, opts) =>
+      present ? remote.channel.readFile(path, opts) : Promise.reject(notFound(PATH)),
+  };
+
+  const tail = await TranscriptTail.open(channel, PATH, { windowBytes: 8 });
+  assert.deepEqual(tail.records, [{ a: 1 }]);
+  assert.equal(tail.waiting, false);
+
+  present = false;
+  await assert.rejects(
+    tail.refresh(),
+    (e: unknown) => codeOf(e) === "not_found",
+    "a vanished file the tail had read must reject",
+  );
+  assert.equal(tail.waiting, false, "a lost file is not relabelled a wait");
+
+  await tail.close();
 });
 
 test("a transcript that changes mid-read is caught by the next refresh", async () => {

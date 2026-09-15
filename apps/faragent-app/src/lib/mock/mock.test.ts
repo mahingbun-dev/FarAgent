@@ -24,6 +24,7 @@ import { adapt } from "../chat/adapters/claude.ts";
 import type { ToolEvent } from "../chat/events.ts";
 import { groupEvents } from "../chat/sidechain.ts";
 import { diffTextOf } from "../chat/tool-input.ts";
+import { claudeTranscriptPath } from "../chat/transcript-path.ts";
 import { TAIL_WINDOW_BYTES } from "../chat/transcript.ts";
 import * as fx from "./fixtures.ts";
 import { HELPER_FIXTURES } from "./helper.ts";
@@ -432,7 +433,7 @@ test("a line typed into an attach is echoed back and lands in the session's tran
 
   const spec = {
     kind: "tmux",
-    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION),
+    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION).name,
   } as const;
   const id = await ipc.attachOpen({ host: HOST, spec, cols: 80, rows: 24, onEvent: channel });
 
@@ -486,7 +487,7 @@ test("the mock records a slash command the way a TUI does: the verb, not the arg
   const channel = new Channel<AttachEvent>();
   const spec = {
     kind: "tmux",
-    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION),
+    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION).name,
   } as const;
   const id = await ipc.attachOpen({ host: HOST, spec, cols: 80, rows: 24, onEvent: channel });
 
@@ -503,6 +504,76 @@ test("the mock records a slash command the way a TUI does: the verb, not the arg
   assert.equal(record.message?.content, "/compact");
 
   await ipc.attachClose(id);
+});
+
+test("a launched session has no transcript file until its first turn writes one", async () => {
+  // The state the chat view's "no conversation yet" is for, and the one a
+  // browser could not reach before this: every seeded Claude row carries a
+  // transcript path whose file is already in the fixture filesystem. A session
+  // launched from the app answers with the id it was pinned to, the app computes
+  // its file from that id, and there is nothing at that path until the CLI takes
+  // its first turn — so a tail that opens it must wait rather than fail.
+  const ensured = dispatch("ensure_session", {
+    agent: "claude",
+    cwd: "/srv/app/faragent",
+    sessionId: null,
+  }) as { name: string; session_id: string | null };
+  assert.ok(ensured.session_id, "a new Claude session is answered with its pinned id");
+  assert.match(ensured.session_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+  // The path the app derives from that id — same rule, same home, same spelling.
+  const path = claudeTranscriptPath(
+    ensured.session_id,
+    "/srv/app/faragent",
+    "/home/deploy",
+    "posix",
+  );
+  assert.ok(path !== null, "the id and cwd are enough to name the file");
+  assert.match(path, /^\/home\/deploy\/\.claude\/projects\/-srv-app-faragent\/.+\.jsonl$/);
+
+  const channel = new Channel<HelperEvent>();
+  const { id } = await ipc.helperOpen({ host: HOST, onEvent: channel });
+  try {
+    // Nothing there yet: `not_found`, the code a tail reads as "wait for it".
+    await ipc.helperCall(id, "fs.stat", { path_b64: encodePath(path) }).then(
+      () => {
+        throw new Error("the file must not exist before the session's first turn");
+      },
+      (e: { kind: string; code: string }) => {
+        assert.equal(e.kind, "remote");
+        assert.equal(e.code, "not_found");
+      },
+    );
+
+    // The first turn: a line typed into the attach, which the mock's agent
+    // answers by writing the file and the record together.
+    const spec = { kind: "tmux", tmux_name: ensured.name } as const;
+    const attach = await ipc.attachOpen({
+      host: HOST,
+      spec,
+      cols: 80,
+      rows: 24,
+      onEvent: new Channel<AttachEvent>(),
+    });
+    await ipc.attachWrite(attach, bytesToB64(new TextEncoder().encode("first turn\r")));
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await ipc.attachClose(attach);
+
+    const read = (await ipc.helperCall(id, "fs.read", {
+      path_b64: encodePath(path),
+    })) as { data_b64: string };
+    const written = decodeText(b64ToBytes(read.data_b64));
+    const record = JSON.parse(written.trim().split("\n").pop() ?? "{}") as {
+      type?: string;
+      message?: { content?: unknown };
+      sessionId?: unknown;
+    };
+    assert.equal(record.type, "user");
+    assert.equal(record.message?.content, "first turn");
+    assert.equal(record.sessionId, ensured.session_id, "the record carries the pinned id");
+  } finally {
+    await ipc.helperClose(id);
+  }
 });
 
 /** The session behind `HELPER_FIXTURES.emptyTranscript`, as a tmux row names it. */

@@ -17,7 +17,7 @@ import type { AttachEvent, AttachSpec } from "../ipc.ts";
 import { b64ToBytes, bytesToB64 } from "../bytes.ts";
 import type { AgentKind } from "../agents.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
-import { appendFile, helperHandlers, pokeWatch } from "./helper.ts";
+import { appendFile, ensureFile, helperHandlers, pokeWatch } from "./helper.ts";
 import * as fx from "./fixtures.ts";
 
 export type MockHandler = (args: Record<string, unknown>) => unknown;
@@ -177,12 +177,21 @@ function submit(session: MockAttach, line: string): void {
   if (target === null) return;
   const record = recordText(line);
   setTimeout(() => {
+    // A session this mock launched has no transcript file yet — that is the
+    // whole point of a session started a second ago, and the state the chat
+    // view's "no conversation yet" is for. Its first turn is this one, so the
+    // file (and the `~/.claude/projects/<slug>` directory above it) comes into
+    // existence here, a beat before the record lands in it.
+    const created = target.late && ensureFile(target.path);
     if (!appendFile(target.path, fx.userTurnJsonl(target.sessionId, record, atSeconds()))) {
       return;
     }
     // The write is only half of it: a tailable transcript is one whose directory
-    // watch fires, and the mock's filesystem has no watcher of its own.
-    pokeWatch(session.host, target.path, "modified");
+    // watch fires, and the mock's filesystem has no watcher of its own. A tail
+    // that took its watch while the directory was already there hears this; one
+    // that could not (the directory did not exist either) finds the file on its
+    // own bounded retry, which is what that retry is for.
+    pokeWatch(session.host, target.path, created ? "created" : "modified");
   }, AGENT_WRITE_MS);
 }
 
@@ -221,6 +230,10 @@ export const handlers: Record<string, MockHandler> = {
 
   // sessions
   list_sessions: (a) => fx.listSessions(arg(a, "agent") as AgentKind),
+  // Answers the backend's `{ name, session_id }` object, not a bare name. A new
+  // Claude session comes back with the id it was pinned to — the mock pins one
+  // too — so the caller can compute the transcript path of a file that does not
+  // exist yet, which is the case this fixture set exists to make reachable.
   ensure_session: (a) =>
     fx.ensureSession(
       arg(a, "agent") as AgentKind,

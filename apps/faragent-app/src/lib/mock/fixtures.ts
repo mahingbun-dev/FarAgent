@@ -23,6 +23,7 @@ import type {
   AttachSpec,
   AuthMode,
   DirListing,
+  EnsuredSession,
   GitHubSync,
   Host,
   Lang,
@@ -31,6 +32,7 @@ import type {
   Session,
 } from "../ipc.ts";
 import { AGENT_TITLES, tmuxName } from "../agents.ts";
+import { claudeTranscriptPath } from "../chat/transcript-path.ts";
 
 /**
  * A string no production build can contain. `npm run build` is followed by a
@@ -795,33 +797,82 @@ export function listSessions(agent: AgentKind): Session[] {
   }));
 }
 
-/** Mirrors `ensure_session`: the backend answers with the tmux name it attached. */
+/** The home the mock's POSIX remote reports (`probe`, and `expand_home`). */
+const MOCK_HOME = "/home/deploy";
+
+/**
+ * The sessions this mock has *launched*, keyed by the tmux name they were
+ * ensured under: what a `--session-id`-pinned Claude session answers.
+ *
+ * Deliberately not in the rail's `listSessions`: the real backend lists what is
+ * on disk, and a session started a second ago has written nothing yet — which
+ * is exactly the state this map exists to make reachable in a browser.
+ */
+const launched = new Map<string, { sessionId: string; path: string }>();
+
+/**
+ * A uuid-shaped id, deterministic in its order of issue.
+ *
+ * The real backend takes the uuid the CLI would have chosen; the mock has no
+ * CLI, so it counts. Deterministic rather than random so two runs of the same
+ * script produce the same paths, which is what makes a screenshot reproducible.
+ */
+let launchSeq = 0;
+
+function newSessionUuid(): string {
+  launchSeq += 1;
+  return `0152c0de-0000-4000-8000-${String(launchSeq).padStart(12, "0")}`;
+}
+
+/** Mirrors `ensure_session`: the tmux name it attached, and the session uuid. */
 export function ensureSession(
   agent: AgentKind,
   cwd: string,
   sessionId: string | null,
-): string {
-  return tmuxName(agent, sessionId ?? cwd);
+): EnsuredSession {
+  const name = tmuxName(agent, sessionId ?? cwd);
+  // A resume already has its id; there is nothing new to name. A *new* Claude
+  // session is the one the `--session-id` pin exists for — the id is what makes
+  // its transcript path computable before the file is written — so the mock
+  // pins one too, and remembers the pair so the file the terminal later writes
+  // is the one the app computed a path for.
+  if (sessionId !== null) return { name, session_id: sessionId };
+  if (agent !== "claude") return { name, session_id: null };
+  const id = newSessionUuid();
+  const path = claudeTranscriptPath(id, cwd, MOCK_HOME, "posix");
+  if (path !== null) launched.set(name, { sessionId: id, path });
+  return { name, session_id: id };
 }
 
 /**
- * The conversation file a terminal's attach spec belongs to, and the session it
- * is — or `null` for a spec with no conversation behind it (a login shell, an
- * install run, a session whose row never carried a transcript).
+ * The conversation file a terminal's attach spec belongs to, the session it is,
+ * and whether that file **may not exist yet** — or `null` for a spec with no
+ * conversation behind it (a login shell, an install run, a session whose row
+ * never carried a transcript).
  *
  * This is the mock's **inverse** of `sessionTabKey`/`ensureSession`: the attach
  * carries a tmux name or a session id and nothing else, while the transcript is
  * named by session id, so a mock that wants to show a typed message arriving has
- * to resolve one from the other. It answers only for the seeded sessions — which
- * is honest, because those are the only ones with a file to append to.
+ * to resolve one from the other. It answers for the seeded sessions — the only
+ * ones whose files are there from the start — and for the sessions this mock has
+ * launched.
+ *
+ * `late` is the honest difference between the two: a launched session's file is
+ * written by its CLI on the first turn, exactly as it is on a real remote, so
+ * the file is *not* registered when the session is (see `handlers.ts`'s
+ * `submit`, which creates it the moment something is typed). It is a property of
+ * the spec, not of the moment: after the first line the file exists and creating
+ * it again is a no-op.
  */
 export function transcriptForSpec(
   spec: AttachSpec,
-): { path: string; sessionId: string } | null {
+): { path: string; sessionId: string; late: boolean } | null {
   if (spec.kind === "tmux") {
+    const fresh = launched.get(spec.tmux_name);
+    if (fresh) return { path: fresh.path, sessionId: fresh.sessionId, late: true };
     for (const seed of SESSION_SEEDS) {
       if (seed.transcript && tmuxName("claude", seed.id) === spec.tmux_name) {
-        return { path: seed.transcript, sessionId: seed.id };
+        return { path: seed.transcript, sessionId: seed.id, late: false };
       }
     }
     return null;
@@ -830,7 +881,9 @@ export function transcriptForSpec(
     const { session_id } = spec;
     if (session_id === null) return null;
     const seed = SESSION_SEEDS.find((s) => s.id === session_id && s.transcript);
-    return seed?.transcript ? { path: seed.transcript, sessionId: session_id } : null;
+    return seed?.transcript
+      ? { path: seed.transcript, sessionId: session_id, late: false }
+      : null;
   }
   return null;
 }

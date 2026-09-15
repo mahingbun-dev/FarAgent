@@ -26,6 +26,7 @@ import { useProbe, useSessions } from "@/components/shell/use-shell-data";
 import { asDiagnosis, errorMessage, ipc } from "@/lib/ipc";
 import type { AgentKind, Session } from "@/lib/ipc";
 import { AGENT_TITLES, tmuxName } from "@/lib/agents";
+import { claudeTranscriptPath } from "@/lib/chat/transcript-path";
 import { sessionTabKey } from "@/lib/tab-keys";
 import { useStore, useT } from "@/state";
 
@@ -99,9 +100,20 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
    * Open the session in a terminal tab. POSIX remotes attach tmux; Windows
    * remotes have no tmux, so the agent runs in the foreground (resume vs new
    * is the backend's call — it owns the argv tables).
+   *
+   * `transcript` is passed in rather than read off `sess`, because a session
+   * that was just launched has no `Session` to read it from: its path is
+   * computed from the id the launch returned. See {@link ensure}.
    */
   const attach = useCallback(
-    (target: string, forAgent: AgentKind, sess: Session | null, name: string, cwd: string) => {
+    (
+      target: string,
+      forAgent: AgentKind,
+      sess: Session | null,
+      name: string,
+      cwd: string,
+      transcript: string | null,
+    ) => {
       openTab({
         key: sessionTabKey(target, forAgent, sess?.id ?? name),
         title: `${AGENT_TITLES[forAgent]} · ${sess?.title ?? sess?.id ?? name}`,
@@ -109,11 +121,11 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
         host: target,
         cwd: cwd || null,
         agent: forAgent,
-        // The file the conversation view tails. `null` for a row the list
-        // inferred from tmux or a process scan — the session exists but has no
-        // transcript yet, which is the chat view's "nothing here yet" state
-        // rather than a reason to refuse the view.
-        transcript: sess?.transcript ?? null,
+        // The file the conversation view tails. `null` for a session whose file
+        // cannot be named — a row the list inferred from tmux or a process scan,
+        // an agent with no adapter, a Windows remote. That is the chat view's
+        // "nothing here yet" state, not a reason to refuse the view.
+        transcript,
         spec:
           os === "windows"
             ? { kind: "win_agent", agent: forAgent, cwd, session_id: sess?.id ?? null }
@@ -129,7 +141,7 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
       if (!hostAlias) return;
       setBusy(true);
       try {
-        const name = await ipc.ensureSession(
+        const launched = await ipc.ensureSession(
           hostAlias,
           agent,
           cwd,
@@ -137,7 +149,19 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
           createCwd,
         );
         setPendingDir(null);
-        attach(hostAlias, agent, resume, name, cwd);
+        // A resume already knows its file from the rail, and must not have it
+        // recomputed — the id it resumed is the one the list reported. A new
+        // session's file exists only once the CLI writes its first record, so
+        // the path is derived from the id the launch pinned (see
+        // `lib/chat/transcript-path.ts`); until the file lands, the tail waits
+        // on it rather than failing (see `lib/chat/transcript.ts`).
+        const transcript =
+          resume !== null
+            ? resume.transcript ?? null
+            : launched.session_id !== null && agent === "claude"
+              ? claudeTranscriptPath(launched.session_id, cwd, home, os)
+              : null;
+        attach(hostAlias, agent, resume, launched.name, cwd, transcript);
         void qc.invalidateQueries({ queryKey: ["sessions", hostAlias, agent, os] });
       } catch (e) {
         if (
@@ -159,7 +183,7 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
         setBusy(false);
       }
     },
-    [agent, attach, hostAlias, os, qc],
+    [agent, attach, home, hostAlias, os, qc],
   );
 
   const open = useCallback(
@@ -174,6 +198,7 @@ export function SessionLauncherProvider({ children }: { children: ReactNode }) {
           session,
           session.tmux ?? tmuxName(agent, session.id),
           cwd,
+          session.transcript ?? null,
         );
         return;
       }

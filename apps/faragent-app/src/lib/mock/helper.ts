@@ -250,6 +250,27 @@ export function appendFile(path: string, text: string): boolean {
   return true;
 }
 
+/**
+ * Bring an empty regular file into existence, creating its parents. Returns
+ * whether it had to.
+ *
+ * The other half of an agent's first turn, and the reason a *new* session's
+ * transcript cannot simply be seeded: the CLI writes the file when it writes
+ * its first record, and for a cwd it has never run in, the
+ * `~/.claude/projects/<slug>` directory above it comes into being at the same
+ * moment. So this creates both, and a consumer tailing the path sees the pair of
+ * states a real one does — nothing there, then a file.
+ *
+ * `fs.stat` on the path answers `not_found` until this is called, which is what
+ * a new session's tab meets when it opens.
+ */
+export function ensureFile(path: string): boolean {
+  const at = normalise(path);
+  if (nodes.has(at)) return false;
+  addFile(at, () => new Uint8Array(), (clock += 1));
+  return true;
+}
+
 /** The path a chain of symlinks leads to, resolved like the helper resolves it. */
 function resolvePath(path: string): string {
   let at = normalise(path);

@@ -73,6 +73,20 @@ export interface Session {
   transcript?: string | null;
 }
 
+/**
+ * What `ensure_session` answers: the tmux session name it ensured, and the
+ * agent-session uuid when there is one to know (see the call site in
+ * {@link ipc.ensureSession} for when that is `null`).
+ *
+ * Both keys are always present — the backend sends `session_id: null` rather
+ * than omitting it — so a reader can branch on the value without also testing
+ * for absence.
+ */
+export interface EnsuredSession {
+  name: string;
+  session_id: string | null;
+}
+
 export interface Plan {
   action: Action;
   agent: AgentKind;
@@ -224,7 +238,13 @@ export const ipc = {
     createCwd: boolean,
   ) =>
     // Tauri 2 command args are camelCase (`create_cwd` → `createCwd`).
-    invoke<string>("ensure_session", {
+    //
+    // `session_id` is the id a *new* session was pinned with (`--session-id`), or
+    // the resumed one; `null` when the backend cannot know it — a Codex or Pi
+    // launch (no adapter pins those), a fresh Windows launch, or a resume the
+    // remote could not read. It is what lets a new Claude session's transcript
+    // path be computed at all: see `lib/chat/transcript-path.ts`.
+    invoke<EnsuredSession>("ensure_session", {
       host,
       agent,
       cwd,

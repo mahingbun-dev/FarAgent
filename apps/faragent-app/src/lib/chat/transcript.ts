@@ -45,6 +45,10 @@
  * 6. **A file shorter than `offset` rewinds.** A truncate or a resume into a
  *    new file at the same path resets the model and re-reads the tail, rather
  *    than splicing two conversations together.
+ * 7. **A file that is not there yet is a wait, not an error.** A new session's
+ *    transcript is written when its CLI takes the first turn, so `fs.stat`
+ *    answering `not_found` is the ordinary state for the first seconds of a
+ *    session — see {@link TranscriptTail}.
  *
  * The model is pure — a reducer over byte chunks with no network, no DOM and no
  * helper connection — so `node --test` drives it directly. {@link TranscriptTail}
@@ -52,7 +56,12 @@
  * `HelperConnection` satisfies and an in-memory double can too.
  */
 import type { FsRead, WatchSubscription } from "../helper.ts";
-import { asFsChanged, decodeText } from "../helper.ts";
+import { HelperError, asFsChanged, decodeText } from "../helper.ts";
+
+/** True when `error` is the helper's `not_found` — the path is not there. */
+function isNotFound(error: unknown): boolean {
+  return HelperError.from(error).errorCode === "not_found";
+}
 
 // ---------------------------------------------------------------------------
 // Budgets
@@ -71,6 +80,21 @@ export const TAIL_WINDOW_BYTES = 256 * 1024;
 
 /** How much is read at a time when following the file or loading earlier content. */
 export const READ_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * How long a tail waits between attempts to reach a transcript that is not there
+ * yet, and how many attempts it makes.
+ *
+ * A brand-new session's file appears when its CLI writes the first record — and
+ * its `~/.claude/projects/<slug>` directory may not exist a moment before that,
+ * and a watch cannot be taken on a directory that is not there. So a tail with
+ * no watch has to knock. This is the knock, and it is bounded on purpose: once
+ * the directory exists the watch is what covers the common case, and an
+ * unbounded poll would cost a remote round trip every interval for the life of
+ * the tab.
+ */
+export const AWAIT_RETRY_MS = 1500;
+export const MAX_AWAIT_RETRIES = 20;
 
 // ---------------------------------------------------------------------------
 // Framing — pure functions over byte streams
@@ -301,6 +325,13 @@ export interface TranscriptTailOptions {
   onChange?: (records: readonly unknown[]) => void;
   /** Called when a read or the watch fails. The tail stays usable afterwards. */
   onError?: (error: unknown) => void;
+  /**
+   * Milliseconds between knocks while a transcript is not there yet. Defaults to
+   * {@link AWAIT_RETRY_MS}; tests drive it down to run in real time.
+   */
+  awaitRetryMs?: number;
+  /** How many knocks before giving up. Defaults to {@link MAX_AWAIT_RETRIES}. */
+  maxAwaitRetries?: number;
 }
 
 /**
@@ -327,6 +358,28 @@ export function parentDir(path: string): string {
  * fetch the window before what is held, and {@link close} to drop the
  * subscription. A push on the watched directory whose path is this file
  * triggers a `refresh` on its own.
+ *
+ * ## A file that is not there yet
+ *
+ * A session started from the app has a transcript path from the moment it is
+ * launched, but the file is written only when the CLI takes its first turn — and
+ * for a cwd the CLI has never run in, its `~/.claude/projects/<slug>` directory
+ * does not exist until then either. Opening a path that is not there is
+ * therefore the ordinary first seconds of a new session, not a failure:
+ *
+ * - `fs.stat` answering `not_found` (a distinct code from every real failure)
+ *   opens the tail **empty and waiting** rather than rejecting, so the reader
+ *   sees "no conversation yet" instead of an error the view implies is wrong.
+ * - A watch taken on a directory that *does* exist is enough on its own: the
+ *   file's own creation is a push, and {@link refresh} reads it.
+ * - A watch that could not be taken — the directory is missing too — is retried
+ *   on a bounded timer ({@link AWAIT_RETRY_MS} × {@link MAX_AWAIT_RETRIES}),
+ *   because a directory that cannot be watched can never push. The retry also
+ *   re-reads, so a file that lands before its directory can be watched is still
+ *   found.
+ *
+ * {@link waiting} reports which of those states the tail is in; it is a
+ * convenience for a caller that wants to say so, not a separate failure mode.
  */
 export class TranscriptTail {
   readonly path: string;
@@ -335,15 +388,24 @@ export class TranscriptTail {
   private readonly channel: TranscriptChannel;
   private readonly windowBytes: number;
   private readonly chunkBytes: number;
+  private readonly awaitRetryMs: number;
+  private readonly maxAwaitRetries: number;
   private readonly onChange: ((records: readonly unknown[]) => void) | undefined;
   private readonly onError: ((error: unknown) => void) | undefined;
   private subscription: number | null = null;
   private offPush: () => void = () => undefined;
+  /** The push handler as a field, so a retry can re-register the same one. */
+  private pushHandler: (event: { event: string; data: unknown }) => void = () => undefined;
   private closed = false;
   /** The refresh currently reading, if any — refreshes serialize behind it. */
   private draining: Promise<void> | null = null;
   /** Set when a push arrives mid-drain; makes the drain read once more. */
   private dirty = false;
+  /** True while the transcript file is not there yet. See the class doc. */
+  private awaiting = false;
+  /** How many knocks have been spent on a missing directory. */
+  private retries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor(
     channel: TranscriptChannel,
@@ -355,6 +417,8 @@ export class TranscriptTail {
     this.model = new TranscriptModel();
     this.windowBytes = options.windowBytes ?? TAIL_WINDOW_BYTES;
     this.chunkBytes = options.chunkBytes ?? READ_CHUNK_BYTES;
+    this.awaitRetryMs = options.awaitRetryMs ?? AWAIT_RETRY_MS;
+    this.maxAwaitRetries = options.maxAwaitRetries ?? MAX_AWAIT_RETRIES;
     this.onChange = options.onChange;
     this.onError = options.onError;
   }
@@ -366,6 +430,10 @@ export class TranscriptTail {
    * the read still produces a push and the read cannot be the last word on the
    * file. A failure to watch is not fatal — the tail is still readable and
    * {@link refresh} still works — so it is reported and swallowed.
+   *
+   * A file that does not exist yet is not a failure either: the tail opens
+   * empty and waiting (see the class doc). Only a *real* stat or read failure
+   * drops the watch and rejects.
    */
   static async open(
     channel: TranscriptChannel,
@@ -382,6 +450,7 @@ export class TranscriptTail {
       if (decodeText(changed.path) !== tail.path) return;
       void tail.refresh().catch((e) => tail.reportError(e));
     };
+    tail.pushHandler = onPush;
     try {
       const sub = await channel.subscribe(parentDir(path), false);
       tail.subscription = sub.subscription;
@@ -392,12 +461,16 @@ export class TranscriptTail {
     try {
       await tail.readTail();
     } catch (e) {
-      // The window read failed (a missing file, a permission refusal): there is
-      // no tail to hand back, so drop the watch rather than leak it behind a
-      // rejection the caller can do nothing about.
+      // The window read failed for a reason other than the file being absent (a
+      // permission refusal, a dead channel): there is no tail to hand back, so
+      // drop the watch rather than leak it behind a rejection the caller can do
+      // nothing about.
       await tail.close();
       throw e;
     }
+    // Waiting *and* unwatched: the directory is missing too, so nothing will ever
+    // push. Knock until the directory or the file appears, or the budget runs out.
+    if (tail.awaiting && tail.subscription === null) tail.scheduleAwaitRetry();
     return tail;
   }
 
@@ -414,6 +487,11 @@ export class TranscriptTail {
   /** How many leading bytes are not yet loaded, for the scroll-up case. */
   get unloadedBefore(): number {
     return this.model.unloadedBefore;
+  }
+
+  /** True while the transcript file is not there yet — a wait, not an error. */
+  get waiting(): boolean {
+    return this.awaiting;
   }
 
   /**
@@ -458,10 +536,24 @@ export class TranscriptTail {
     let guard = 0;
     for (;;) {
       const from = this.model.offset;
-      const read = await this.channel.readFile(this.path, {
-        offset: from,
-        limit: this.chunkBytes,
-      });
+      let read: FsRead;
+      try {
+        read = await this.channel.readFile(this.path, {
+          offset: from,
+          limit: this.chunkBytes,
+        });
+      } catch (e) {
+        // `not_found` is a wait — but only while this tail holds nothing. A file
+        // that was already read and has since gone is a real loss of the thing
+        // being read, and the reader should hear about it rather than watch the
+        // conversation go quiet. See the class doc.
+        if (isNotFound(e) && from === 0 && this.model.records.length === 0) {
+          this.holdEmpty();
+          return;
+        }
+        throw e;
+      }
+      this.settled();
       if (read.size < from) {
         // The file is shorter than where this tail is, so the bytes it was
         // following are gone: the session was truncated, or resumed into a new
@@ -500,20 +592,107 @@ export class TranscriptTail {
 
   /** Read the tail window and replace what the model holds. */
   private async readTail(): Promise<void> {
-    const { size } = await this.channel.stat(this.path);
-    const window = Math.min(this.windowBytes, size);
+    let stat: { size: number };
+    try {
+      stat = await this.channel.stat(this.path);
+    } catch (e) {
+      // The ordinary first seconds of a new session: the path is known but the
+      // CLI has not written the file yet. Hold an empty model and wait for it.
+      if (isNotFound(e)) {
+        this.holdEmpty();
+        return;
+      }
+      throw e;
+    }
+    const window = Math.min(this.windowBytes, stat.size);
     const read = await this.channel.readFile(this.path, {
-      offset: size - window,
+      offset: stat.size - window,
       limit: window,
     });
     this.model.openTail(read.data, read.size);
+    this.settled();
     this.notify();
+  }
+
+  /**
+   * Hold an empty model for a transcript that is not there yet, and say so.
+   *
+   * Opening the tail on no bytes with a size of 0 is exactly the model a
+   * zero-byte file would give: nothing held, nothing earlier to load, nothing
+   * waiting behind the window. That is what makes the reader see the view's own
+   * "no conversation yet" rather than an error — the honest reading of a session
+   * that has not spoken.
+   */
+  private holdEmpty(): void {
+    this.awaiting = true;
+    this.model.openTail(new Uint8Array(0), 0);
+    this.notify();
+  }
+
+  /** The file was read after all: any wait is over and any knock is cancelled. */
+  private settled(): void {
+    this.awaiting = false;
+    this.retries = 0;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  /**
+   * Arm the next knock, or stop after {@link MAX_AWAIT_RETRIES}.
+   *
+   * Stopping is quiet on purpose: the reader still sees the empty conversation,
+   * which is the same thing a session that never speaks shows, and a transcript
+   * that has not appeared in half a minute is not something the view can act on.
+   * A later manual refresh or a re-open tries again from scratch.
+   */
+  private scheduleAwaitRetry(): void {
+    if (this.closed || !this.awaiting || this.retryTimer !== null) return;
+    if (this.retries >= this.maxAwaitRetries) return;
+    this.retries += 1;
+    this.retryTimer = setTimeout(() => {
+      void this.retryAwait();
+    }, this.awaitRetryMs);
+  }
+
+  /**
+   * One knock: take the watch again if there is none, then read.
+   *
+   * A directory that was missing may exist by now, and the watch is what turns
+   * the *next* record into a push instead of another knock — so it is worth
+   * retrying before the read. The read covers a file that landed in the same
+   * moment the directory did.
+   */
+  private async retryAwait(): Promise<void> {
+    this.retryTimer = null;
+    if (this.closed || !this.awaiting) return;
+    if (this.subscription === null) {
+      try {
+        const sub = await this.channel.subscribe(parentDir(this.path), false);
+        this.subscription = sub.subscription;
+        this.offPush = this.channel.onPush(this.pushHandler);
+      } catch (e) {
+        this.reportError(e);
+      }
+    }
+    try {
+      await this.refresh();
+    } catch (e) {
+      this.reportError(e);
+    }
+    if (this.closed || !this.awaiting) return;
+    this.scheduleAwaitRetry();
   }
 
   /** Drop the subscription and the push handler. Idempotent. */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.offPush();
     this.offPush = () => undefined;
     const subscription = this.subscription;
