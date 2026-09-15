@@ -265,46 +265,55 @@ function ChatBody({ tab, attach }: { tab: Tab; attach: TabAttach }) {
   // Empty *and* nothing sent: a session that has not been spoken to. A message
   // sent a moment ago is not "empty" — it is the first turn of a conversation,
   // and it goes through the list below like every other row.
-  if (items.length === 0 && pending.length === 0) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
+  const empty = items.length === 0 && pending.length === 0;
+
+  /*
+    Both states render the *same two children in the same order* — the body,
+    then the composer. That is not cosmetic: if the empty state's body and the
+    list's body sat at different indices (or behind a `null`, which sends React's
+    reconciler down its slow path), the composer would be a different element at
+    a different position as soon as the first message was sent, React would
+    recreate its fiber, and the field the reader was typing in would be gone —
+    focus to `<body>`, the next keystroke nowhere. Confirmed in a browser before
+    and after: see the S5 fix report.
+  */
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {empty ? (
         <Centred>
           <Empty>
             <p>{t("chat.empty")}</p>
             <p className="mt-1 text-xs">{t("chat.emptyHint")}</p>
           </Empty>
         </Centred>
-        {composer}
-      </div>
-    );
-  }
+      ) : (
+        <>
+          {/*
+            "Read earlier" sits *above* the scroller rather than in it: the virtual
+            window's arithmetic takes `scrollTop` as a number, and a strip inside the
+            scrolling content would make that number mean something different at the
+            top than everywhere else.
+          */}
+          {transcript.hasEarlier ? (
+            <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
+              <span className="text-micro text-muted-foreground">
+                {t("chat.earlier", { size: formatBytes(transcript.unloadedBefore) })}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-6"
+                disabled={transcript.loadingEarlier}
+                onClick={transcript.loadEarlier}
+              >
+                {transcript.loadingEarlier ? t("chat.reading") : t("chat.loadEarlier")}
+              </Button>
+            </div>
+          ) : null}
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/*
-        "Read earlier" sits *above* the scroller rather than in it: the virtual
-        window's arithmetic takes `scrollTop` as a number, and a strip inside the
-        scrolling content would make that number mean something different at the
-        top than everywhere else.
-      */}
-      {transcript.hasEarlier ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
-          <span className="text-micro text-muted-foreground">
-            {t("chat.earlier", { size: formatBytes(transcript.unloadedBefore) })}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-6"
-            disabled={transcript.loadingEarlier}
-            onClick={transcript.loadEarlier}
-          >
-            {transcript.loadingEarlier ? t("chat.reading") : t("chat.loadEarlier")}
-          </Button>
-        </div>
-      ) : null}
-
-      <MessageList items={rows} />
+          <MessageList items={rows} />
+        </>
+      )}
       {composer}
     </div>
   );

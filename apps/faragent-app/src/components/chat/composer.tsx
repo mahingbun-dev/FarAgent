@@ -24,7 +24,7 @@
  *   read from — the switch back to the terminal is still the only way to answer
  *   them, which is why that view is never unmounted.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
@@ -53,9 +53,21 @@ export function Composer({
   const [fullPerms, setFullPerms] = useState<boolean | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
 
+  // Ids for the completion list, so the field can point at it. Focus never
+  // leaves the field while the menu is open, so the relationship has to be said
+  // in ARIA rather than carried by focus.
+  const menu = useId();
+  const listId = `${menu}-list`;
+  const labelId = `${menu}-label`;
+  const optionId = (index: number) => `${menu}-option-${index}`;
+
   const commands = useMemo(() => commandsFor(agent), [agent]);
   const suggestions = useMemo(() => slashMatches(value, commands), [value, commands]);
   const menuOpen = suggestions.length > 0 && dismissed !== value;
+  // Clamped: the highlight is reset on the next effect, so for one render after
+  // the list shrinks it can point past the end.
+  const activeIndex = suggestions.length === 0 ? -1 : Math.min(highlight, suggestions.length - 1);
+  const active = activeIndex === -1 ? null : suggestions[activeIndex];
 
   /**
    * The permission mode, as it is. Read once — it is a setting of how sessions
@@ -96,45 +108,71 @@ export function Composer({
   };
 
   const accept = (command: string) => {
-    setValue(`${command} `);
+    setValue(command);
+    // The menu closes because the field now equals the value it was dismissed
+    // at. Appending a space to close it — the obvious trick — would put a byte
+    // in the message that the transcript's record will never carry, which is a
+    // guaranteed duplicate on screen. The reader types their own space when the
+    // command takes an argument.
+    setDismissed(command);
     field.current?.focus();
   };
 
   return (
     <div className="shrink-0 border-t border-border px-2 pb-2 pt-1.5">
       {menuOpen ? (
-        <div
-          role="listbox"
-          aria-label={t("chat.slashCommands")}
-          className="mx-auto mb-1 w-full max-w-content overflow-hidden rounded-md border border-border bg-surface-raised"
-        >
-          <p className="border-b border-border px-2 py-1 text-micro text-muted-foreground">
+        <div className="mx-auto mb-1 w-full max-w-content overflow-hidden rounded-md border border-border bg-surface-raised">
+          {/*
+            The heading is a *sibling* of the listbox, not a child of it: a
+            `role="listbox"` may contain nothing but options, and a heading
+            inside it is a structural violation the field would then be pointing
+            at. It labels the list from outside instead.
+          */}
+          <p
+            id={labelId}
+            className="border-b border-border px-2 py-1 text-micro text-muted-foreground"
+          >
             {t("chat.slashCommands")}
           </p>
-          {suggestions.map((command, index) => (
-            <button
-              key={command}
-              type="button"
-              role="option"
-              aria-selected={index === highlight}
-              // Mouse down, not click: the field must not lose focus to the
-              // button before the value is set, or the reader's next keystroke
-              // lands nowhere.
-              onMouseDown={(e) => {
-                e.preventDefault();
-                accept(command);
-              }}
-              onMouseEnter={() => setHighlight(index)}
-              className={cn(
-                "block w-full px-2 py-1 text-left font-mono text-xs transition-colors",
-                index === highlight ? "bg-surface-selected" : "hover:bg-surface-hover",
-              )}
-            >
-              {command}
-            </button>
-          ))}
+          <div id={listId} role="listbox" aria-labelledby={labelId}>
+            {suggestions.map((command, index) => (
+              <button
+                key={command}
+                id={optionId(index)}
+                type="button"
+                role="option"
+                aria-selected={index === highlight}
+                // Mouse down, not click: the field must not lose focus to the
+                // button before the value is set, or the reader's next keystroke
+                // lands nowhere.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  accept(command);
+                }}
+                onMouseEnter={() => setHighlight(index)}
+                className={cn(
+                  "block w-full px-2 py-1 text-left font-mono text-xs transition-colors",
+                  index === highlight ? "bg-surface-selected" : "hover:bg-surface-hover",
+                )}
+              >
+                {command}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
+
+      {/*
+        The menu opening, and the highlighted command, said out loud. A reader
+        who cannot see it is not told by `aria-activedescendant` alone — the
+        field keeps focus, so nothing is re-announced until the value changes.
+        Empty when the menu is shut, so it is silent otherwise.
+      */}
+      <div role="status" aria-live="polite" className="sr-only">
+        {menuOpen && active !== null
+          ? t("chat.slashMenuStatus", { count: suggestions.length, command: active })
+          : ""}
+      </div>
 
       <div className="mx-auto flex w-full max-w-content items-end gap-2">
         <Textarea
@@ -143,6 +181,22 @@ export function Composer({
           value={value}
           placeholder={t("chat.composerPlaceholder")}
           aria-label={t("chat.composerPlaceholder")}
+          /*
+            The field is what opens the list and what the arrow keys move
+            through, so the relationship is stated here: `aria-haspopup` (a
+            global attribute, so valid on a textbox), `aria-controls` pointing at
+            the list only while it exists, and `aria-activedescendant` naming the
+            highlighted option. Deliberately *not* `aria-expanded`: a textbox
+            does not support it (ARIA's supported states for `textbox` list
+            `aria-haspopup` and `aria-activedescendant`, not `aria-expanded`),
+            so it would be a new violation rather than a fix — the open state is
+            announced by the status line below instead.
+          */
+          aria-haspopup="listbox"
+          aria-controls={menuOpen ? listId : undefined}
+          aria-activedescendant={
+            menuOpen && activeIndex !== -1 ? optionId(activeIndex) : undefined
+          }
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             const action = composerAction({
