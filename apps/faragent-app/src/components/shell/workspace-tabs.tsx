@@ -22,6 +22,9 @@
  *   back to the terminal and returning does not re-read 256 KiB or lose your
  *   scroll position.
  *
+ * Mounted together, they share **one attach**, and that is why the pair lives in
+ * `TabSession` below rather than in the two components: see its doc.
+ *
  * The switch itself lives in the tab's own chrome rather than in a global
  * setting, because it is a property of what you are looking at, not of the app.
  */
@@ -35,6 +38,7 @@ import { DiagnosisDialog } from "@/components/dialogs";
 import { RightPanel } from "@/components/panel/right-panel";
 import { RowAction } from "@/components/shell/row-action";
 import { useSessionLauncher } from "@/components/shell/session-launcher";
+import { useTabAttach } from "@/lib/tab-attach";
 import { cn } from "@/lib/utils";
 import type { Diagnosis } from "@/lib/ipc";
 import { tabHasChatView, useStore, useT, type Tab, type TabView } from "@/state";
@@ -161,30 +165,11 @@ export function WorkspaceTabs() {
                   tab.id !== activeTabId && "invisible",
                 )}
               >
-                <div
-                  className={cn(
-                    "absolute inset-0",
-                    tab.view !== "terminal" && "invisible",
-                  )}
-                >
-                  <TerminalView
-                    host={tab.host}
-                    spec={tab.spec}
-                    onDiagnosis={setDiag}
-                    onExit={() => {}}
-                  />
-                </div>
-
-                {mountedChat.has(tab.id) ? (
-                  <div
-                    className={cn(
-                      "absolute inset-0 flex flex-col",
-                      tab.view !== "chat" && "invisible",
-                    )}
-                  >
-                    <ChatView tab={tab} />
-                  </div>
-                ) : null}
+                <TabSession
+                  tab={tab}
+                  chatMounted={mountedChat.has(tab.id)}
+                  onDiagnosis={setDiag}
+                />
               </div>
             ))}
           </div>
@@ -205,6 +190,58 @@ export function WorkspaceTabs() {
           onClose={() => setDiag(null)}
           onRetry={() => setDiag(null)}
         />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * One tab's two views, and the one attach they share.
+ *
+ * This exists because a `useAttach` per view is a bug rather than an extra
+ * connection (`lib/tab-attach.ts` says why: the second mount replaces the first
+ * channel's `onmessage` and the terminal goes quietly deaf). Hooks cannot be
+ * called from the map above, so the tab's views live in a component and the
+ * attach is leased **once**, here, and passed down as a prop. The prop is what
+ * keeps the single ownership visible: `TerminalView` and `ChatView` both take an
+ * attach that came from exactly this call, and neither can make its own.
+ *
+ * The two boxes are unchanged from what this file always rendered — the terminal
+ * keeps its place behind the conversation (`invisible`, so the fit addon does
+ * not re-measure and the running agent is never rebuilt), and the conversation
+ * is mounted the first time it is asked for and kept.
+ */
+function TabSession({
+  tab,
+  chatMounted,
+  onDiagnosis,
+}: {
+  tab: Tab;
+  chatMounted: boolean;
+  onDiagnosis: (diagnosis: Diagnosis) => void;
+}) {
+  const attach = useTabAttach({ host: tab.host, spec: tab.spec, onDiagnosis });
+
+  return (
+    <>
+      <div
+        className={cn(
+          "absolute inset-0",
+          tab.view !== "terminal" && "invisible",
+        )}
+      >
+        <TerminalView attach={attach} />
+      </div>
+
+      {chatMounted ? (
+        <div
+          className={cn(
+            "absolute inset-0 flex flex-col",
+            tab.view !== "chat" && "invisible",
+          )}
+        >
+          <ChatView tab={tab} attach={attach} />
+        </div>
       ) : null}
     </>
   );

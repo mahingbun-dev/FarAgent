@@ -1,5 +1,6 @@
 /**
- * The conversation view: one session's transcript, rendered.
+ * The conversation view: one session's transcript, rendered — and, since Phase
+ * 3, a place to reply from.
  *
  * This is the sibling `TerminalView` never had. It reads the same remote over
  * the same helper channel and draws what the agent wrote, instead of the escape
@@ -14,6 +15,27 @@
  * keyed by host. Two holders, one ssh session. A chat view that dialled its own
  * would hang up the panel, and the panel would hang up the chat.
  *
+ * ## The attach is the tab's, not this view's
+ *
+ * The composer writes to the remote through the **same attach the terminal
+ * reads**, and that attach is leased once per tab by whatever renders both views
+ * (`lib/tab-attach.ts` explains why twice would make the terminal go deaf). It
+ * arrives here as a prop, and this file uses exactly one thing from it —
+ * `write` — plus nothing else: the terminal half is the sink, because only it
+ * can draw the bytes and only it knows the size.
+ *
+ * ## Sending: what happens, in order
+ *
+ * 1. The composer hands up the text; this file writes it to the attach, as the
+ *    keystrokes the remote's TUI already understands (`lib/chat/composer.ts`).
+ * 2. It also appends the message to its own list as an **echo**, because the
+ *    transcript is written by the *agent* once it has taken the input — a beat
+ *    later, and sometimes much later. Without the echo, pressing Enter shows
+ *    nothing and reads as a broken button.
+ * 3. When the transcript's own record of that message arrives, the echo is
+ *    dropped. `lib/chat/echo.ts` is the reconciliation and the argument that the
+ *    two can never be on screen together.
+ *
  * ## The states this draws, and why each one is deliberate
  *
  * - **No transcript path** (`tab.transcript === null`). Says *that*, and not
@@ -22,7 +44,9 @@
  *   process scan, and for a login or install tab (no session, so no
  *   conversation). Telling a reader with a 500-turn session that it "has no
  *   conversation yet" would be a lie about the one thing this pane exists to
- *   show.
+ *   show. No composer here either: with the path unknown there is no
+ *   conversation this pane can claim to be writing into, and the terminal is
+ *   one click away.
  * - **No adapter** (`adapterFor(tab.agent) === null`). Codex, Grok and Pi have no
  *   event model yet, and S6's fallback is the terminal. If a tab somehow reaches
  *   this view anyway, it says which agent cannot be shown rather than rendering
@@ -30,22 +54,27 @@
  * - **Zero records.** A session that has been opened but has not been spoken to
  *   yet. This is the state a new session spends its first seconds in, so it is
  *   the one most likely to be mistaken for a bug: it gets a sentence, not
- *   whitespace.
+ *   whitespace — and the composer, because this is precisely the state a reader
+ *   wants to type in.
  * - **A read that failed.** The rejection's message, and a retry, because the
- *   remote helper can die and be replaced.
- * - **Read-only.** The one thing the reader must know: this pane cannot answer a
- *   permission prompt or a slash command, only the terminal can.
+ *   remote helper can die and be replaced. The composer is deliberately absent:
+ *   a transcript that cannot be read is a conversation this pane cannot show the
+ *   result of, and a send button whose effect you cannot see is worse than none.
  */
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Empty, Spinner } from "@/components/ui/empty";
+import { Composer } from "@/components/chat/composer";
 import { MessageList } from "@/components/chat/message-list";
 import { HelperProvider, useHelper } from "@/components/panel/helper-context";
 import { useTranscript } from "@/components/chat/use-transcript";
 import { adapterFor } from "@/lib/chat/adapters";
+import { encodeSend } from "@/lib/chat/composer";
+import { absorb, echoItems, seenFor, type PendingEcho } from "@/lib/chat/echo";
 import { groupEvents } from "@/lib/chat/sidechain";
 import { helperErrorText } from "@/lib/helper";
 import type { Lang } from "@/lib/ipc";
+import type { TabAttach } from "@/lib/tab-attach";
 import { useStore, useT, type Tab } from "@/state";
 
 /**
@@ -95,22 +124,22 @@ function ReadError({
 }
 
 /**
- * The conversation for `tab`.
+ * The conversation for `tab`, writing through the tab's `attach`.
  *
  * The provider wraps the body rather than being passed a connection, because the
  * connection lives in React state and this component's whole job is to wait for
  * it. The body is a separate component so the hook order is unconditional —
  * `useTranscript` is called whether or not there is a helper yet.
  */
-export function ChatView({ tab }: { tab: Tab }) {
+export function ChatView({ tab, attach }: { tab: Tab; attach: TabAttach }) {
   return (
     <HelperProvider host={tab.host}>
-      <ChatBody tab={tab} />
+      <ChatBody tab={tab} attach={attach} />
     </HelperProvider>
   );
 }
 
-function ChatBody({ tab }: { tab: Tab }) {
+function ChatBody({ tab, attach }: { tab: Tab; attach: TabAttach }) {
   const t = useT();
   const lang = useStore((s) => s.lang);
   const helper = useHelper();
@@ -129,6 +158,49 @@ function ChatBody({ tab }: { tab: Tab }) {
   const items = useMemo(
     () => (adapter ? groupEvents(adapter(transcript.records.slice())) : []),
     [adapter, transcript.records],
+  );
+
+  /**
+   * Messages sent from here that the transcript has not accounted for yet.
+   *
+   * Kept as everything sent, and *narrowed* for drawing rather than pruned on
+   * send, so the reconciliation is a pure function of the two lists and does not
+   * depend on an effect having run.
+   */
+  const [sent, setSent] = useState<readonly PendingEcho[]>([]);
+  const echoSeq = useRef(0);
+
+  const pending = useMemo(() => absorb(sent, items), [sent, items]);
+  const rows = useMemo(() => [...items, ...echoItems(pending)], [items, pending]);
+
+  /**
+   * Forget echoes the transcript has caught up with, so the list does not grow
+   * for the life of the tab. Same list identity when nothing was absorbed, which
+   * is the case for every render in which nothing arrived.
+   */
+  useEffect(() => {
+    setSent((previous) => {
+      const next = absorb(previous, items);
+      return next.length === previous.length ? previous : next;
+    });
+  }, [items]);
+
+  const send = useCallback(
+    (text: string) => {
+      // The bytes go out first. The echo is bookkeeping about a message that has
+      // already been said; if writing threw, there would be nothing to echo.
+      attach.write(encodeSend(text));
+      echoSeq.current += 1;
+      const id = `echo:${echoSeq.current}`;
+      setSent((previous) => [
+        ...previous,
+        // `seen` inside the updater, from the previous list: two sends that
+        // land in one batch then get different baselines, which is what stops
+        // the second from being absorbed by the first's record.
+        { id, text, seen: seenFor(previous, items, text) },
+      ]);
+    },
+    [attach, items],
   );
 
   if (tab.transcript === null) {
@@ -188,30 +260,29 @@ function ChatBody({ tab }: { tab: Tab }) {
     );
   }
 
-  if (items.length === 0) {
+  const composer = <Composer agent={tab.agent} onSend={send} />;
+
+  // Empty *and* nothing sent: a session that has not been spoken to. A message
+  // sent a moment ago is not "empty" — it is the first turn of a conversation,
+  // and it goes through the list below like every other row.
+  if (items.length === 0 && pending.length === 0) {
     return (
-      <Centred>
-        <Empty>
-          <p>{t("chat.empty")}</p>
-          <p className="mt-1 text-xs">{t("chat.emptyHint")}</p>
-        </Empty>
-      </Centred>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Centred>
+          <Empty>
+            <p>{t("chat.empty")}</p>
+            <p className="mt-1 text-xs">{t("chat.emptyHint")}</p>
+          </Empty>
+        </Centred>
+        {composer}
+      </div>
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/*
-        Read-only, said once and quietly. It is not a warning — nothing here is
-        broken — but a reader who replies into this pane and sees nothing happen
-        would think the app was.
-      */}
-      <p className="shrink-0 border-b border-border px-2 py-1 text-micro text-muted-foreground">
-        {t("chat.readOnly")}
-      </p>
-
-      {/*
-        The strip sits *above* the scroller rather than in it: the virtual
+        "Read earlier" sits *above* the scroller rather than in it: the virtual
         window's arithmetic takes `scrollTop` as a number, and a strip inside the
         scrolling content would make that number mean something different at the
         top than everywhere else.
@@ -233,7 +304,8 @@ function ChatBody({ tab }: { tab: Tab }) {
         </div>
       ) : null}
 
-      <MessageList items={items} />
+      <MessageList items={rows} />
+      {composer}
     </div>
   );
 }

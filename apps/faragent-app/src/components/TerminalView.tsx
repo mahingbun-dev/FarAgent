@@ -4,20 +4,22 @@
  * the remote agent (and every byte it renders) passes through here unchanged —
  * same passthrough contract as the TUI.
  *
- * This component is now only the *rendering* half. The attach itself — the
- * lease, the channel, the pending-write queue, resize — lives in `useAttach`,
- * so the same connection can back a chat view that renders no xterm (Phase 3).
- * What is left here is the xterm instance, its fit, and the two callbacks that
- * turn an attach event into terminal output.
+ * This component does not own the attach any more. The attach — the lease, the
+ * channel, the pending-write queue, resize — lives in `useAttach`, and since
+ * Phase 3 it is leased **once for the tab** (`lib/tab-attach.ts`) because the
+ * tab's conversation view is mounted at the same time and shares it: two
+ * `useAttach` calls for one tab would each re-bind the same channel's
+ * `onmessage`, and the terminal would go quietly deaf. What is left here is the
+ * xterm instance, its fit, and the sink it registers so the shared attach can
+ * read its size and draw its bytes.
  */
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import type { AttachSpec, Diagnosis } from "@/lib/ipc";
 import { b64ToBytes } from "@/lib/bytes";
-import { useAttach } from "@/lib/use-attach";
+import type { TabAttach } from "@/lib/tab-attach";
 
 /** Read a CSS custom property so the terminal shares the app's palette. */
 function cssVar(name: string, fallback: string): string {
@@ -27,51 +29,40 @@ function cssVar(name: string, fallback: string): string {
   return v || fallback;
 }
 
-export function TerminalView({
-  host,
-  spec,
-  onDiagnosis,
-  onExit,
-}: {
-  host: string;
-  spec: AttachSpec;
-  onDiagnosis: (d: Diagnosis) => void;
-  onExit: (code: number) => void;
-}) {
+export function TerminalView({ attach }: { attach: TabAttach }) {
   const container = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
+  const { bind } = attach;
 
-  // Input, output and size all flow through the terminal's ref, so the attach
-  // never holds a stale terminal across a remount.
-  const attach = useAttach({
-    host,
-    spec,
-    // `0×0` while the xterm below does not exist yet (this runs before the
-    // effect that creates it); the hook floors that to its 80×24 default, which
-    // is also what an un-fitted xterm reports. The ResizeObserver re-sizes to
-    // the real fit the moment the terminal is on screen.
-    size: () =>
-      term.current
-        ? { cols: term.current.cols, rows: term.current.rows }
-        : { cols: 0, rows: 0 },
-    onEvent: (event) => {
-      const t = term.current;
-      if (!t) return;
-      if (event.kind === "data") {
-        t.write(b64ToBytes(event.b64));
-      } else if (event.kind === "exit") {
-        t.write(`\r\n\x1b[2m── faragent: exit ${event.code} ──\x1b[0m\r\n`);
-        onExit(event.code);
-      } else {
-        t.write(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`);
-      }
-    },
-    onDiagnosis,
-    onError: (message) => {
-      term.current?.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
-    },
-    onOpen: () => term.current?.focus(),
-  });
+  // Where the shared attach's size and events land. Registered before the xterm
+  // exists, and deliberately: the closures read `term.current` when they are
+  // called, so the ordering of this effect and the one below does not matter —
+  // and an event that arrives while there is no terminal yet is dropped by the
+  // `if (!t) return` rather than drawn into a disposed one.
+  useEffect(() => {
+    bind({
+      size: () =>
+        term.current
+          ? { cols: term.current.cols, rows: term.current.rows }
+          : { cols: 0, rows: 0 },
+      event: (event) => {
+        const t = term.current;
+        if (!t) return;
+        if (event.kind === "data") {
+          t.write(b64ToBytes(event.b64));
+        } else if (event.kind === "exit") {
+          t.write(`\r\n\x1b[2m── faragent: exit ${event.code} ──\x1b[0m\r\n`);
+        } else {
+          t.write(`\r\n\x1b[31m${event.message}\x1b[0m\r\n`);
+        }
+      },
+      focus: () => term.current?.focus(),
+      error: (message) => {
+        term.current?.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`);
+      },
+    });
+    return () => bind(null);
+  }, [bind]);
 
   useEffect(() => {
     const el = container.current;
@@ -107,8 +98,8 @@ export function TerminalView({
       }
     });
 
-    // Every keystroke is input to the remote PTY, queued by the hook until the
-    // attach has a session id.
+    // Every keystroke is input to the remote PTY, queued by the attach until it
+    // has a session id — the same door the composer writes through.
     t.onData((data) => attach.write(data));
 
     const observer = new ResizeObserver(() => {
@@ -127,8 +118,8 @@ export function TerminalView({
       term.current = null;
     };
     // The terminal is a pure function of its element; it does not depend on the
-    // attach, whose closed-over `write`/`resize` are stable callbacks. The
-    // attach's own effect (in `useAttach`) is keyed on host and spec.
+    // attach, whose `write`/`resize` are stable callbacks. The attach's own
+    // effect lives in `useTabAttach`, keyed on host and spec.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

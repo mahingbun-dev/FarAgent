@@ -26,11 +26,15 @@ export function Input({
 
 /**
  * The same field without a fixed height: the composer grows with its content.
+ *
+ * `ComponentProps` rather than `TextareaHTMLAttributes` because the composer
+ * measures and refocuses this field, and a `ref` is part of a DOM element's
+ * props as of React 19 — the two types differ in exactly that.
  */
 export function Textarea({
   className,
   ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+}: React.ComponentProps<"textarea">) {
   return (
     <textarea
       className={cn(
