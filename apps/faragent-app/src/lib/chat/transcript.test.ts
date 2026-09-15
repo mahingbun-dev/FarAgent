@@ -233,6 +233,78 @@ test("prepend of a window with no newline changes nothing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// firstIndex: the one name a record keeps as the window grows
+// ---------------------------------------------------------------------------
+
+test("a tail window starts with its first record at index 0", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n{"c":3}\n');
+  model.openTail(bytes.subarray(14), bytes.length); // records [{c:3}]
+  assert.equal(model.firstIndex, 0);
+  assert.deepEqual(model.records, [{ c: 3 }]);
+});
+
+test("prepend lowers firstIndex, so a held record keeps the index it had", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n{"c":3}\n');
+  model.openTail(bytes.subarray(14), bytes.length); // records [{c:3}], firstIndex 0
+  const cWas = model.firstIndex + 0; // `c` sits at the window's head today
+
+  model.prepend(bytes.subarray(6, 16)); // '}\n{"b":2}\n' -> records [{b:2},{c:3}]
+  assert.deepEqual(model.records, [{ b: 2 }, { c: 3 }]);
+  assert.equal(model.firstIndex, -1, "`b` takes the index in front of `c`");
+  // The whole point: `c` is still named 0 after the window grew backwards.
+  assert.equal(model.firstIndex + 1, cWas, "`c` keeps its index across loadEarlier");
+});
+
+test("append raises the tail, and leaves every held record's index alone", () => {
+  const model = new TranscriptModel();
+  model.openTail(enc('{"a":1}\n'), 8); // the whole file: records [{a:1}]
+  assert.equal(model.firstIndex, 0);
+
+  model.append(enc('{"b":2}\n'), 16);
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }]);
+  assert.equal(model.firstIndex, 0, "`a` is still 0 — the new record took 1, not `a`'s");
+
+  model.append(enc('{"c":3}\n'), 24);
+  assert.deepEqual(model.records, [{ a: 1 }, { b: 2 }, { c: 3 }]);
+  assert.equal(model.firstIndex, 0);
+});
+
+test("an appended record continues the numbering a prepend left behind", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n{"c":3}\n');
+  model.openTail(bytes.subarray(14), bytes.length); // [{c:3}], firstIndex 0
+  model.prepend(bytes.subarray(6, 16)); // [{b:2},{c:3}], firstIndex -1
+  model.append(enc('{"d":4}\n'), 32);
+  assert.deepEqual(model.records, [{ b: 2 }, { c: 3 }, { d: 4 }]);
+  assert.equal(model.firstIndex, -1, "`b` and `c` did not move");
+  assert.equal(model.firstIndex + 2, 1, "`d` is the record after `c`");
+});
+
+test("a fresh window resets the numbering, because the records it replaces are gone", () => {
+  const model = new TranscriptModel();
+  const bytes = enc('{"a":1}\n{"b":2}\n{"c":3}\n');
+  model.openTail(bytes.subarray(14), bytes.length);
+  model.prepend(bytes.subarray(6, 16));
+  assert.equal(model.firstIndex, -1);
+
+  // A rewound file — a truncate or a resume into a new file at the same path —
+  // re-opens the tail, and the old numbering must not survive it.
+  model.openTail(bytes.subarray(14), bytes.length);
+  assert.equal(model.firstIndex, 0);
+  assert.deepEqual(model.records, [{ c: 3 }]);
+});
+
+test("a window discarded whole holds no records and starts at 0", () => {
+  const model = new TranscriptModel();
+  // The window sits inside one record whose head is before it: nothing parses.
+  model.openTail(enc("no newline here"), 40);
+  assert.deepEqual(model.records, []);
+  assert.equal(model.firstIndex, 0);
+});
+
+// ---------------------------------------------------------------------------
 // The client: an in-memory remote
 // ---------------------------------------------------------------------------
 

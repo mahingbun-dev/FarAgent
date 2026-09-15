@@ -69,6 +69,15 @@ export type TranscriptStatus = "connecting" | "ready" | "error";
 export interface TranscriptState {
   /** The records the tail holds, in file order. Raw: an adapter gives them meaning. */
   records: readonly unknown[];
+  /**
+   * The index of {@link records}'s first record, for an adapter naming an event
+   * after a record that carries no id of its own.
+   *
+   * It is a position only in the sense the renderer needs — stable across a
+   * `loadEarlier` and across appends — and it can be negative, because the
+   * numbering is anchored at the tail of a file whose head is not loaded yet.
+   */
+  firstIndex: number;
   status: TranscriptStatus;
   /** The rejection that stopped the *initial* read; meaningful only for `status === "error"`. */
   error: unknown;
@@ -110,6 +119,14 @@ export function useTranscript(
   path: string | null,
 ): TranscriptState {
   const [records, setRecords] = useState<readonly unknown[]>(NOTHING);
+  /**
+   * The index of `records[0]`, carried beside the records rather than derived
+   * from them because it is not a function of them: it moves only when an
+   * earlier window is prepended, which is exactly what keeps the indices of the
+   * records already on screen unchanged. Set in the same turn as the records it
+   * describes, so React's batching commits them together.
+   */
+  const [firstIndex, setFirstIndex] = useState(0);
   const [status, setStatus] = useState<TranscriptStatus>("connecting");
   const [error, setError] = useState<unknown>(null);
   const [earlierError, setEarlierError] = useState<unknown>(null);
@@ -126,6 +143,7 @@ export function useTranscript(
   useEffect(() => {
     if (path === null || channel === null) {
       setRecords(NOTHING);
+      setFirstIndex(0);
       setStatus("connecting");
       setError(null);
       setEarlierError(null);
@@ -143,6 +161,7 @@ export function useTranscript(
     setError(null);
     setEarlierError(null);
     setRecords(NOTHING);
+    setFirstIndex(0);
     setHasEarlier(false);
     setUnloadedBefore(0);
 
@@ -152,6 +171,7 @@ export function useTranscript(
       const shared = sharedRef.current;
       if (!shared) return;
       setRecords(shared.tail.records.slice());
+      setFirstIndex(shared.tail.firstIndex);
       setHasEarlier(!shared.tail.complete);
       setUnloadedBefore(shared.tail.unloadedBefore);
     };
@@ -196,6 +216,10 @@ export function useTranscript(
       .loadEarlier()
       .then(() => {
         setRecords(shared.tail.records.slice());
+        // The one place `firstIndex` actually moves: an earlier window went in
+        // front of the records already rendered, so their indices hold and only
+        // this number drops.
+        setFirstIndex(shared.tail.firstIndex);
         setHasEarlier(!shared.tail.complete);
         setUnloadedBefore(shared.tail.unloadedBefore);
       })
@@ -218,6 +242,7 @@ export function useTranscript(
 
   return {
     records,
+    firstIndex,
     status,
     error,
     earlierError,

@@ -187,6 +187,20 @@ export class TranscriptModel {
   size = 0;
   /** Bytes read past the last newline: a record the writer has not finished. */
   partial: Uint8Array = new Uint8Array(0);
+  /**
+   * The index the next record appended to {@link records} will take.
+   *
+   * Record indices exist so that an adapter can name an event after the record
+   * it came from and have that name survive the window growing — a renderer
+   * keys a list on it and remembers the reader's scroll position by it. A tail
+   * window is neither the whole file nor a window that begins at byte 0, so the
+   * numbering is anchored at the **tail** and not at the file: opening a window
+   * numbers its records from 0, {@link append} continues upward, and
+   * {@link prepend} leaves the number alone — which is the whole point, since
+   * prepending an earlier window must not renumber the conversation already on
+   * screen.
+   */
+  private nextIndex = 0;
 
   /** True when the whole file, from byte 0, is held. */
   get complete(): boolean {
@@ -196,6 +210,19 @@ export class TranscriptModel {
   /** How many bytes precede `records[0]` — what `loadEarlier` can still fetch. */
   get unloadedBefore(): number {
     return this.start;
+  }
+
+  /**
+   * The index of `records[0]` — how an adapter names a record that has no id of
+   * its own.
+   *
+   * Negative once an earlier window has been loaded, which is expected rather
+   * than a bug: the numbering counts records held from the tail, not records
+   * from the start of the file, and the file's head is exactly what is still
+   * unloaded. An adapter only needs it to be *stable*, not to be a position.
+   */
+  get firstIndex(): number {
+    return this.nextIndex - this.records.length;
   }
 
   /**
@@ -226,6 +253,7 @@ export class TranscriptModel {
         this.start = size;
         this.offset = size;
         this.size = size;
+        this.nextIndex = 0;
         return;
       }
       start = windowStart + cut + 1;
@@ -245,6 +273,9 @@ export class TranscriptModel {
     // file leaves `offset` short of `size`, and the next read catches up.
     this.offset = windowStart + bytes.length;
     this.size = size;
+    // A window replaces whatever was held, so the numbering starts over with it
+    // rather than continuing from records this call just discarded.
+    this.nextIndex = records.length;
   }
 
   /**
@@ -255,7 +286,12 @@ export class TranscriptModel {
     const { lines, rest } = frameLines(concat(this.partial, bytes));
     for (const line of lines) {
       const record = parseRecord(line);
-      if (record !== undefined) this.records.push(record);
+      if (record !== undefined) {
+        this.records.push(record);
+        // The tail moves forward, so every record already held keeps the index
+        // it had — `firstIndex` reads this and `records.length` together.
+        this.nextIndex += 1;
+      }
     }
     this.partial = rest;
     this.offset += bytes.length;
@@ -290,6 +326,10 @@ export class TranscriptModel {
       if (record !== undefined) records.push(record);
     }
     if (records.length > 0) this.records = records.concat(this.records);
+    // `nextIndex` is deliberately left alone. These records sit *before* the
+    // ones already held and the numbering is anchored at the tail, so what
+    // happens here is that `firstIndex` drops by the count just inserted while
+    // every record on screen keeps the index the renderer is already using.
     this.start = start;
   }
 }
@@ -477,6 +517,18 @@ export class TranscriptTail {
   /** Parsed records held so far, in file order. */
   get records(): readonly unknown[] {
     return this.model.records;
+  }
+
+  /**
+   * The index of {@link records}'s first record — the stable name an adapter
+   * gives to a record that carries no id of its own.
+   *
+   * It goes **down** when {@link loadEarlier} brings an earlier window in, and
+   * that is what makes it useful: the records already rendered keep the indices
+   * the renderer keyed them on, instead of every one of them shifting.
+   */
+  get firstIndex(): number {
+    return this.model.firstIndex;
   }
 
   /** True when the whole file from byte 0 is held. */
