@@ -20,6 +20,7 @@
 import type {
   Action,
   AgentKind,
+  AttachSpec,
   AuthMode,
   DirListing,
   GitHubSync,
@@ -801,6 +802,65 @@ export function ensureSession(
   sessionId: string | null,
 ): string {
   return tmuxName(agent, sessionId ?? cwd);
+}
+
+/**
+ * The conversation file a terminal's attach spec belongs to, and the session it
+ * is — or `null` for a spec with no conversation behind it (a login shell, an
+ * install run, a session whose row never carried a transcript).
+ *
+ * This is the mock's **inverse** of `sessionTabKey`/`ensureSession`: the attach
+ * carries a tmux name or a session id and nothing else, while the transcript is
+ * named by session id, so a mock that wants to show a typed message arriving has
+ * to resolve one from the other. It answers only for the seeded sessions — which
+ * is honest, because those are the only ones with a file to append to.
+ */
+export function transcriptForSpec(
+  spec: AttachSpec,
+): { path: string; sessionId: string } | null {
+  if (spec.kind === "tmux") {
+    for (const seed of SESSION_SEEDS) {
+      if (seed.transcript && tmuxName("claude", seed.id) === spec.tmux_name) {
+        return { path: seed.transcript, sessionId: seed.id };
+      }
+    }
+    return null;
+  }
+  if (spec.kind === "win_agent") {
+    const { session_id } = spec;
+    if (session_id === null) return null;
+    const seed = SESSION_SEEDS.find((s) => s.id === session_id && s.transcript);
+    return seed?.transcript ? { path: seed.transcript, sessionId: session_id } : null;
+  }
+  return null;
+}
+
+/**
+ * One `user` turn, as the jsonl line a Claude transcript would carry it in.
+ *
+ * Handed to `appendFile` by `handlers.ts` when something is typed into a
+ * session. The shape is the one `transcriptJsonl` above uses — `content` a bare
+ * string is the spelling `lib/chat/adapters/claude.ts` turns into one message —
+ * and the text is written **exactly as it was typed**, which is what lets the
+ * composer's echo be recognised and dropped when the record lands
+ * (`lib/chat/echo.ts` matches on the text, so a fixture that trimmed or
+ * decorated it would leave every echo on screen twice).
+ */
+let userTurnSeq = 0;
+
+export function userTurnJsonl(sessionId: string, text: string, at: number): string {
+  userTurnSeq += 1;
+  return (
+    JSON.stringify({
+      type: "user",
+      uuid: `mock-u${String(userTurnSeq).padStart(4, "0")}`,
+      timestamp: new Date(at * 1000).toISOString(),
+      sessionId,
+      cwd: "/srv/app/faragent",
+      gitBranch: "main",
+      message: { role: "user", content: text },
+    }) + "\n"
+  );
 }
 
 // ------------------------------------------------------------------- dirs

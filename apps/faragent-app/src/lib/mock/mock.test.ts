@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { b64ToBytes } from "../bytes.ts";
+import { b64ToBytes, bytesToB64 } from "../bytes.ts";
 import type { AttachEvent, Session } from "../ipc.ts";
 import { HelperError, decodeText, encodePath, helperErrorText } from "../helper.ts";
 import type { HelperEvent } from "../helper.ts";
@@ -417,6 +417,80 @@ test("attach_open answers the caller's channel with a mock banner", async () => 
   }
   await ipc.attachClose(id);
 });
+
+test("a line typed into an attach is echoed back and lands in the session's transcript", async () => {
+  // The composer's contract, end to end through the mock. Bytes go in; the
+  // terminal hears the pretend PTY acknowledge them; and the session's
+  // conversation file gains the turn a beat later, which is what the composer's
+  // echo reconciles against. Without that second half a browser could never show
+  // a send *settling* — every message would sit on screen as an echo that never
+  // becomes real, which is indistinguishable from the duplication bug the echo
+  // model exists to prevent.
+  const seen: AttachEvent[] = [];
+  const channel = new Channel<AttachEvent>();
+  channel.onmessage = (event) => seen.push(event);
+
+  const spec = {
+    kind: "tmux",
+    tmux_name: fx.ensureSession("claude", "/srv/app/faragent", IDLE_SESSION),
+  } as const;
+  const id = await ipc.attachOpen({ host: HOST, spec, cols: 80, rows: 24, onEvent: channel });
+
+  // Typed as a keyboard would: the characters, then Return.
+  await ipc.attachWrite(id, bytesToB64(new TextEncoder().encode("why is the rail empty?\r")));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const drawn = seen
+    .filter((event) => event.kind === "data")
+    .map((event) => decodeText(b64ToBytes((event as { b64: string }).b64)))
+    .join("");
+  assert.match(drawn, /faragent mock attach/, "the banner still arrives");
+  assert.match(
+    drawn,
+    /pty received: why is the rail empty\?/,
+    "the terminal is answered, which is how a reader sees it is still live",
+  );
+
+  // The write is the agent's, not the mock's: it lands later, which is the delay
+  // the echo covers.
+  assert.equal(
+    await readThroughHelper(HOST, HELPER_FIXTURES.emptyTranscript),
+    "",
+    "nothing is written the instant the line is sent",
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const written = await readThroughHelper(HOST, HELPER_FIXTURES.emptyTranscript);
+  const last = written.trim().split("\n").pop() ?? "{}";
+  const record = JSON.parse(last) as {
+    type?: string;
+    message?: { role?: string; content?: unknown };
+  };
+  assert.equal(record.type, "user");
+  assert.equal(record.message?.role, "user");
+  // Verbatim, including the `?`: the composer's echo matches the record by its
+  // text, so a mock that decorated the line would leave every send doubled.
+  assert.equal(record.message?.content, "why is the rail empty?");
+
+  await ipc.attachClose(id);
+});
+
+/** The session behind `HELPER_FIXTURES.emptyTranscript`, as a tmux row names it. */
+const IDLE_SESSION = "01H8ZQk3idle";
+
+/** Read a file back the way the app reads one: through the helper channel's ops. */
+async function readThroughHelper(host: string, path: string): Promise<string> {
+  const channel = new Channel<HelperEvent>();
+  const { id } = await ipc.helperOpen({ host, onEvent: channel });
+  try {
+    const read = (await ipc.helperCall(id, "fs.read", { path_b64: encodePath(path) })) as {
+      data_b64: string;
+    };
+    return decodeText(b64ToBytes(read.data_b64));
+  } finally {
+    await ipc.helperClose(id);
+  }
+}
 
 test("the helper commands answer through the mock's virtual remote", async () => {
   // The count guard above proves the three commands are registered; this proves

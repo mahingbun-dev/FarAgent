@@ -147,6 +147,23 @@ class VirtualFile {
   get size(): number {
     return this.bytes.length;
   }
+
+  /**
+   * Grow the file by `more` bytes.
+   *
+   * The one way the virtual filesystem changes after seeding. An agent appends
+   * to its own transcript as it works, and that is the whole mechanism a
+   * conversation view tails — so a mock that could not append could not show
+   * the composer's message arriving, which is the one thing the composer needs
+   * a browser to prove.
+   */
+  append(more: Uint8Array): void {
+    const before = this.bytes;
+    const after = new Uint8Array(before.length + more.length);
+    after.set(before, 0);
+    after.set(more, before.length);
+    this.cached = after;
+  }
 }
 
 const DIR_MODE = 0o755;
@@ -157,6 +174,15 @@ const LINK_MODE = 0o777;
 const NOW = Date.UTC(2026, 8, 14, 9, 0, 0) / 1000;
 
 const nodes = new Map<string, VNode>();
+
+/**
+ * A clock that only moves forward, for the files the mock itself writes.
+ *
+ * Every seeded file carries `NOW`, so an append that stamped `NOW` again would
+ * be a modification the remote reports but no reader can tell from the state it
+ * already had. Seconds, because that is `fs.stat`'s unit.
+ */
+let clock = NOW;
 
 function textBytes(text: string): Uint8Array {
   return new TextEncoder().encode(text);
@@ -204,6 +230,24 @@ function addLink(path: string, target: string): void {
   const at = normalise(path);
   ensureDir(parentOf(at));
   nodes.set(at, { kind: "symlink", mtime: NOW, mode: LINK_MODE, target });
+}
+
+/**
+ * Append `text` to a registered file, the way an agent appends a record to its
+ * own transcript. Returns whether the path named a regular file.
+ *
+ * Deliberately **not** an op: nothing in the helper protocol writes files, and
+ * adding one would be inventing a wire message the backend does not have. This
+ * is the mock's own hand, reached from `handlers.ts`'s `attach_write` — the
+ * stand-in for the agent on the other end of the PTY.
+ */
+export function appendFile(path: string, text: string): boolean {
+  const at = normalise(path);
+  const node = nodes.get(at);
+  if (!node || node.kind !== "file") return false;
+  node.file.append(textBytes(text));
+  node.mtime = (clock += 1);
+  return true;
 }
 
 /** The path a chain of symlinks leads to, resolved like the helper resolves it. */

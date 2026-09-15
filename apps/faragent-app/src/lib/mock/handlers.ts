@@ -13,11 +13,11 @@
  * pass while proving nothing. `mock.test.ts` pins this down.
  */
 import type { InvokeArgs } from "@tauri-apps/api/core";
-import type { AttachEvent } from "../ipc.ts";
-import { bytesToB64 } from "../bytes.ts";
+import type { AttachEvent, AttachSpec } from "../ipc.ts";
+import { b64ToBytes, bytesToB64 } from "../bytes.ts";
 import type { AgentKind } from "../agents.ts";
 import { channelId, emit, forgetChannel } from "./channel.ts";
-import { helperHandlers } from "./helper.ts";
+import { appendFile, helperHandlers, pokeWatch } from "./helper.ts";
 import * as fx from "./fixtures.ts";
 
 export type MockHandler = (args: Record<string, unknown>) => unknown;
@@ -36,6 +36,39 @@ function boolArg(args: Record<string, unknown>, key: string): boolean {
 }
 
 // ---------------------------------------------------------------- attach
+
+let attachSeq = 0;
+
+/**
+ * An attach the mock is pretending has a PTY behind it.
+ *
+ * There is no shell on the other end, so the mock plays one: bytes typed into a
+ * terminal are collected until a Return, and the line that results is answered
+ * on the same channel (so the terminal visibly receives something) and, when the
+ * session has a conversation file, written into it as the agent would write a
+ * `user` record.
+ *
+ * That second half is what makes the composer exercisable in a browser at all.
+ * The composer's whole contract is "the remote receives what a keystroke would
+ * send, and the transcript eventually agrees" — and with a mock that only
+ * swallowed the bytes, the transcript would never agree and every send would sit
+ * on screen as an unabsorbed echo, which looks exactly like the duplication bug
+ * the echo model exists to prevent.
+ */
+interface MockAttach {
+  host: string;
+  /** Kept for the one question the bytes cannot answer: which conversation is this. */
+  spec: AttachSpec;
+  /** The channel the terminal listens on. `null` for a caller that passed none. */
+  channel: number | null;
+  /** Bytes typed since the last Return — a PTY's line buffer, in miniature. */
+  line: string;
+}
+
+const attaches = new Map<number, MockAttach>();
+
+/** How long the pretend agent takes to write its record, in ms. */
+const AGENT_WRITE_MS = 600;
 
 /**
  * What the terminal shows instead of a blank screen: there is no remote PTY.
@@ -58,17 +91,23 @@ function attachBanner(
     "",
     "\x1b[2mNo backend is running. This is fixture data from src/lib/mock,\x1b[0m",
     "\x1b[2mwhich never reaches a production build.\x1b[0m",
+    "\x1b[2mType here and press Return: the mock echoes the line back,\x1b[0m",
+    "\x1b[2mand a session with a transcript records it there too.\x1b[0m",
     "",
   ].join("\r\n");
 }
-
-let attachSeq = 0;
 
 function openAttach(args: Record<string, unknown>): number {
   const id = (attachSeq += 1);
   const host = arg(args, "host");
   const spec = args.spec;
   const channel = channelId(args.onEvent);
+  attaches.set(id, {
+    host,
+    spec: (spec ?? { kind: "login" }) as AttachSpec,
+    channel,
+    line: "",
+  });
   if (channel !== null) {
     const banner: AttachEvent = {
       kind: "data",
@@ -88,6 +127,65 @@ function openAttach(args: Record<string, unknown>): number {
   }
   return id;
 }
+
+/** Draw a line into the terminal that wrote it, on the attach's own channel. */
+function echoToTerminal(session: MockAttach, line: string): void {
+  if (session.channel === null) return;
+  const shown = line.replace(/\n/g, "\\n");
+  const data: AttachEvent = {
+    kind: "data",
+    b64: bytesToB64(
+      new TextEncoder().encode(
+        `\r\n\x1b[2m[faragent mock] pty received: ${shown}\x1b[0m\r\n`,
+      ),
+    ),
+  };
+  setTimeout(() => emit(session.channel as number, data), 0);
+}
+
+/**
+ * One submitted line: answer it in the terminal, and let the agent write it down.
+ *
+ * A line is echoed whether or not it belongs to a session with a transcript —
+ * answering the terminal is the mock's job for every attach. The record is not:
+ * a login shell has no conversation, so the resolve returns `null` and the mock
+ * stops there rather than inventing a file.
+ */
+function submit(session: MockAttach, line: string): void {
+  if (line !== "") echoToTerminal(session, line);
+  const target = fx.transcriptForSpec(session.spec);
+  if (target === null) return;
+  setTimeout(() => {
+    if (!appendFile(target.path, fx.userTurnJsonl(target.sessionId, line, atSeconds()))) {
+      return;
+    }
+    // The write is only half of it: a tailable transcript is one whose directory
+    // watch fires, and the mock's filesystem has no watcher of its own.
+    pokeWatch(session.host, target.path, "modified");
+  }, AGENT_WRITE_MS);
+}
+
+/** Now, in `fs.stat`'s unit. Only ever used to stamp a record's `timestamp`. */
+function atSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function writeAttach(args: Record<string, unknown>): undefined {
+  const id = Number(args.id);
+  const session = attaches.get(id);
+  if (!session) return undefined;
+  const text = new TextDecoder().decode(b64ToBytes(arg(args, "data")));
+  session.line += text;
+  for (;;) {
+    const cut = session.line.indexOf("\r");
+    if (cut < 0) break;
+    const line = session.line.slice(0, cut);
+    session.line = session.line.slice(cut + 1);
+    submit(session, line);
+  }
+  return undefined;
+}
+
 
 // ---------------------------------------------------------------- handlers
 
@@ -142,15 +240,19 @@ export const handlers: Record<string, MockHandler> = {
   github_sync: (a) => fx.githubSync(arg(a, "host")),
 
   // attach: the terminal surface. `attach_open` answers with a banner over the
-  // channel the caller supplied. The other three are deliberate no-ops: there
-  // is no PTY, so there is nothing to write to, resize or hang up — but they
-  // still have to be registered, or the shell would report them as unknown.
+  // channel the caller supplied; `attach_write` plays the PTY — it buffers until
+  // a Return, echoes the line back, and lets a session's own transcript record
+  // it a beat later, which is what the composer's echo reconciles against.
+  // `resize` stays a no-op: there is no PTY to tell.
   attach_open: (a) => openAttach(a),
-  attach_write: () => undefined,
+  attach_write: (a) => writeAttach(a),
   attach_resize: () => undefined,
   attach_close: (a) => {
     const id = Number(a.id);
-    if (Number.isInteger(id)) forgetChannel(id);
+    if (Number.isInteger(id)) {
+      attaches.delete(id);
+      forgetChannel(id);
+    }
     return undefined;
   },
 
