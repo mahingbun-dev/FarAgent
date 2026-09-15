@@ -183,7 +183,15 @@ export function useTranscript(
         setHasEarlier(!shared.tail.complete);
         setUnloadedBefore(shared.tail.unloadedBefore);
       })
-      .catch((rejection: unknown) => setError(rejection))
+      .catch((rejection: unknown) => {
+        // A failed scroll-up is a read that failed, and the pane says so — the
+        // same words and the same retry as any other read failure. Setting only
+        // `error` left `status` at "ready", and the view draws an error only for
+        // `status === "error"`, so the failure was silent: the reader pressed
+        // "load earlier", nothing happened, and nothing said why.
+        setStatus("error");
+        setError(rejection);
+      })
       .finally(() => {
         loadingRef.current = false;
         setLoadingEarlier(false);

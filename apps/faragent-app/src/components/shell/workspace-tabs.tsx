@@ -270,16 +270,19 @@ function ViewToggle({
   const t = useT();
   const onChat = tab.view === "chat";
   const offered = tabHasChatView(tab);
+  // What the control *is*, in the reader's language: the destination, as the
+  // icon is. It names the control whether or not it can be pressed.
+  const name = onChat ? t("chat.toggleTerminal") : t("chat.toggleChat");
 
   return (
     <RowAction
-      title={
-        !offered
-          ? t("chat.unavailable")
-          : onChat
-            ? t("chat.toggleTerminal")
-            : t("chat.toggleChat")
-      }
+      // The tooltip: the action, or — when the control is disabled — why. It is
+      // the *description*, not the name. Passing only this used to make
+      // `chat.unavailable` ("this agent has no conversation view yet") the
+      // control's accessible name, so a screen reader announced a reason where a
+      // control should be, and never said what the control does.
+      title={offered ? name : t("chat.unavailable")}
+      label={name}
       disabled={!offered}
       className="px-1 hover:bg-surface-selected"
       onActivate={() => onToggle(onChat ? "terminal" : "chat")}
