@@ -20,12 +20,11 @@
 </p>
 
 <p align="center">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-0f766e">
-  <img alt="rust" src="https://img.shields.io/badge/rust-1.80%2B-b45309">
-  <img alt="ssh" src="https://img.shields.io/badge/transport-OpenSSH-334155">
-  <img alt="agents" src="https://img.shields.io/badge/agents-claude%20%7C%20codex%20%7C%20grok%20%7C%20pi-0891b2">
-  <img alt="remote" src="https://img.shields.io/badge/remote-installs%20nothing-0f766e">
-  <img alt="windows" src="https://img.shields.io/badge/Windows%2011%20remote-native-0078d4">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-0f766e"></a>
+  <a href="docs/en/development.md"><img alt="rust" src="https://img.shields.io/badge/rust-1.80%2B-b45309"></a>
+  <a href="#features"><img alt="agents" src="https://img.shields.io/badge/agents-claude%20%7C%20codex%20%7C%20grok%20%7C%20pi-0891b2"></a>
+  <a href="#how-it-works"><img alt="remote" src="https://img.shields.io/badge/remote-installs%20nothing-0f766e"></a>
+  <a href="#status"><img alt="windows" src="https://img.shields.io/badge/Windows%2011%20remote-native-0078d4"></a>
 </p>
 
 ---
